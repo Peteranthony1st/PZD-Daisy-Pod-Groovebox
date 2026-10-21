@@ -16,6 +16,7 @@
 
 #include "synth.h"
 #include "pitchenv.h"
+#include "../itcm.h"
 
 int32_t PitchEnv::unit_;
 
@@ -52,6 +53,9 @@ void PitchEnv::set(const int32_t r[4], const int32_t l[4]) {
   advance(0);
 }
 
+// Called once per voice per quantum from Dx7Note::compute() (itself ITCM)
+// -- same reasoning as that function's own ITCM comment.
+DSY_ITCM_TEXT
 int32_t PitchEnv::getsample() {
   if (ix_ < 3 || ((ix_ < 4) && !down_)) {
     if (rising_) {
@@ -78,6 +82,9 @@ void PitchEnv::keydown(bool d) {
   }
 }
 
+// Called from getsample() on every envelope-stage transition (plus
+// keydown()) -- same hot call chain as getsample() itself.
+DSY_ITCM_TEXT
 void PitchEnv::advance(int newix) {
   ix_ = newix;
   if (ix_ < 4) {
@@ -88,6 +95,8 @@ void PitchEnv::advance(int newix) {
   }
 }
 
+// Called from Dx7Note::peekVoiceStatus() (itself ITCM).
+DSY_ITCM_TEXT
 void PitchEnv::getPosition(char *step) {
   *step = ix_;
 }

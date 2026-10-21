@@ -47,22 +47,33 @@ void DattorroReverb::InitDelayBuffer(DelayBuffer& db, float* storage, uint16_t c
     SetTapDelay(db, kTapMain, initial_delay_samples);
 }
 
+// These five are the actual per-sample tank math -- Process() (ITCM) calls
+// them roughly 28 times every sample (ProcessAllPass alone calls
+// ReadDelay+WriteDelay internally), unconditionally, every time the reverb
+// runs at all. Standalone, non-inlined functions (confirmed in the link
+// map), so this was a real miss left over from the earlier SRAM-buffer
+// move -- that fixed where the DATA lives, not where this CODE runs from.
+// See itcm.h's own comment.
+DSY_ITCM_TEXT
 float DattorroReverb::ProcessDelay(DelayBuffer& db, uint16_t t, float in)
 {
     db.buf_[t & db.mask_] = in;
     return db.buf_[(uint16_t)(t + db.read_offset_[kTapMain]) & db.mask_];
 }
 
+DSY_ITCM_TEXT
 void DattorroReverb::WriteDelay(DelayBuffer& db, uint16_t t, float in)
 {
     db.buf_[t & db.mask_] = in;
 }
 
+DSY_ITCM_TEXT
 float DattorroReverb::ReadDelay(const DelayBuffer& db, int tap, uint16_t t)
 {
     return db.buf_[(uint16_t)(t + db.read_offset_[tap]) & db.mask_];
 }
 
+DSY_ITCM_TEXT
 float DattorroReverb::ProcessAllPass(DelayBuffer& db, uint16_t t, float gain, float in)
 {
     float delayed = ReadDelay(db, kTapMain, t);
@@ -71,6 +82,7 @@ float DattorroReverb::ProcessAllPass(DelayBuffer& db, uint16_t t, float gain, fl
     return delayed + fed * gain;
 }
 
+DSY_ITCM_TEXT
 float DattorroReverb::ProcessLowPass(float& state, float freq, float in)
 {
     state += (in - state) * freq;

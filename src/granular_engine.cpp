@@ -592,6 +592,10 @@ float GranularEngine::ComputeHopSamples(int fill_count, float gap01) const
     return base_hop * sparse_mult;
 }
 
+// Called from RenderGrain() (itself ITCM, see its own comment below) once
+// per grain render -- up to kGrainsPerVoice*2 times per cluster per
+// sample, same miss as that function's own.
+DSY_ITCM_TEXT
 float GranularEngine::ReadHann(float phase01) const
 {
     float pos  = Clampf(phase01, 0.f, 1.f) * (float)(kHannTableSize - 1);
@@ -680,6 +684,12 @@ void GranularEngine::TriggerGrainInCluster(GrainCluster& c, float read_pos, floa
     g.gain     = gain;
 }
 
+// Called up to kGrainsPerVoice*2 times per cluster (active + release
+// grains) per sample, from RenderCluster() (itself ITCM, see below) --
+// the actual per-grain buffer read/interpolation/windowing, same miss as
+// SampleSynth::RenderVoice()'s own (see its comment): a real, standalone
+// out-of-line function left out when the callers above it were tagged.
+DSY_ITCM_TEXT
 void GranularEngine::RenderGrain(Grain& g, float extra_gain, float& out_l, float& out_r) const
 {
     int   idx0 = (int)g.read_pos;
@@ -726,6 +736,10 @@ void GranularEngine::RenderGrain(Grain& g, float extra_gain, float& out_l, float
         g.active = false;
 }
 
+// Called twice per sample from Process() (itself ITCM) -- once for the
+// Grain layer's own cluster, once for Scan's -- same missed-callee
+// pattern as RenderGrain()'s own comment below.
+DSY_ITCM_TEXT
 void GranularEngine::RenderCluster(GrainCluster& c, float overlap_gain, int fill_count,
                                      float& out_l, float& out_r)
 {

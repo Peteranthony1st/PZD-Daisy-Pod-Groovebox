@@ -23,6 +23,14 @@ class Exp2 {
 
     // Q24 in, Q24 out
     static int32_t lookup(int32_t x);
+
+    // Same table as lookup(), but returns the PLAIN (non-Q24-scaled) value
+    // of 2^(x/2^24) -- lookup()'s own final step (`y >> (6 - (x>>24))`)
+    // only supports a base-2 exponent up to ~6 (bigger makes that a
+    // negative shift, undefined behavior); this supports any exponent from
+    // 0 up to ~29 instead, for callers whose own curve runs well past 6
+    // (see Dx7Note::compute()'s AMS branch, the one caller so far).
+    static uint32_t lookupRaw(int32_t x);
 };
 
 #define EXP2_LG_N_SAMPLES 10
@@ -44,6 +52,24 @@ int32_t Exp2::lookup(int32_t x) {
   int32_t y = y0 + (((int64_t)dy * (int64_t)lowbits) >> SHIFT);
   return y >> (6 - (x >> 24));
 }
+
+#ifdef EXP2_INLINE
+inline
+uint32_t Exp2::lookupRaw(int32_t x) {
+  const int32_t SHIFT = 24 - EXP2_LG_N_SAMPLES;
+  int32_t lowbits = x & ((1 << SHIFT) - 1);
+  int32_t x_int = (x >> (SHIFT - 1)) & ((EXP2_N_SAMPLES - 1) << 1);
+  int32_t dy = exp2tab[x_int];
+  int32_t y0 = exp2tab[x_int + 1];
+
+  // Same Q30 mantissa (2^30..2^31, representing 2^frac) lookup()'s own y
+  // is -- scaled here to a plain integer value of 2^(ipart+frac) instead
+  // of lookup()'s own Q24-scaled one, since ipart can be well past 6.
+  int32_t mant  = y0 + (((int64_t)dy * (int64_t)lowbits) >> SHIFT);
+  int32_t ipart = x >> 24;
+  return ipart >= 30 ? (uint32_t)mant << (ipart - 30) : (uint32_t)mant >> (30 - ipart);
+}
+#endif
 #endif
 
 class Tanh {

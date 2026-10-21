@@ -20,7 +20,14 @@
 #include "exp2.h"
 #include "fm_op_kernel.h"
 #include "EngineMsfa.h"
+#include "../itcm.h"
 
+// Called once per active voice per quantum from DexedSynth::RenderQuantum()
+// (dexed_synth.cpp, itself DSY_ITCM_TEXT) -- the real per-operator FM render
+// dispatch, so this needs to live in ITCM too, not get called out to
+// QSPIFLASH from an ITCM caller every single quantum. See itcm.h's own
+// comment.
+DSY_ITCM_TEXT
 void EngineMsfa::render(int32_t *output, FmOpParams *params, int32_t algorithm, int32_t *fb_buf, int32_t feedback_shift) {
   const int32_t kLevelThresh = 1120;
   const FmAlgorithm alg = algorithms[algorithm];

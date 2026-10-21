@@ -34,6 +34,11 @@ void TempoClock::Init(float sample_rate)
     click_decay_coeff_ = expf(-1.f / (0.012f * sample_rate_));
 }
 
+// Called once per sample from Process() (itself ITCM, called once per
+// sample from main.cpp's AudioCallback) -- a real, standalone (confirmed
+// in the link map) miss, same pattern as everywhere else. See itcm.h's
+// own comment.
+DSY_ITCM_TEXT
 float TempoClock::SamplesPerBeat() const
 {
     return (60.f / bpm_) * sample_rate_;

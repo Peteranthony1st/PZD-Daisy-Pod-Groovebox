@@ -103,10 +103,14 @@ class DexedSynth
     // Process()'s doc comment) -- main.cpp needs this exact out_l/out_r
     // signal for more than one consumer (dry mix + the master scope).
     //
-    // Internally decouples this project's 48-sample audio block from
-    // msfa's native 64-sample rendering quantum (_N_ in msfa/synth.h,
-    // not a multiple of 48) via a small staging buffer -- see
-    // dexed_synth.cpp's own comment.
+    // Still goes through a small staging buffer (stage_f_/stage_pos_,
+    // see dexed_synth.cpp's own comment) even though this project's
+    // audio block size (64, main.cpp's hw.SetAudioBlockSize() call) now
+    // exactly matches msfa's own native rendering quantum (_N_ in
+    // msfa/synth.h) -- the staging logic itself is written generically
+    // against whatever `size` is, so it stays correct (and, at this
+    // exact size, never carries a leftover between calls) regardless of
+    // what the outer block size happens to be.
     void Process(size_t size, float* out_l, float* out_r, float* reverb_send_l,
                  float* reverb_send_r, float* delay_send_l, float* delay_send_r);
 

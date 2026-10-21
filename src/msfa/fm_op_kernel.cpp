@@ -20,6 +20,7 @@
 #include "synth.h"
 #include "sin.h"
 #include "fm_op_kernel.h"
+#include "../itcm.h"
 
 #ifdef __ARM_NEON
 #include <arm_neon.h>
@@ -150,6 +151,12 @@ void neon_fm_kernel(const int32_t *in, const int32_t *busin, int32_t *out, int32
 }
 #endif
 
+// compute()/compute_pure()/compute_fb() are the actual per-sample oscillator
+// loop (_N_ iterations of a Sin::lookup() + Q24 multiply each), called per
+// active operator per voice per quantum from EngineMsfa::render() -- the
+// single hottest code in the whole Dexed engine. Needs to live in ITCM
+// alongside render() itself, not just the caller. See itcm.h's own comment.
+DSY_ITCM_TEXT
 void FmOpKernel::compute(int32_t *output, const int32_t *input,
                          int32_t phase0, int32_t freq,
                          int32_t gain1, int32_t gain2, bool add) {
@@ -180,6 +187,7 @@ void FmOpKernel::compute(int32_t *output, const int32_t *input,
 #endif
   }
 
+DSY_ITCM_TEXT
 void FmOpKernel::compute_pure(int32_t *output, int32_t phase0, int32_t freq,
                               int32_t gain1, int32_t gain2, bool add) {
   int32_t dgain = (gain2 - gain1 + (_N_ >> 1)) >> LG_N;
@@ -212,6 +220,7 @@ void FmOpKernel::compute_pure(int32_t *output, int32_t phase0, int32_t freq,
 #define noDOUBLE_ACCURACY
 #define HIGH_ACCURACY
 
+DSY_ITCM_TEXT
 void FmOpKernel::compute_fb(int32_t *output, int32_t phase0, int32_t freq,
                             int32_t gain1, int32_t gain2,
                             int32_t *fb_buf, int32_t fb_shift, bool add) {

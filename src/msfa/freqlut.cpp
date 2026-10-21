@@ -24,6 +24,7 @@
 
 #include "freqlut.h"
 #include "synth.h"
+#include "../itcm.h"
 
 #define LG_N_SAMPLES 10
 #define N_SAMPLES (1 << LG_N_SAMPLES)
@@ -50,6 +51,11 @@ void Freqlut::init(FRAC_NUM sample_rate) {
 
 // Note: if logfreq is more than 20.0, the results will be inaccurate. However,
 // that will be many times the Nyquist rate.
+//
+// Called once per active operator per voice per quantum from Dx7Note::
+// compute() (itself ITCM) -- same reasoning as that function's own ITCM
+// comment.
+DSY_ITCM_TEXT
 int32_t Freqlut::lookup(int32_t logfreq) {
   int32_t ix = (logfreq & 0xffffff) >> SAMPLE_SHIFT;
 

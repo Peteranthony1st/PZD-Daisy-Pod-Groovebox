@@ -2729,33 +2729,93 @@ void Ui::ApplyKnobs()
 
 void Ui::UpdateLeds()
 {
-    // Led1: at-a-glance state of the cursor layer, visible without
-    // squinting at the OLED.
-    LayerState s = layers_[cursor_layer_].GetState();
-    switch(s)
+    // True hardware PWM (led1_green_pwm_/led1_blue_pwm_/led2_red_pwm_,
+    // set once by main.cpp's SetLedPwmChannels() -- see its own comment)
+    // instead of libDaisy's software-PWM RgbLed/Led::Update() path this
+    // function used to drive (fixed ~120Hz, Talbot-Plateau-limited at
+    // low duty -- only ever safe at full brightness, which is why this
+    // used to just call pod_->UpdateLeds() directly). Flat 40%/25% duty,
+    // no gamma correction -- just two levels, on or off. Null-guarded
+    // since these stay null for the brief window before main()'s setup
+    // reaches SetLedPwmChannels().
+    //
+    // Scope deliberately narrowed to what these 3 specific sub-pixels can
+    // show -- see led_pwm_tim3's own comment (main.cpp) for why only
+    // these 3 of the Pod's 6 RGB sub-pixels got hardware PWM at all; the
+    // other 3 (LED1-Red, LED2-Green, LED2-Blue) are simply never driven
+    // again and stay off. This replaces both LED1's old per-cursor-layer
+    // 7-state readout (Empty/ArmedCountIn/Recording/Overdubbing/
+    // ArmedOverdubCountIn/Playing/Paused) and LED2's old Bypass-on/off
+    // indicator -- a real loss of that information, not just a brightness
+    // change, kept deliberately simple for this specific hardware-PWM A/B
+    // rather than trying to cram the old 7-state meaning onto 2 colors.
+    if(!led1_green_pwm_ || !led1_blue_pwm_ || !led2_red_pwm_)
+        return;
+
+    constexpr float kLedPwmLevel      = 0.4f;
+    // Green reads a little brighter than blue at the same duty cycle
+    // (real, reported) -- its own slightly lower level rather than
+    // retuning the shared constant, since blue wasn't flagged.
+    constexpr float kLedPwmLevelGreen = 0.32f;
+    // Red reads brighter than green/blue at the same duty cycle (real,
+    // reported: "a little too bright" at 0.4) -- its own lower level
+    // rather than retuning the shared constant, since green/blue weren't
+    // flagged.
+    constexpr float kLedPwmLevelRed   = 0.25f;
+
+    // Led1: looper transport, collapsed to the 3 states that matter at a
+    // glance -- disabled (off), paused (blue), playing (green). Derived
+    // from each layer's own real LayerState, not a separate bookkeeping
+    // flag -- correctly shows "off" when every layer is still Empty
+    // (nothing recorded yet) instead of claiming "playing."
+    bool any_playing = false, any_paused = false;
+    for(int i = 0; i < num_layers_; i++)
     {
-        case LayerState::Empty: pod_->led1.Set(0.f, 0.f, 0.f); break;
-        case LayerState::ArmedCountIn: pod_->led1.Set(1.f, 0.4f, 0.f); break; // amber
-        case LayerState::Recording: pod_->led1.Set(1.f, 0.f, 0.f); break;
-        case LayerState::Overdubbing: pod_->led1.Set(1.f, 0.5f, 0.f); break;
-        // Same amber as ArmedCountIn -- it's the identical count-in wait,
-        // just from Playing/Paused instead of Empty.
-        case LayerState::ArmedOverdubCountIn: pod_->led1.Set(1.f, 0.4f, 0.f); break;
-        case LayerState::Playing: pod_->led1.Set(0.f, 1.f, 0.f); break;
-        case LayerState::Paused: pod_->led1.Set(0.f, 0.f, 0.6f); break;
+        LayerState s = layers_[i].GetState();
+        if(s == LayerState::Playing)
+            any_playing = true;
+        else if(s == LayerState::Paused)
+            any_paused = true;
+    }
+    if(!looper_enabled_)
+    {
+        led1_green_pwm_->Set(0.f);
+        led1_blue_pwm_->Set(0.f);
+    }
+    else if(any_playing)
+    {
+        led1_green_pwm_->Set(kLedPwmLevelGreen);
+        led1_blue_pwm_->Set(0.f);
+    }
+    else if(any_paused)
+    {
+        led1_green_pwm_->Set(0.f);
+        led1_blue_pwm_->Set(kLedPwmLevel);
+    }
+    else
+    {
+        // Nothing playing or paused -- every layer Empty, or mid-
+        // Recording/count-in (Led2 covers the recording case).
+        led1_green_pwm_->Set(0.f);
+        led1_blue_pwm_->Set(0.f);
     }
 
-    // Led2: steady Bypass on/off indicator (Home screen's Button2) -- was
-    // a metronome flash before, but that could only ever be as accurate
-    // as the main loop's call rate allows (see UpdateLeds()'s old comment
-    // history), and under load never quite landed on the beat. A plain
-    // on/off readout has no timing to get wrong.
-    if(bypass_)
-        pod_->led2.Set(1.f, 1.f, 1.f);
-    else
-        pod_->led2.Set(0.f, 0.f, 0.f);
-
-    pod_->UpdateLeds();
+    // Led2: one unified "something is actively recording" indicator --
+    // any loop layer actually recording/overdubbing (not just armed/
+    // counting in -- that's "about to," not "is"), or Grains' Capture
+    // pipeline mid-capture.
+    bool any_loop_recording = false;
+    for(int i = 0; i < num_layers_; i++)
+    {
+        LayerState s = layers_[i].GetState();
+        if(s == LayerState::Recording || s == LayerState::Overdubbing)
+        {
+            any_loop_recording = true;
+            break;
+        }
+    }
+    bool recording = any_loop_recording || (granular_capturing_ && *granular_capturing_);
+    led2_red_pwm_->Set(recording ? kLedPwmLevelRed : 0.f);
 }
 
 // --- Drawing --------------------------------------------------------------

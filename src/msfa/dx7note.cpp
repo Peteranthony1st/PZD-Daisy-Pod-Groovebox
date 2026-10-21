@@ -23,6 +23,7 @@
 #include "controllers.h"
 #include "dx7note.h"
 #include "porta.h"
+#include "../itcm.h"
 //#include <cmath>
 
 const int FEEDBACK_BITDEPTH = 8;
@@ -208,6 +209,35 @@ void Dx7Note::init(const uint8_t patch[156], int midinote, int velocity, int src
   porta_gliss_ = ctrls->values_[kControllerPortamentoGlissando];
 }
 
+// e^y == 2^(y * kLog2E) -- converts the AMS branch's curve below (a real
+// expf() call in upstream msfa, unchanged until now) into a Q24 base-2
+// exponent for Exp2::lookupRaw() instead, the one remaining libm
+// transcendental anywhere in Dexed's per-sample hot path (found by
+// comparing against a sibling msfa port -- Felucca's fm6_core.c -- that
+// had already made this exact swap). expf() lives in newlib-nano, outside
+// this project's own ITCM reach, so every call here was paying real
+// algorithmic cost AND QSPI wait states on top, for every operator with
+// AMS set, every quantum, for as long as that voice is held.
+//
+// sensamp (just above the one call site below) is a Q24 "0..1" value (both
+// operands of its own Q24*Q24>>24 multiply are themselves Q24 "0..1"
+// values), so the original `y = sensamp/262144*0.07 + 12.2` ranges from
+// 12.2 (sensamp=0) to 12.2 + 64*0.07 = 16.68 (sensamp=1<<24) -- the same
+// two float constants below, just split into a fixed base and a per-
+// sensamp coefficient so the per-call cost becomes one integer multiply
+// instead of a real exponential. See Exp2::lookupRaw()'s own comment
+// (msfa/exp2.h) for why the narrower Exp2::lookup() can't be reused here:
+// this exponent (in base 2) runs roughly 17.6..24.1, both ends well past
+// lookup()'s own safe range of ~6.
+constexpr double  kLog2E          = 1.4426950408889634;
+constexpr int32_t kAmsExpBaseQ24  = (int32_t)(12.2 * kLog2E * (double)(1 << 24) + 0.5);
+constexpr int64_t kAmsExpScaleQ16 = (int64_t)((0.07 / 262144.0) * kLog2E
+                                               * (double)(1 << 24) * 65536.0 + 0.5);
+
+// Called once per held/sounding voice per quantum from DexedSynth::
+// RenderQuantum() (itself ITCM) -- see EngineMsfa::render()'s own ITCM
+// comment for why everything in this call chain needs to be here too.
+DSY_ITCM_TEXT
 void Dx7Note::compute(int32_t *buf, int32_t lfo_val, int32_t lfo_delay, const Controllers *ctrls) {
   // ==== PITCH ====
   uint32_t pmd = pitchmoddepth_ * lfo_delay;  // Q32
@@ -275,9 +305,13 @@ void Dx7Note::compute(int32_t *buf, int32_t lfo_val, int32_t lfo_delay, const Co
       if (ampmodsens_[op] != 0) {
         uint32_t sensamp = (uint32_t)(((uint64_t) amd_mod) * ((uint64_t) ampmodsens_[op]) >> 24);
 
-        // TODO: mehhh.. this needs some real tuning.
-        //uint32_t pt = exp(((float)sensamp) / 262144 * 0.07 + 12.2);
-        uint32_t pt = EXP_FUNC(((float)sensamp) / 262144 * 0.07 + 12.2);
+        // TODO: mehhh.. this needs some real tuning (upstream's own
+        // comment, kept -- this curve's own shape is unchanged, still as
+        // loose/approximate as it always was). See kAmsExpBaseQ24's own
+        // comment just above compute() for the table-lookup swap.
+        int32_t  ams_exp_q24 = kAmsExpBaseQ24
+                               + (int32_t)(((int64_t)sensamp * kAmsExpScaleQ16) >> 16);
+        uint32_t pt = Exp2::lookupRaw(ams_exp_q24);
         uint32_t ldiff = (uint32_t)(((uint64_t)level) * (((uint64_t)pt << 4)) >> 28);
         level -= ldiff;
       }
@@ -361,6 +395,9 @@ void Dx7Note::update(const uint8_t patch[156], int midinote, int velocity, int p
 
 }
 
+// Called from DexedSynth::VoiceIsIdle() (itself ITCM) for every
+// non-held voice slot, every quantum.
+DSY_ITCM_TEXT
 void Dx7Note::peekVoiceStatus(VoiceStatus &status) {
   for (int i = 0; i < 6; i++) {
     status.amp[i] = Exp2::lookup(params_[i].level_in - (14 * (1 << 24)));

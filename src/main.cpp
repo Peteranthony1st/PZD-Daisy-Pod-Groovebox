@@ -34,6 +34,25 @@ using namespace daisy;
 
 DaisyPod hw;
 
+// True hardware PWM for 3 of the Pod's 6 RGB LED sub-pixels (LED1's Green/
+// Blue, LED2's Red) -- the STM32H750's own TIM3 peripheral toggles these
+// GPIOs in hardware every cycle, with zero CPU involvement per cycle (only
+// a register write when the duty cycle actually changes), genuinely
+// jitter-free unlike libDaisy's own software Led::Update() (a fixed-rate
+// GPIO toggle from ControlTimerCallback(), itself at a lower NVIC priority
+// than the audio DMA ISR and so not perfectly immune to its own timing
+// jitter -- see that callback's own comment, since removed, for the full
+// history). Only 3 of the 6 sub-pixels: per libDaisy's own per/pwm.h
+// documented pin table, LED1-Green(D19)/LED1-Blue(D18)/LED2-Red(D17) all
+// land on TIM3's own channels 1/2/4, but LED2-Green(D24) would need TIM5
+// -- already claimed by ControlTimerCallback's own TimerHandle below, and
+// per/pwm.h's own doc comment warns PWM and a TimerHandle can't share a
+// timer -- and LED1-Red(D20)/LED2-Blue(D23) aren't wired to any TIM3/4/5
+// channel libDaisy exposes at all. Those 3 unused sub-pixels are simply
+// never driven again after DaisyPod::InitLeds()'s own ClearLeds() leaves
+// them off, which is exactly the state this scheme wants for them anyway.
+daisy::PWMHandle led_pwm_tim3;
+
 using MyDisplay = daisy::OledDisplay<daisy::SSD130xI2c128x64Driver>;
 MyDisplay display;
 
@@ -872,7 +891,34 @@ int main(void)
     }
     hw.midi.StartReceive();
 
-    hw.SetAudioBlockSize(48);
+    // 64, not 48 -- exactly matches msfa's own fixed 64-sample
+    // rendering quantum (_N_ in msfa/synth.h), so DexedSynth::Process()'s
+    // staging buffer (stage_f_/stage_pos_) never carries an irregular
+    // leftover between calls the way 48 did (LCM(48,64)=192 -- a messy
+    // relationship). compute()'s own real cost is unchanged either way
+    // (750 calls/sec, tied to the quantum, not the outer block), traded
+    // for ~0.33ms more latency per block (1.333ms vs 1ms) -- but the
+    // real-world saving turned out bigger than that bookkeeping-cleanup
+    // framing alone predicted: a controlled same-content A/B (identical
+    // performance/sounds, only this value changed) measured 94% peak
+    // CPU at 48 vs 84% at 64, confirmed on hardware, not just fewer ISR
+    // entries on paper.
+    hw.SetAudioBlockSize(64);
+    // SetAudioBlockSize() above just called SetHidUpdateRates()
+    // internally, which reconfigures knob1/knob2's own smoothing-filter
+    // time constant from AudioCallbackRate() (sample_rate/block_size --
+    // now 750Hz). That's the WRONG rate for this project: knobs are
+    // actually always processed at a fixed, real 1kHz from
+    // ControlTimerCallback() (TIM5, see its own comment below),
+    // completely independent of the audio block size -- the two numbers
+    // only matched before by coincidence (1000Hz block-implied rate ==
+    // 1000Hz real poll rate at the old block size of 48). Left alone,
+    // this would silently make every knob read slightly less smoothed/
+    // twitchier than intended, for a reason that has nothing to do with
+    // the Dexed-alignment goal above -- re-assert the real rate
+    // explicitly instead of trusting what the library just computed.
+    hw.knob1.SetSampleRate(1000.f);
+    hw.knob2.SetSampleRate(1000.f);
 
     tempo.Init(hw.AudioSampleRate());
 
@@ -881,8 +927,17 @@ int main(void)
     // for both -- the peak instance's own periodic Reset() (see
     // kCpuPeakResetSeconds in AudioCallback()) is what actually keeps
     // its reading current, not a faster smoothing filter.
-    g_cpu_meter_avg.Init(hw.AudioSampleRate(), 48);
-    g_cpu_meter_peak.Init(hw.AudioSampleRate(), 48);
+    // hw.AudioBlockSize() (the real, currently-configured value), not a
+    // literal -- CpuLoadMeter::Init() needs the actual block size to
+    // know how much real time counts as "100% load" per block
+    // (secPerBlock = blockSize/sampleRate internally); a stale literal
+    // here silently miscalibrates every reading by whatever ratio the
+    // real block size has since changed to (this exact bug, caught
+    // after the 48->64 block size change: both calls still said `48`,
+    // inflating every reading by 64/48 =~1.33x -- a measurement error,
+    // not an actual CPU increase).
+    g_cpu_meter_avg.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
+    g_cpu_meter_peak.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
 
     for(int i = 0; i < kNumLayers; i++)
         layers[i].Init(buffer_l[i], buffer_r[i], kBuffSize, hw.AudioSampleRate(),
@@ -958,6 +1013,52 @@ int main(void)
             &dexed, g_undo_backup_l, g_undo_backup_r, &g_undo_owner_layer,
             &g_undo_backup_len);
     ui.ApplyStartupDefaults(); // no-op if nothing's been saved yet (see PerformanceStore::LoadPrefs())
+
+    // Hardware PWM setup for LED1-Green/LED1-Blue/LED2-Red -- see
+    // led_pwm_tim3's own comment above for which pins/why only these 3.
+    // Must run after hw.Init() (already happened, above) since
+    // DaisyPod::InitLeds() configures D17/D18/D19 as plain GPIO outputs;
+    // this reconfigures those same 3 pins to the timer's own alternate
+    // function, superseding that -- the corresponding daisy::Led
+    // sub-objects inside pod_->led1/led2 are simply never Update()'d
+    // again (Ui::UpdateLeds() no longer calls pod_->UpdateLeds() at all).
+    {
+        daisy::PWMHandle::Config pwm_cfg;
+        pwm_cfg.periph = daisy::PWMHandle::Config::Peripheral::TIM_3;
+        pwm_cfg.period = 0xff; // 8-bit duty resolution, plenty for a flat on/off level
+        led_pwm_tim3.Init(pwm_cfg);
+
+        // All 3 need Polarity::LOW: this Pod's RGB LEDs are wired
+        // active-low (see DaisyPod::InitLeds()'s own led1/led2.Init(...,
+        // /*invert=*/true) call) -- PWMHandle's own default is
+        // Polarity::HIGH ("pin high during the active/on fraction"),
+        // which on an active-low LED drives it ON during the fraction
+        // meant to be OFF and vice versa. Confirmed as a real bug on
+        // hardware: at the default polarity, Set(0.0) ("off") held the
+        // pin low 100% of the time, which an active-low LED reads as
+        // fully ON, permanently.
+        //
+        // Channel 1 (LED1-Green, D19/PA6) and Channel 4 (LED2-Red,
+        // D17/PB1) both default to exactly the pin we want -- only the
+        // polarity needs overriding, not the pin.
+        daisy::PWMHandle::Channel::Config ch1_cfg;
+        ch1_cfg.polarity = daisy::PWMHandle::Channel::Config::Polarity::LOW;
+        led_pwm_tim3.Channel1().Init(ch1_cfg);
+
+        daisy::PWMHandle::Channel::Config ch4_cfg;
+        ch4_cfg.polarity = daisy::PWMHandle::Channel::Config::Polarity::LOW;
+        led_pwm_tim3.Channel4().Init(ch4_cfg);
+
+        // Channel 2 defaults to PC7 (the Seed's own onboard LED) --
+        // must override the pin to PA7/D18 (LED1-Blue) too.
+        daisy::PWMHandle::Channel::Config ch2_cfg;
+        ch2_cfg.pin      = seed::D18;
+        ch2_cfg.polarity = daisy::PWMHandle::Channel::Config::Polarity::LOW;
+        led_pwm_tim3.Channel2().Init(ch2_cfg);
+
+        ui.SetLedPwmChannels(&led_pwm_tim3.Channel1(), &led_pwm_tim3.Channel2(),
+                              &led_pwm_tim3.Channel4());
+    }
 
     hw.StartAdc();
     hw.StartAudio(AudioCallback);

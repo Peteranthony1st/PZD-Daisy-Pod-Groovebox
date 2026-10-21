@@ -22,6 +22,7 @@
 
 #include "synth.h"
 #include "env.h"
+#include "../itcm.h"
 
 uint32_t Env::sr_multiplier = (1 << 24);
 
@@ -60,6 +61,10 @@ void Env::init(const int32_t r[4], const int32_t l[4], int32_t ol, int32_t rate_
   advance(0);
 }
 
+// Called 6x per voice (once per operator, even disabled ones) per quantum
+// from Dx7Note::compute() (itself ITCM) -- same reasoning as that
+// function's own ITCM comment.
+DSY_ITCM_TEXT
 int32_t Env::getsample() {
 #ifdef ACCURATE_ENVELOPE
   if (staticcount_) {
@@ -110,6 +115,9 @@ int32_t Env::scaleoutlevel(int32_t outlevel) {
   return outlevel >= 20 ? 28 + outlevel : levellut[outlevel];
 }
 
+// Called from getsample() on every envelope-stage transition (plus
+// keydown()/update()) -- same hot call chain as getsample() itself.
+DSY_ITCM_TEXT
 void Env::advance(int newix) {
   ix_ = newix;
   if (ix_ < 4) {
@@ -168,6 +176,8 @@ void Env::update(const int32_t r[4], const int32_t l[4], int32_t ol, int32_t rat
   }
 }
 
+// Called from Dx7Note::peekVoiceStatus() (itself ITCM), 6x per call.
+DSY_ITCM_TEXT
 void Env::getPosition(char *step) {
   *step = ix_;
 }

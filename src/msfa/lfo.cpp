@@ -22,6 +22,7 @@
 
 #include "sin.h"
 #include "lfo.h"
+#include "../itcm.h"
 
 uint32_t Lfo::unit_;
 
@@ -50,6 +51,10 @@ void Lfo::reset(const uint8_t params[6]) {
   sync_ = params[4] != 0;
 }
 
+// Both getsample() and getdelay() are called once per quantum from
+// DexedSynth::RenderQuantum() (itself ITCM) -- same reasoning as
+// EngineMsfa::render()'s own ITCM comment.
+DSY_ITCM_TEXT
 int32_t Lfo::getsample() {
   phase_ += delta_;
   int32_t x;
@@ -77,6 +82,7 @@ int32_t Lfo::getsample() {
   return 1 << 23;
 }
 
+DSY_ITCM_TEXT
 int32_t Lfo::getdelay() {
   uint32_t delta = delaystate_ < (1U << 31) ? delayinc_ : delayinc2_;
   uint64_t d = ((uint64_t)delaystate_) + delta;

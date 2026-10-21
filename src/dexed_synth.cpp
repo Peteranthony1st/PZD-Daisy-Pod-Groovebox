@@ -250,6 +250,10 @@ void DexedSynth::SetFoldTrim01(float v01)
     fold_trim_ = powf(fold_trim01_, 2.5f);
 }
 
+// Called from RenderQuantum() (ITCM) for every non-held voice slot, every
+// quantum -- a real, standalone (confirmed in the link map) miss, same
+// pattern as everywhere else. See itcm.h's own comment.
+DSY_ITCM_TEXT
 bool DexedSynth::VoiceIsIdle(int voice_index)
 {
     VoiceStatus st;

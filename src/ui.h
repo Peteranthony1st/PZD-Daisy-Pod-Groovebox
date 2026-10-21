@@ -100,6 +100,20 @@ class Ui
     // tap to save one).
     void ApplyStartupDefaults();
 
+    // Call once from main(), after both this Init() and the PWM
+    // peripheral itself are set up -- see main.cpp's led_pwm_tim3 for
+    // why only these 3 of the Pod's 6 RGB sub-pixels get true hardware
+    // PWM. UpdateLeds() (private, below) calls each channel's own Set()
+    // directly instead of the old pod_->led1/led2.Set() path.
+    void SetLedPwmChannels(daisy::PWMHandle::Channel* led1_green,
+                            daisy::PWMHandle::Channel* led1_blue,
+                            daisy::PWMHandle::Channel* led2_red)
+    {
+        led1_green_pwm_ = led1_green;
+        led1_blue_pwm_  = led1_blue;
+        led2_red_pwm_   = led2_red;
+    }
+
     // Call once per main-loop iteration (NOT from the audio callback).
     void Update(const UiControlEvents& events);
 
@@ -1227,6 +1241,14 @@ class Ui
     uint32_t last_scrub_tick_ms_ = 0; // for ScrubBy()'s turn-speed acceleration
 
     bool loop_paused_ = false; // see TogglePauseAll()
+
+    // Hardware PWM channels for LED1-Green/LED1-Blue/LED2-Red -- set once
+    // by main.cpp's SetLedPwmChannels() after led_pwm_tim3 is initialized.
+    // Null until then (UpdateLeds() guards every use), which only matters
+    // for the brief window before main()'s own setup reaches that call.
+    daisy::PWMHandle::Channel* led1_green_pwm_ = nullptr;
+    daisy::PWMHandle::Channel* led1_blue_pwm_  = nullptr;
+    daisy::PWMHandle::Channel* led2_red_pwm_   = nullptr;
 
     // --- Per-engine on/off (see IsGranularEnabled()).
     bool granular_enabled_ = false;
