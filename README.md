@@ -9,8 +9,9 @@ Pod](https://daisy.audio/products/pod), with an I2C OLED
 display added for a full on-device menu — live level/waveform display,
 per-layer filter/effects/reverb, tempo-locked count-in, and SD card
 save/load, all controlled from the Pod's two knobs, two buttons, and
-encoder. Also runs **Dexed** (a real 6-operator DX7 clone) and
-**Grains** (a granular synth) alongside the looper, both MIDI-played and
+encoder. Also runs **Dexed** (a real 6-operator DX7 clone), **Ensemble**
+(a divide-down string-machine/ensemble-organ synth), and **Grains** (a
+granular synth) alongside the looper — all three MIDI-played and
 independently switchable.
 
 The name, general concept, and file organization are based on
@@ -34,8 +35,9 @@ The name, general concept, and file organization are based on
   `main.cpp` to switch it.
 
 - **MIDI IN** (optional) — the Pod's built-in MIDI jack, used to play the
-  Dexed and Grains instruments described below. Standard 5-pin DIN or
-  TRS MIDI IN, whatever your controller uses; no extra wiring needed.
+  Dexed, Ensemble, and Grains instruments described below. Standard
+  5-pin DIN or TRS MIDI IN, whatever your controller uses; no extra
+  wiring needed.
 - **Micro SD Card** formatted to FAT32.
   Inserted into the pod to save and load your files. This is a
   hand-wired socket with no card-detect pin, so swapping cards while the
@@ -225,6 +227,39 @@ https://github.com/user-attachments/assets/e26f79ab-3f50-418c-a878-0a9233a4e0d5
 Clav DNS:
 https://github.com/user-attachments/assets/ee4c3608-c0e0-40c6-aa30-00c4e3d72f9b
 
+**Ensemble** — a MIDI-played, 8-voice divide-down string-machine/
+ensemble-organ instrument (`Global:Ensemble`), the same lineage as the
+real ARP Solina String Ensemble and the classic 1970s string machines it
+inspired. Off by default; switch it on from `Global:Ensemble`,
+independent of Dexed and Grains — all three can run together.
+- **7 real drawbars**, Hammond-style: Saw8', Sq8', Saw4', Sq4', Saw2',
+  Sq2', Saw1' (organ pipe-footage naming — lower numbers are lower
+  octaves). Knob 1 selects which drawbar, Knob 2 sets its level — mix
+  saws and squares freely to dial in anything from a warm, fundamental-
+  heavy pad to a bright, buzzy ensemble tone.
+- **Chorus** (depth/rate) gives it real stereo width, the same role the
+  Solina's own bucket-brigade chorus plays in the original instrument.
+- Its own filter, ADSR envelope (with the same live envelope graphic
+  Grains' own ADSR page has), output level/pan, reverb/delay send, and a
+  live oscilloscope on most pages so every knob visibly changes the
+  actual waveform.
+- **Pitch bend** (±2 semitones) always bends every held note; the
+  **mod wheel** is off by default and, once you pick a target (Chorus
+  Depth, Output Level, or Filter Cutoff — cycled with Button 1 on its
+  own MIDI page), pushes that parameter up from wherever its own knob
+  already has it set, rather than sweeping an independent range —
+  picking Filter Cutoff only does anything once Filter Mode is already
+  on.
+- Its own `MIDI` page sets which incoming channel it listens to (Omni
+  or 1-16), independent of Dexed's and Grains' own channels. Like both
+  of those, it also responds to MIDI CC 123/120 (All Notes Off/All
+  Sound Off) — and toggling it off and back on from `Global:Ensemble`
+  forces any stuck note to release too, a manual panic button that
+  doesn't depend on your controller sending that message at all.
+- 8 bundled factory presets to start from (Warm Pad, Bright Ensemble,
+  Organ, Thin Strings, Sub Swell, Chorus Lead, Mellow Choir, Bright
+  Pluck), plus auto-numbered save slots for your own.
+
 **Grains** — a MIDI-played, monophonic granular instrument
 (`Global:Granular`), also running alongside the looper. Capture audio
 either by recording live input directly (also picks up Dexed's own
@@ -260,30 +295,34 @@ Dexed's own channel.
 Grains demo:
 https://github.com/user-attachments/assets/8aa7bd86-f749-4e34-a360-c5dd3af774d0
 
-**Recording Dexed or Grains into a loop layer** — playing either
+**Recording Dexed, Ensemble, or Grains into a loop layer** — playing any
 instrument while a layer is actively recording/overdubbing captures its
 live sound directly into the take, mixed with your physical input, with
 no patch cable needed.
 
-**CPU tips** — the Looper, Dexed, and Grains are all independently
-switchable (`Global:Looper`/`Global:Dexed`/`Global:Granular`), and each
-toggle is a real CPU lever, not just a mute: turning an engine off skips
-its processing entirely, not just its output. Running all three at once
-with reverb/delay active on several of them is the heaviest realistic
-combination this hardware handles — worth keeping in mind if you're
-pushing 4 layers, both instruments, and effects all together.
+**CPU tips** — the Looper, Dexed, Ensemble, and Grains are all
+independently switchable (`Global:Looper`/`Global:Dexed`/
+`Global:Ensemble`/`Global:Granular`), and each toggle is a real CPU
+lever, not just a mute: turning an engine off skips its processing
+entirely, not just its output. Ensemble itself is cheap — 8 voices plus
+its shared chorus measured at only ~19-23% peak CPU in isolation — but
+running everything at once with reverb/delay active on several of them
+is still the heaviest realistic combination this hardware handles —
+worth keeping in mind if you're pushing 4 layers, all three
+instruments, and effects all together.
 
-A workflow that keeps CPU headroom on your side: record your Dexed and
-Grains parts into loop layers first, **then switch those engines off**
-once you've got the takes you want — you get their CPU share back
-immediately. Save dialing in reverb/delay for last, once you know what's
-actually being kept, rather than running effects continuously while
-you're still auditioning sounds.
+A workflow that keeps CPU headroom on your side: record your Dexed,
+Ensemble, and Grains parts into loop layers first, **then switch those
+engines off** once you've got the takes you want — you get their CPU
+share back immediately. Save dialing in reverb/delay for last, once you
+know what's actually being kept, rather than running effects
+continuously while you're still auditioning sounds.
 
-The Looper can also be switched off entirely while still playing Dexed
-and/or Grains live — they don't depend on it at all, and Bypass (live
-mic monitoring) keeps working too, so you can jam with Dexed/Grains plus
-a live mic with the whole looper switched off and using none of its CPU.
+The Looper can also be switched off entirely while still playing Dexed,
+Ensemble, and/or Grains live — none of them depend on it at all, and
+Bypass (live mic monitoring) keeps working too, so you can jam with any
+combination of them plus a live mic with the whole looper switched off
+and using none of its CPU.
 
 Dexed now skips its own idle voice slots instead of always computing
 all 10 — a real, free CPU saving for sparse/single-note playing. A full
@@ -304,14 +343,15 @@ the ceiling is much further away than it used to be.
 
 **Mixer** — one screen (`Global:Mixer`, opened by clicking the encoder
 there) with Volume/Pan/Reverb-Send for all 4 loop layers, Grains, Dexed,
-and Bypass, plus Volume/Reverb-Size for the final Master bus, ending in
-a live oscilloscope of the actual output mix. Each channel also shows a
-real-time Peak meter alongside its Vol/Rev bars, with a clip indicator
-(a brief hold, not just instant) that lights up if that channel pushes
-past nominal full-scale — useful for checking levels before you record,
-since there's no other level feedback anywhere else in the UI. Rotate
-the encoder to step through each channel in turn; `Global:Mixer` itself
-shows an at-a-glance overview grid of all 8 channels' live Peak levels,
+Ensemble, and Bypass, plus Volume/Reverb-Size for the final Master bus,
+ending in a live oscilloscope of the actual output mix. Each channel
+also shows a real-time Peak meter alongside its Vol/Rev bars, with a
+clip indicator (a brief hold, not just instant) that lights up if that
+channel pushes past nominal full-scale — useful for checking levels
+before you record, since there's no other level feedback anywhere else
+in the UI. Rotate the encoder to step through each channel in turn;
+`Global:Mixer` itself shows an at-a-glance overview grid of all 9
+channels' live Peak levels,
 plus a live CPU meter in its own footer (smoothed average and a peak
 reading that quietly rolls over every ~10 seconds, so changing a
 setting shows its own fresh peak again quickly instead of staying
@@ -320,9 +360,10 @@ budget specifically, not the whole system (display/MIDI/UI overhead
 isn't included).
 
 **SD card management** — `Global:SdMgmt` lets you browse either of 2
-save categories (Performances/Grains Presets — Dexed Presets aren't
-covered by this screen yet, a known gap; remove one by deleting its
-`DEXP/PRESnnn.DAT` file directly on a computer instead) and Duplicate or
+save categories (Performances/Grains Presets — Dexed and Ensemble
+Presets aren't covered by this screen yet, a known gap; remove one by
+deleting its `DEXP/PRESnnn.DAT`/`ENSP/PRESnnn.DAT` file directly on a
+computer instead) and Duplicate or
 Delete individual files directly on the card, without needing a
 computer. Deleting a file automatically closes the gap left behind —
 every higher-numbered file in that category shifts down to keep the
@@ -345,13 +386,13 @@ freed.
 - **Rotate** the encoder: on Home, moves between layers; on any other
   page, cycles through that page's sub-pages.
 - **Click** the encoder: from Home, opens the selected layer's pages; on
-  `Global:Dexed`/`Global:Granular`/`Global:Mixer`, drills into
-  that instrument/mixer's own screen; on any Dexed or
-  Grains page, mutes/unmutes all 4 loop layers, same as every other
-  Global page's click. On the Mixer screen itself, rotate steps through
-  channels instead of pages (see below).
+  `Global:Dexed`/`Global:Ensemble`/`Global:Granular`/`Global:Mixer`,
+  drills into that instrument/mixer's own screen; on any Dexed,
+  Ensemble, or Grains page, mutes/unmutes all 4 loop layers, same as
+  every other Global page's click. On the Mixer screen itself, rotate
+  steps through channels instead of pages (see below).
 - **Long-press** the encoder: from Home, opens Global settings; from
-  anywhere else (including Dexed, Grains, and Mixer), goes
+  anywhere else (including Dexed, Ensemble, Grains, and Mixer), goes
   back to Home.
 
 Both knobs and both buttons are "soft" — what they do depends on which
@@ -437,6 +478,7 @@ Export gets baked into the file on purpose.
 | Global: SD Mgmt | Scroll (folder or file list) | — | Tap = drill in/back, Hold 800ms = Duplicate | Hold 1500ms = Delete |
 | Global: Export | — | — | Tap = Export, native 48kHz ("Studio") | Tap = Export, 44.1kHz for MicroDexed ("CD") |
 | Global: Dexed | — | — | Toggle Dexed on/off (off by default) | — (push encoder to enter Screen::Dexed) |
+| Global: Ensemble | — | — | Toggle Ensemble on/off (off by default) | — (push encoder to enter Screen::Ensemble) |
 | Global: Granular | — | — | Toggle Grains on/off | — (push encoder to enter Screen::Granular) |
 | Global: Looper | — | — | Toggle the whole 4-layer looper on/off | — |
 | Global: Mixer | — | — | — | — (push encoder to enter the Mixer screen) |
@@ -484,6 +526,24 @@ A short encoder click here returns to Screen::Dexed's own Advanced
 page; long-press still goes all the way to Home, same as everywhere
 else. The real DX7 operator number (1-6) is always shown in the title.
 
+**Ensemble (`Screen::Ensemble`, rotate to cycle pages)**
+
+| Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
+|---|---|---|---|---|
+| Registration | Select drawbar (0-6) | Level of the selected drawbar | — | — |
+| Env | Attack / Sustain | Decay / Release | — | Toggle AD/SR |
+| Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
+| Filter | Cutoff | Resonance | Cycle filter mode | — |
+| Mix | Output level | Pan | — | — |
+| FX | Reverb send / Delay send | Shared reverb size / delay time | — | Toggle Reverb/Delay |
+| MIDI | MIDI channel (Omni, 1-16) | — | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
+| Preset | Top: Files/New. Files → combined factory+user list | — | Save / Back | Select (top) / Tap: preview, Hold: confirm |
+
+Clicking the encoder on any Ensemble page mutes/unmutes all 4 loop
+layers, same as every other instrument screen. The mod wheel's own
+target cycle (Button 1 on the MIDI page) defaults to Off — see
+**Ensemble** above for what each target does.
+
 **Grains (`Screen::Granular`, rotate to cycle pages)**
 
 | Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
@@ -507,13 +567,14 @@ layers.
 
 **Mixer (`Screen::Mixer`, rotate to step through channels)**
 
-Each of the 8 channels (Layer 1–4, Grains, Dexed ("DXD"), Bypass,
-Master) gets its own stop; rotating past the last one shows a live
-oscilloscope of the final output mix, then wraps back to Layer 1.
+Each of the 9 channels (Layer 1–4, Grains, Dexed ("DXD"), Ensemble
+("ESB"), Bypass, Master) gets its own stop; rotating past the last one
+shows a live oscilloscope of the final output mix, then wraps back to
+Layer 1.
 
 | Channel | Knob 1 | Knob 2 | Button 1 | Button 2 |
 |---|---|---|---|---|
-| Layer 1–4 / Grains / Dexed / Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
+| Layer 1–4 / Grains / Dexed / Ensemble / Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
 | Master | Volume | Reverb size | — | — |
 
 ## Building and flashing

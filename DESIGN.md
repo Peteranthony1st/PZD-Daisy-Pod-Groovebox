@@ -97,7 +97,7 @@ Home ──(click layer)──► Layer[n] ──(rotate)──► Status / Gain
   │                                                     (long-press ⤴ back to Home)
   └──(long-press)──► Global ──(rotate)──► Tempo / Speed / Filter / GLB-FX /
        │                                    File / SdMgmt / Export / Dexed /
-       │                                    Granular / Looper / Mixer
+       │                                    Ensemble / Granular / Looper / Mixer
        │                                       (long-press ⤴ back to Home)
        ├──(click on Global:Dexed)──► Screen::Dexed ──(rotate)──► Algo / Feedback /
        │                                                   Vibrato / Brightness /
@@ -107,20 +107,26 @@ Home ──(click layer)──► Layer[n] ──(rotate)──► Status / Gain
        │                                                        (long-press ⤴ back to Home)
        │                                                   Advanced ──(click)──►
        │                                                   Screen::DexedOperator
+       ├──(click on Global:Ensemble)──► Screen::Ensemble ──(rotate)──► Registration /
+       │                                                     Env / Ensemble (Chorus) /
+       │                                                     Filter / Mix / FX / MIDI / Preset
+       │                                                        (click ⤴ mute loop layers)
+       │                                                        (long-press ⤴ back to Home)
        ├──(click on Global:Granular)──► Screen::Granular ──(rotate)──► Grain / Position /
        │                                                     Scan / ScanRange / Tune / ADSR /
        │                                                     Filter / Mix / GR-FX / Capture /
        │                                                     Trim / Preset
        │                                                        (click ⤴ mute loop layers)
        │                                                        (long-press ⤴ back to Home)
-       └──(click on Global:Mixer)──► Screen::Mixer ──(rotate)──► 8 channel stops, then
+       └──(click on Global:Mixer)──► Screen::Mixer ──(rotate)──► 9 channel stops, then
                                                                   a Scope stop, wrapping
                                                                      (long-press ⤴ back to Home)
 ```
 
-Dexed and Grains are fully independent (see *Per-engine on/off* below) —
-each has its own Global page, full screen, and Mixer channel, and either
-can be switched on/off without affecting the other.
+Dexed, Ensemble, and Grains are fully independent (see *Per-engine
+on/off* below) — each has its own Global page, full screen, and Mixer
+channel, and any of the three can be switched on/off without affecting
+the others.
 
 Both knobs and both buttons are "soft" — their function depends on
 whichever page is open, and it's always shown on the OLED's footer: two
@@ -156,6 +162,7 @@ Full control map:
 | Global: SD Mgmt | Folder select / file browse (same list, always "Scroll") | — | Tap = drill into folder / back up a level; hold 800ms = Duplicate the browsed file | Hold `kSdMgmtDeleteHoldMs` (1500ms) = Delete the browsed file |
 | Global: Export | — | — | Tap = render to native 48kHz WAV ("Studio") | Tap = render to 44.1kHz WAV for MicroDexed ("CD") |
 | Global: Dexed | — | — | Toggle Dexed on/off | — |
+| Global: Ensemble | — | — | Toggle Ensemble on/off | — |
 | Global: Granular | — | — | Toggle Grains on/off | — |
 | Global: Looper | — | — | Toggle the whole 4-layer loop system on/off (also resets `TempoClock`'s phase) | — |
 | Global: Mixer | — (entry point + at-a-glance overview grid, see *Screen::Mixer* below) | — | — | — |
@@ -179,6 +186,14 @@ Full control map:
 | DexedOperator: AmpModSens | Amp/EG mod wheel sensitivity (0-3) | — | Cycle operator (1-6) | — |
 | DexedOperator: VelocitySens | Key velocity sensitivity (0-7) | — | Cycle operator (1-6) | — |
 | DexedOperator: KeybRateScale | Keyboard rate scaling (0-7) | — | Cycle operator (1-6) | — |
+| Ensemble: Registration | Select drawbar (0-6, browsed directly, no pickup) | Level of the selected drawbar | — | — |
+| Ensemble: Env | Attack (or Sustain) | Decay (or Release) | — | Toggle AD/SR |
+| Ensemble: Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
+| Ensemble: Filter | Cutoff | Resonance | Cycle filter mode | — |
+| Ensemble: Mix | Output level | Pan | — | — |
+| Ensemble: FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | — | Toggle Reverb/Delay target |
+| Ensemble: MIDI | MIDI channel (Omni, 1-16) | — | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
+| Ensemble: Preset | Top: Files/Load New. Files → combined [factory][user] list | — | Save / Back | Select (top) / Tap: preview, Hold 800ms: confirm |
 | Granular: Grain | Size (or Grain's own Gap) | Fill (or Jitter) | Knobs → Size+Fill | Knobs → Gap+Jitter |
 | Granular: Position | Position (Grain layer's fixed anchor) | Direction (Grain's own, Forward/Reverse/Random) | Cycle Rhythm pattern | Cycle Speed |
 | Granular: Scan | Scan speed/direction (dead-zone-centered, off at center) | Scan's own Fill | Toggle Bounce/Wrap | Cycle Scan's own Direction |
@@ -192,7 +207,7 @@ Full control map:
 | Granular: Capture | — (Import mode: browse .wav files) | — | Cycle source: Direct Record → Layer 1..N → Import | Hold = record (Direct) or capture/import (Layer/Import) |
 | Granular: Trim | Trim start | Trim end | Play trimmed section | — |
 | Granular: Preset | Same Files/New chooser and browse-list convention as Global:File | — | Same Save/Load/Back convention as Global:File | Same hold-to-confirm convention as Global:File (live progress bar — audio-inclusive) |
-| Mixer: Layer/Grains/Dexed/Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
+| Mixer: Layer/Grains/Dexed/Ensemble/Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
 | Mixer: Master | Volume | Reverb size | — | — |
 
 BPM/Bars are locked once any layer holds a recording, and the knobs stop
@@ -826,8 +841,9 @@ center) on boot and after `Load()`, never persisted to `PERF/*.DAT`.
 
 ## MIDI
 
-Two MIDI-played instruments — Dexed and Grains, both described below —
-run alongside the looper, driven by the Pod's built-in MIDI IN jack
+Three MIDI-played instruments — Dexed, Ensemble, and Grains, all
+described below — run alongside the looper, driven by the Pod's built-in
+MIDI IN jack
 (`hw.midi`, a `MidiUartHandler` on the Pod's UART). One real hardware
 quirk this needed working around: libDaisy's default MIDI transport
 config claims the same physical pin as the encoder's own click button
@@ -848,58 +864,106 @@ short blip. Pitch bend updates read more naturally at this steady rate
 too, for the same reason.
 
 - **NoteOn/NoteOff** are filtered per-engine by **MIDI channel**
-  (`DexedParamPage::MIDI`/`GranularParamPage::MIDI`, each engine's own
-  new page — K1 only, quantized across 17 buckets: Omni + channels 1-16,
-  same knob-quantized idiom the Bars knob already uses) before reaching
-  either engine — `Ui::dexed_midi_channel_`/`granular_midi_channel_`
-  (`-1` = Omni, 0-15 = that 0-indexed channel, matching how libDaisy's
-  own `MidiEvent` fields already arrive 0-indexed) live on `Ui`, not
-  inside `DexedSynth`/`GranularEngine` — a routing/IO setting, not a
-  sound parameter, same reasoning `reverb_size01_` and friends are
+  (`DexedParamPage::MIDI`/`EnsembleParamPage::MIDI`/`GranularParamPage::MIDI`,
+  each engine's own page — K1 only, quantized across 17 buckets: Omni +
+  channels 1-16, same knob-quantized idiom the Bars knob already uses)
+  before reaching any engine — `Ui::dexed_midi_channel_`/
+  `ensemble_midi_channel_`/`granular_midi_channel_` (`-1` = Omni, 0-15 =
+  that 0-indexed channel, matching how libDaisy's own `MidiEvent` fields
+  already arrive 0-indexed) live on `Ui`, not inside
+  `DexedSynth`/`EnsembleSynth`/`GranularEngine` — a routing/IO setting,
+  not a sound parameter, same reasoning `reverb_size01_` and friends are
   already owned by `Ui` and just read every poll rather than pushed into
-  an engine. `main.cpp`'s MIDI block reads both channels once per poll
-  (not once per event, since they can only change between UI redraws
-  anyway) and gates each of NoteOn/NoteOff's two forwarding calls
-  independently — Omni matches every channel, otherwise the event's own
-  channel must match exactly, so Dexed and Grains can each listen on
-  their own channel, the same channel as each other, or either stay on
-  Omni. Playing a note still only reaches an engine that's actually
-  enabled (see *Per-engine on/off* below) regardless of channel.
+  an engine. `main.cpp`'s MIDI block reads all three channels once per
+  poll (not once per event, since they can only change between UI
+  redraws anyway) and gates each of NoteOn/NoteOff's three forwarding
+  calls independently — Omni matches every channel, otherwise the
+  event's own channel must match exactly, so all three engines can each
+  listen on their own channel, the same channel as each other, or any
+  stay on Omni. Playing a note still only reaches an engine that's
+  actually enabled (see *Per-engine on/off* below) regardless of
+  channel.
 - **Pitch bend** (±2 semitones, the MIDI standard default) feeds Dexed
-  — Grains has no pitch bend input. Gated by Dexed's own MIDI channel
-  the same way NoteOn/NoteOff are.
-- **Mod wheel** (CC1) feeds Dexed's own vibrato (real DX7 LFO pitch-mod
-  depth, gated by the wheel same as real DX7 hardware) — Grains has no
-  mod wheel input. Also gated by Dexed's own MIDI channel.
-- Both channels persist exactly like the Dattorro reverb parameters did
-  when they were added: per-performance (`FileHeader`, `kFileVersion`
-  13) and as a startup default (`PREFS.DAT`) — see *Save/load* below for
-  the version chain. Default Omni for both, so an existing v11/v12
-  performance or prefs file loads with every engine still listening to
-  everything, matching its pre-upgrade behavior exactly.
+  and Ensemble — Grains has no pitch bend input. `EnsembleSynth::
+  SetPitchBend14bit()` deliberately matches Dexed's own range/raw-14-bit
+  convention rather than inventing a second one, and re-applies the
+  current bend to every currently-held voice's real frequency on every
+  update, not just newly-struck notes, so bending while a chord rings
+  bends the whole chord, same as any real synth. Gated by each engine's
+  own MIDI channel the same way NoteOn/NoteOff are.
+- **Mod wheel** (CC1): Dexed's own target is always one of Pitch/Amp/EG
+  Bias (`DexedSynth::ModWheelTarget`, no Off state — real DX7 hardware
+  always routes the wheel somewhere). Ensemble's own target
+  (`EnsembleSynth::ModWheelTarget`, cycled by Button 1 on its own MIDI
+  page) is a deliberately different shape: **Off by default**, and once
+  a target (Chorus Depth / Output Level / Filter Cutoff) is picked, the
+  wheel pushes that parameter UP from whatever its own knob already set
+  toward 1.0 (`effective = base + wheel01*(1-base)`) rather than
+  sweeping an independent range of its own — wheel=0 always reads as
+  "unchanged," matching whichever knob setting is already dialed in. A
+  real, deliberate design choice made explicit mid-session: an earlier
+  draft had the Filter Cutoff target force Filter Mode on (so the wheel
+  would always audibly do something even with the Filter page's own
+  Mode still at Off) — rejected in favor of "the wheel always modulates
+  whatever's already dialed in, never overrides an independent setting
+  on its own," so Filter Cutoff genuinely does nothing unless Filter
+  Mode is already something other than Off. Grains has no mod wheel
+  input. Also gated by each engine's own MIDI channel.
+- **MIDI CC 123 (All Notes Off) / CC 120 (All Sound Off)**: added after
+  a real, confirmed-on-hardware stuck-note report using an Akai MPK Mini
+  Plus's own arpeggiator (see *Ensemble*'s own section below for the
+  actual root cause, which turned out to be a real bug in
+  `daisysp::Adsr`, not a MIDI-handling gap at all) — `AllNotesOff()` now
+  exists on `DexedSynth`/`EnsembleSynth`/`GranularEngine` alike (same
+  class of real-world need: a controller/arpeggiator that doesn't
+  reliably send a matching NoteOff for every NoteOn, most commonly the
+  very last note when it stops or a key releases mid-cycle), gated by
+  each engine's own MIDI channel the same way NoteOn/NoteOff are.
+  Toggling an engine's own Global on/off switch (see *Per-engine on/off*
+  below) also calls its `AllNotesOff()` on every flip now, independent
+  of MIDI entirely — a manual "panic" workflow that doesn't depend on
+  the controller sending this message at all.
+- All three channels persist exactly like the Dattorro reverb parameters
+  did when they were added: per-performance (`FileHeader`, `kFileVersion`
+  14) and as a startup default (`PREFS.DAT`) — see *Save/load* below for
+  the version chain. Default Omni for all three, so an existing v11/v12/
+  v13 performance or prefs file loads with every engine still listening
+  to everything, matching its pre-upgrade behavior exactly.
 
 ## Per-engine on/off
 
-`Global:Dexed`/`Global:Granular`/`Global:Looper` each carry a plain
-Button-1-tap on/off toggle (`dexed_enabled_`/`granular_enabled_`/
-`looper_enabled_`) — a real CPU lever, not just a mute:
-`AudioCallback()` skips calling that engine's `Process()` entirely while
-disabled and writes silence instead, so someone using only Grains (say)
-genuinely gets Dexed's own CPU share back, not just its silence.
+`Global:Dexed`/`Global:Ensemble`/`Global:Granular`/`Global:Looper` each
+carry a plain Button-1-tap on/off toggle (`dexed_enabled_`/
+`ensemble_enabled_`/`granular_enabled_`/`looper_enabled_`) — a real CPU
+lever, not just a mute: `AudioCallback()` skips calling that engine's
+`Process()` entirely while disabled and writes silence instead, so
+someone using only Grains (say) genuinely gets Dexed's and Ensemble's
+own CPU share back, not just their silence. Every one of these toggles
+also calls that engine's own `AllNotesOff()` on every flip, not just
+disabling — see *MIDI*'s own CC 123/120 entry above for why: a stale
+held note from before an OFF→ON flip would otherwise start sounding
+again the instant `Process()` resumes, with no NoteOn of its own to
+explain it (MIDI dispatch still updates an engine's held-note state
+while it's "disabled," only `Process()` itself is gated by the toggle).
 Switching the looper off also resets `TempoClock`'s phase (bar/beat
 position, count-in state, click envelope) back to bar 1 beat 1, so
 turning it back on always resumes cleanly rather than picking up
-mid-phase from wherever it happened to be frozen. Both default **off** on
-boot — a real toggle exists for each, so there's no reason for either to
-be making sound before it's asked to.
+mid-phase from wherever it happened to be frozen. All three instrument
+toggles default **off** on boot — a real toggle exists for each, so
+there's no reason for any of them to be making sound before it's asked
+to.
 
-Dexed and Grains are fully independent — no mutex, unlike the earlier
-Pad Synth/Fm Synth pair they replaced (which shared one "melodic voice"
-role and one Mixer channel, and were kept mutually exclusive as a
-result). Dexed's own real 6-operator DX7 emulation made both of those
-from-scratch approximations redundant at once rather than needing a
-third alongside them, so there's no remaining case where two competing
-melodic engines need to be kept from overlapping.
+Dexed, Ensemble, and Grains are fully independent — no mutex, unlike the
+earlier Pad Synth/Fm Synth pair they replaced (which shared one
+"melodic voice" role and one Mixer channel, and were kept mutually
+exclusive as a result). Dexed's own real 6-operator DX7 emulation made
+both of those from-scratch approximations redundant at once rather than
+needing a third alongside them; Ensemble (added later, see its own
+section below) is a third, fully independent voice again rather than a
+return to that old shared-role arrangement — a divide-down string-
+ensemble instrument occupies a genuinely different sonic role from
+either Dexed's FM synthesis or Grains' granular processing, so there's
+still no case where two of the three need to be kept from overlapping.
 
 ## Dexed (Screen::Dexed)
 
@@ -1335,9 +1399,11 @@ independent of the loop layers) was extended the same way, to also
 include Dexed's generated audio (not Grains' own — that would be a
 self-capture feedback loop).
 
-**Reverb never gets recorded, for either instrument -- not a bug**: a
+**Reverb never gets recorded, for any instrument -- not a bug**: a
 real user question ("if reverb is active on Dexed, why doesn't it
-record with that reverb?"). `mixed_in` above is built entirely from dry
+record with that reverb?") — the same principle applies identically to
+Ensemble's own Reverb Send, added later, since it feeds the exact same
+shared bus the same way. `mixed_in` above is built entirely from dry
 per-source signals; the shared `DattorroReverb` bus (fed by every source's own
 Reverb Send, loop layers included) is computed once per sample and
 added straight into `out[]` afterward, never routed back into
@@ -1789,6 +1855,252 @@ with the same "did this actually change" guard on every write (see
 *Dexed*'s own note on `KnobPickUp()`'s lack of one, above) since these
 trigger the same expensive per-held-voice `Dx7Note::update()` path.
 
+## Ensemble (Screen::Ensemble / EnsembleSynth)
+
+A MIDI-played, 8-voice divide-down string-machine/ensemble-organ
+instrument (`ensemble_synth.h/.cpp`), added as a third fully independent
+voice alongside Dexed and Grains — not a return to the old Pad/Fm
+shared-role arrangement (see *Per-engine on/off* above).
+
+**Why a divide-down organ, and why this specific implementation**: a
+real physical-modeling alternative was tried and measured first —
+`daisysp::ModalVoice`/`StringVoice`, both already vendored and linked.
+Real, isolated hardware measurement ruled both out: `ModalVoice` alone
+(its own 24-mode resonator bank) cost 58% average/61% peak CPU for *one*
+voice; `StringVoice` alone cost 30%/39%. Neither could realistically
+support useful polyphony alongside the rest of this firmware. A genuine,
+fixable inefficiency was found in `Resonator::Process()` along the way
+(it recomputed a `cos()`-based filter coefficient and a `powf()` call
+every single sample regardless of whether `structure_`/`damping_` had
+actually changed, unlike `StringVoice`'s own correctly-gated equivalent)
+— documented here for the record, but the whole exploration was
+reverted wholesale once measurement closed the door on the approach
+itself, so that inefficiency was never actually fixed on any shipped
+branch. `daisysp::OscillatorBank` (ported from Mutable Instruments
+Plaits' own `string_synth_oscillator`, the same divide-down lineage as
+the real ARP Solina String Ensemble — see `README.md`'s own Thanks
+section) measured dramatically cheaper by comparison: 8 voices plus one
+shared `Chorus` cost only ~19-23% peak CPU in isolation, confirmed
+real, not estimated, before any of the rest of this engine was built
+around it.
+
+**Voice architecture**: `kMaxVoices = 8`, chosen directly from that
+measurement rather than carried over from another engine.
+`FindVoiceForNote()`/`NoteOn()`/`NoteOff()` are a line-for-line port of
+`DexedSynth`'s own 3-tier shape (reuse a voice already holding this
+exact note → prefer a free voice that's confirmed idle → any free voice
+→ steal the oldest-triggered) — the user's own stated aim was "how we
+have Dexed set should be our aim here," not a mechanical copy picked by
+default. `OscillatorBank` itself has no envelope or note lifecycle of
+its own (it's a continuously-running oscillator), so each voice wraps
+one in a `daisysp::Adsr`, substituting `!adsr.IsRunning()` for Dexed's
+own envelope-based `VoiceIsIdle()` "is this voice idle" check — the same
+substitution this project's own (since-removed-from-this-branch) sample
+player already used for the identical reason. `NoteOn()` wraps its
+multi-field voice mutation in the same `__disable_irq()`/`__enable_irq()`
+critical section `DexedSynth::NoteOn()` uses, for the identical
+real-hardware race (`ControlTimerCallback`, a lower NVIC priority than
+the audio DMA ISR, can genuinely preempt a multi-step voice write
+mid-mutation under fast playing).
+
+### Registration: real drawbars, not a macro — a direct mid-session redesign
+
+The Registration page's first shipped design was a single K1 macro,
+linearly interpolating between two fixed, hand-picked registrations
+("Warm," mostly the 8' fundamental; "Bright," a more even spread across
+all three octaves plus more square content) — explicitly scoped that
+way up front (full per-drawbar editing was written into the original
+plan as "explicitly out of scope this pass"). Real hardware testing
+found it had no audible effect at all, which led first to tracking down
+and fixing a genuine `daisysp::OscillatorBank` bug (see below) — but
+even after that fix, the user's own follow-up was direct: "I thought we
+would have control over the 7 drawbars" and "macro currently does not
+have any effect on the sound... drawbars would be good." The macro was
+removed entirely (not kept alongside drawbars as a second, parallel
+control) and replaced with real manual control: K1 selects which of the
+7 drawbars (0=Saw8', 1=Sq8', 2=Saw4', 3=Sq4', 4=Saw2', 5=Sq2', 6=Saw1',
+the same organ-stop/pipe-footage naming `OscillatorBank`'s own API
+already documents) is selected — browsed directly with no knob-pickup
+catch, the same "selector, not a persisted value of its own" idiom
+`DexedFilesGroup`/Preset browsing already use — and K2 sets that one
+drawbar's level, 0..1, independently (not normalized/forced to sum to
+1 the way the old two-preset macro design required — a real Hammond-
+style drawbar slider doesn't either). Since K1 and K2 now edit two
+genuinely different things (which drawbar vs. its level), switching
+drawbars needed the identical "same KnobContext, manual resync" fix
+`dexed_op_index_`/`mixer_position_` already established: K2's own
+pickup state is explicitly re-armed and reseeded to the newly-selected
+drawbar's real value every time the selection changes, rather than
+relying on the automatic "context changed" path, which never fires here
+since `CurrentKnobContext()` keeps returning the same enum value
+regardless of which drawbar is selected.
+
+**There is no Sq1' drawbar, and that's structural, not an oversight**:
+the divide-down trick synthesizes a square wave at a given octave by
+combining that octave's own sawtooth partial with the one *below* it
+(`OscillatorBank::Process()`'s own gain formulas: `saw_8_gain_ =
+Saw8' + 2*Sq8'`, `saw_4_gain_ = Saw4' - Sq8' + 2*Sq4'`, and so on down
+the stack) — each square drawbar boosts its own octave by 2x while
+subtracting from the octave above it. The top octave (1') has nothing
+above it in this 4-octave stack to borrow from, so it can only ever be
+a sawtooth.
+
+### Two real bugs found during this work, not guessed at
+
+**`OscillatorBank`'s own frequency-shift state compounds instead of
+resetting — found from the drawbar redesign above, before the stuck-
+note report below**: `Process()`'s `if(recalc_)` block scaled its own
+`frequency_` member *in place* (`frequency_ *= 8.0f`, then halved
+repeatedly for the octave-anti-aliasing shift) — correct exactly once
+per genuine `SetFreq()` call, but `SetAmplitudes()`/`SetSingleAmp()`
+(what the registration macro, and now every drawbar edit, calls) *also*
+sets `recalc_ = true`, with no fresh `SetFreq()` in between. Each such
+call re-entered the same scaling block on top of the *already-scaled*
+value from the previous pass, compounding the `*8` and the octave-shift
+every time a registration knob moved while a note was held. Enough
+repeats pushed the internal octave-shift count past 7, and since it's
+computed as `size_t` (unsigned), `7 - shift` then underflowed to a huge
+value, walking both `registration_[]` and `unshifted_registration_[]`
+arrays far out of bounds — memory corruption, not just a wrong note.
+Fixed by introducing a separate `freq_ratio_` member holding the stable,
+un-scaled ratio `SetFreq()` itself sets, with `frequency_` (the actual
+phase increment `Process()` uses) recomputed fresh from `freq_ratio_`
+on every `recalc_` pass instead of being scaled cumulatively — bounded
+correctly now regardless of how many times `recalc_` fires between
+real frequency changes.
+
+**`daisysp::Adsr`'s own gate-edge detection can permanently miss a
+release — found from a real, reproducible stuck-note report using an
+Akai MPK Mini Plus's own arpeggiator**: the first fix attempt added MIDI
+CC 123 (All Notes Off)/CC 120 (All Sound Off) handling (`AllNotesOff()`
+on all three engines, see *MIDI* above) on the theory that the
+controller simply wasn't sending a matching NoteOff for every NoteOn —
+a real, independently-worth-having gap, but the user's own follow-up
+testing ruled it out as *this* bug's actual cause: "this does not happen
+with grains or dexed" even though both share the identical plain
+NoteOn/NoteOff dispatch path, which meant the real cause had to be
+something specific to how Ensemble's own envelope is driven, not a
+generic MIDI-handling gap. `Adsr::Process(bool gate)` detects attack/
+release purely from comparing the current `gate` against its own
+previously-seen value (`gate_`, an internal member) — it has no way to
+know a note happened at all unless `Process()` was actually *called*
+while `gate` was `true` at least once. If a NoteOn is followed by a
+NoteOff fast enough that no audio block ever runs with that voice's
+`gate` reading `true` in between (a real, structural risk with a fast
+arpeggiator's short note durations, or just two control-rate MIDI events
+landing in the same inter-audio-block gap), `gate_` never records the
+rising edge, so the falling edge is never detected either — the
+envelope keeps climbing through attack into decay and then holds at its
+own sustain level *forever*, since decay's target is a positive sustain
+value and its own idle check (`out < 0.f`) can never fire against a
+positive target. A genuinely stuck note, with nothing externally
+wrong at all: the caller's own `held_note` tracking was already
+correctly cleared: the problem was purely internal to the envelope's own
+gate memory. `GranularEngine` uses the identical `daisysp::Adsr`,
+driven the identical gate-sampled way, and so carries the identical
+structural risk even though it hadn't been observed there yet — not
+assumed safe by omission. Fixed with a new `Adsr::ForceRelease()`
+(`adsr.h/.cpp`), mirroring the exact precedent `Retrigger()` already
+set: a caller that explicitly *knows* a note just ended (not just
+inferring it from a sampled boolean) needs a direct way to say so,
+bypassing the fragile edge detection entirely. Both
+`EnsembleSynth::NoteOff()`/`AllNotesOff()` and
+`GranularEngine::NoteOff()`/`AllNotesOff()` call it now, defensively in
+Grains' own case.
+
+### Mod wheel and pitch bend
+
+See *MIDI* above for the full behavior and the specific "modulates what's
+already dialed in, never forces an independent setting on" design choice
+— made explicit mid-session after an earlier draft considered forcing
+Filter Mode on for the Filter Cutoff mod-wheel target, and the user
+rejected it directly in favor of parameters "behaving as they're set,"
+with the wheel defaulting to **Off** rather than a target that does
+something by default.
+
+### Factory presets, and a real filter-cutoff bug found while retuning them
+
+8 hand-authored factory presets (`ensemble_factory_data.h/.cpp`, pure
+parameter numbers — drawbar levels, chorus depth/rate, envelope shape,
+filter, output level/pan — no audio at all, so genuinely zero licensing
+concern, same reasoning as Dexed's own factory bank). Their drawbar
+levels were carried over from the original macro design's own Warm/
+Bright interpolation at each preset's old macro position, preserving
+each preset's intended character once drawbars replaced the macro.
+
+A real, user-reported "some of the presets sound weak" turned out not
+to be about the drawbars (or the registration macro bug above — already
+fixed by this point) at all. Three presets (Thin Strings, Sub Swell,
+Mellow Choir) use the post-mix LowPass filter; computing their actual
+cutoff frequency from this project's own Cutoff curve
+(`kFilterMinHz=20`/`kFilterMaxHz=9000` in `looper_layer.h`, `20 *
+450^cutoff01`) showed Sub Swell's original `cutoff01=0.35` landed at
+roughly **170Hz** — close to muting every harmonic above the fundamental
+for most played notes, not a subtle darkening. Retuned (Sub Swell to
+`0.60` ≈ 900Hz, Thin Strings to `0.75` ≈ 1740Hz, Mellow Choir to `0.60`)
+without touching any drawbar registration value at all, so each
+preset's actual organ-stop character is unchanged — a direct response
+to "I want it to sound authentic" when offered the alternative of
+adding automatic loudness-compensation DSP to the engine itself instead,
+which the user declined specifically because pulling fewer drawbars
+getting quieter is itself authentic drawbar-organ behavior, not
+something to engineer away. Bright Pluck's `sustain01` (0.20) was also
+raised to 0.40, for a related but separate reason: holding a note (not
+just tapping it) let it decay to near-silence and stay there, "weak
+when held" with a different real cause (envelope shape, not
+registration or filtering) — still a clear pluck transient, just not
+dead when sustained.
+
+### ADSR graphic and live scope, added for parity with Grains
+
+A direct request: "adsr needs the graphic that grains has and I would
+like to see the scope on ensemble pages." Both `Ui::DrawAdsrShape()` and
+`Ui::DrawOscilloscope()` were already written generically (explicit
+seconds/sustain01 parameters, or an explicit buffer/capacity pointer —
+see their own doc comments) rather than reading an engine pointer
+directly, specifically so a later page could reuse them without any
+redesign — which is exactly what happened here. `EnsembleSynth` needed
+two small additions to support it: `GetAttackSeconds()`/
+`GetDecaySeconds()`/`GetReleaseSeconds()` (declared in the header,
+defined in the `.cpp` since they need `powf()` — the same split
+`GranularEngine`'s own equivalents already use), converting the raw
+0..1 knob value through the same 2ms-4s exponential curve
+`SetAttack01()` and friends already apply, since the graphic needs real
+seconds, not the raw knob value. A new `g_ensemble_scope_l` ring buffer
+(`main.cpp`, same 1024-sample convention as Dexed's own) captures
+Ensemble's dry output every block, threaded through `Ui::Init()`'s
+already-long parameter list the same way `g_dexed_scope_l` was. The
+scope now shows on Registration, Ensemble (Chorus), Filter, Mix, FX, and
+MIDI pages — not Env (which shows the ADSR graphic instead) or Preset
+(a chooser, same as every other engine's own Preset page).
+
+### Screen::Mixer — a 9th channel, and an odd-channel-count layout bug
+
+Added as a real Mixer channel (`kNumMixerChannels` 8 → 9), with full
+Volume/Pan/Reverb-Send control and a real Peak bar + clip indicator —
+same treatment Dexed/Grains already have, which meant giving
+`EnsembleSynth` its own `IsLimiting()`/`GetPreLimiterLevel01()` (reading
+`max(|l|,|r|)` right before the final `tanhf()` limiter, same
+threshold/hold-seconds convention as `DexedSynth`'s own equivalent, just
+over a genuinely stereo pair instead of Dexed's own mono-then-panned
+signal — the louder of the two channels is what actually risks
+clipping). First named "ENSB" on the Mixer, shortened to **ESB** after
+direct feedback that it was too long (the overview grid's column width
+is `disp_->Width() / kNumMixerChannels`, and going from 8 to 9 channels
+already made every column narrower).
+
+Going from 8 channels (even) to 9 (odd) surfaced a real, found-not-
+guessed layout bug: the Mixer's own Detail page groups channels in
+pairs of 2 (`group_start = (mixer_position_ / 2) * 2`), which worked
+cleanly at 8 (four exact pairs) but leaves Master alone in its own
+group at 9 — the pairing loop would have read/drawn a 10th, out-of-range
+channel index for Master's own "neighbor" column (silently falling
+through to `MixerChannelName()`/`MixerGet*01()`'s own `"?"`/`0.f`
+defaults rather than crashing, but a real, confusing-looking bug).
+Fixed with an explicit bounds check that simply leaves the second
+column blank once `group_start + col` reaches `kNumMixerChannels`,
+rather than assuming every group is still a clean pair.
+
 ## Grains (Screen::Granular / GranularEngine)
 
 A MIDI-played, **monophonic** granular instrument (`granular_engine.h/
@@ -2168,11 +2480,14 @@ yet.
 
 ## Screen::Mixer
 
-One screen covering all 8 mixable channels — Loop Layers 1–4, Grains,
-Dexed (DXD), Bypass, and Master — reached by clicking the encoder on
-`Global:Mixer` (which itself shows an at-a-glance overview grid: all 8
-channel names in a row, each with a real vertical bar, via
-`DrawMixerOverviewGrid()`).
+One screen covering all 9 mixable channels — Loop Layers 1–4, Grains,
+Dexed (DXD), Ensemble (ESB), Bypass, and Master — reached by clicking
+the encoder on `Global:Mixer` (which itself shows an at-a-glance
+overview grid: all 9 channel names in a row, each with a real vertical
+bar, via `DrawMixerOverviewGrid()`). See *Ensemble*'s own *Screen::Mixer*
+entry above for the real odd-channel-count layout bug adding this 9th
+channel surfaced, and why it's named "ESB" rather than the originally-
+shipped "ENSB."
 
 ### Peak level + clip indicator
 
@@ -2260,32 +2575,33 @@ channel:
 **Rotate picks the channel, not the page** — unlike every other
 Dexed/Granular-style screen, `Screen::Mixer` has no sub-pages of its own;
 the encoder's usual "cycle this screen's pages" job is repurposed to
-step through one continuous, endlessly-wrapping sequence of 8 channel
+step through one continuous, endlessly-wrapping sequence of 9 channel
 stops plus a final Scope stop (a live oscilloscope of the actual
 post-fader master mix, captured in `main.cpp` right after the master
 filter/click/master-volume stage — the real final signal, not any one
 instrument's own output), then wraps back to channel 0. This was a
 deliberate design constraint, not an oversight: encoder rotate means
 "next page" on every other screen in this project with zero exceptions,
-so when Mixer needed a way to move between 8 channels *and* had no
+so when Mixer needed a way to move between several channels *and* had no
 "next page" job of its own left to give the encoder, repurposing rotate
 for exactly this one screen was the least-surprising option, rather than
 inventing a second, competing "rotate" gesture.
 
-**Each of the 7 non-Master channels** shows a Detail page with real
+**Each of the 8 non-Master channels** shows a Detail page with real
 Volume/Pan/Reverb-Send vertical bars: Button 1 tap maps the knobs to
 Volume+Pan, Button 2 tap maps them to Reverb Send — the same
 Button-1/Button-2-toggle-which-pair idiom already used elsewhere (Grains'
 merged Grain/ADSR/Mix pages). DXD (Dexed) used to be the one exception
-among those 7, back when Dexed had no Pan control of its own (see
+among those (now 8), back when Dexed had no Pan control of its own (see
 *Dexed* above for the real user report that changed that) -- it now
-behaves identically to every other non-Master channel.
-**Master** (the 8th channel) has no toggle at all — Knob 1 is Volume,
+behaves identically to every other non-Master channel, ESB (Ensemble)
+included from the day it was added.
+**Master** (the 9th channel) has no toggle at all — Knob 1 is Volume,
 Knob 2 is Reverb Size, always, since there's no per-channel Pan/Send
 concept for the master bus itself.
 
 **A genuine knob-pickup exception, and why**: `KnobContext::MixerVolPan`/
-`MixerReverb` are each shared across all 7 non-Master channels (branching
+`MixerReverb` are each shared across all 8 non-Master channels (branching
 internally on `mixer_position_`, the same "one context, branch on which
 target" idiom `KnobContext::LayerStatus` already uses for
 `cursor_layer_`). Unlike `LayerStatus`, though, `mixer_position_` can
@@ -2393,38 +2709,41 @@ plus tempo/global/per-layer settings) as one flat binary file per slot,
 own subfolder for the same reason WAV exports get their own (see below):
 a tidier SD root, and it keeps `ListSlots()`/`NextFreeSlot()`'s directory
 scan scoped to just that folder. The on-disk layout has a
-version tag (`kFileVersion` in `performance_store.cpp`, currently **13**)
+version tag (`kFileVersion` in `performance_store.cpp`, currently **14**)
 that gets bumped whenever a field is added or removed — a save from an
 older firmware version is normally rejected cleanly on load (shown as a
 short error on the File page) rather than being misread, so a firmware
 update can mean older saves need re-saving under the new version.
-**11 → 12 → 13 is a backward-compatible chain, not a hard cutoff**:
-`Load()`/`LoadPrefs()` accept all three versions, reading only as much
-of the file as that version actually wrote and defaulting whatever
-comes after. 11 → 12 added the Dattorro reverb's 6 new parameters
-(`Decay` itself needed no new field, since it's the same
+**11 → 12 → 13 → 14 is a backward-compatible chain, not a hard
+cutoff**: `Load()`/`LoadPrefs()` accept all four versions, reading only
+as much of the file as that version actually wrote and defaulting
+whatever comes after. 11 → 12 added the Dattorro reverb's 6 new
+parameters (`Decay` itself needed no new field, since it's the same
 `reverb_size01` the Size knob already wrote under every version back to
-7); 12 → 13 added the two per-engine MIDI channel fields (see *MIDI*
-above), both defaulting to Omni for anything older than 13 — a v11 file
-loads both the reverb defaults *and* the MIDI defaults in one pass, not
-two separate upgrade steps. Every version older than 11 is still a
-hard, clean reject, same as always; reviving those would need several
-historical `FileHeader` layouts reconstructed from git history, which
-hasn't been done. `ExportWav()` only needs the reverb fields, never the
-MIDI channels — routing has no effect on audio already recorded, so
-that call site was left untouched by the 12 → 13 bump. Dexed Presets
-(`DEXP/PRESnnn.DAT`) and Grains Presets
-(`GRNP/PRESnnn.DAT`, audio-inclusive — see *Grains* above) are each their
-own separate on-disk format with their own independent numbering, not
-part of a performance file's own version tag.
+7); 12 → 13 added the Dexed/Grains MIDI channel fields; 13 → 14 added
+Ensemble's own MIDI channel field (see *MIDI* above) — all three
+default to Omni for anything older than their own introducing version,
+so a v11 file loads the reverb, Dexed/Grains, *and* Ensemble defaults in
+one pass, not three separate upgrade steps. Every version older than 11
+is still a hard, clean reject, same as always; reviving those would need
+several historical `FileHeader` layouts reconstructed from git history,
+which hasn't been done. `ExportWav()` only needs the reverb fields,
+never any MIDI channel — routing has no effect on audio already
+recorded, so that call site was left untouched by either the 12 → 13 or
+13 → 14 bump. Dexed Presets (`DEXP/PRESnnn.DAT`), Ensemble Presets
+(`ENSP/PRESnnn.DAT`, parameters only — no audio, same shape as Dexed's
+own), and Grains Presets (`GRNP/PRESnnn.DAT`, audio-inclusive — see
+*Grains* above) are each their own separate on-disk format with their
+own independent numbering, not part of a performance file's own version
+tag.
 
 ### Audio suspended during save
 
 Every SD write that can run long (`TriggerSave()`, `TriggerSaveGranularPreset()`,
 `TriggerSaveDexedPreset()`) sets `g_audio_suspended = true` for the
 duration, same as `TriggerLoad()`/`TriggerExport()` already did — while
-set, `AudioCallback()` skips every layer/Dexed/Grains/reverb/delay/filter
-and just outputs silence. This was added after a real hardware bug:
+set, `AudioCallback()` skips every layer/Dexed/Ensemble/Grains/reverb/
+delay/filter and just outputs silence. This was added after a real hardware bug:
 saves (Performance and Grains Preset both) intermittently failed with
 `Fail:close9` (FatFs `FR_INVALID_OBJECT`, the file handle itself turning
 up invalid right at the final `f_close()`, after every actual write had
@@ -2673,16 +2992,19 @@ A few things that are intentional, not bugs:
   vari-speed, they're live-performance controls that always reset to
   their defaults on boot and after Load — not part of a saved
   performance, and not covered by Startup Defaults either.
-- **No on-device Delete/Duplicate for Dexed Presets**: `Global:SdMgmt`
-  (see its own section above) only covers Performances and Grains
-  Presets — `DeleteDexedPreset()`/`DuplicateDexedPreset()` already exist
-  in `PerformanceStore` with the identical shape, but `SdMgmtFolder` was
-  never extended to add a third stop for them. The only way to remove a
-  Dexed preset today is deleting its `DEXP/PRESnnn.DAT` file directly on
-  a computer — safe for a plain User preset, but doing this to one
-  covered by a recorded Import folder (see *SysEx import* above) leaves
-  that folder's own manifest record pointing at a slot range with a
-  hole in it, since the manifest doesn't verify each slot still exists.
+- **No on-device Delete/Duplicate for Dexed or Ensemble Presets**:
+  `Global:SdMgmt` (see its own section above) only covers Performances
+  and Grains Presets — `DeleteDexedPreset()`/`DuplicateDexedPreset()`
+  and their Ensemble equivalents (`DeleteEnsemblePreset()`/
+  `DuplicateEnsemblePreset()`) already exist in `PerformanceStore` with
+  the identical shape, but `SdMgmtFolder` was never extended to add a
+  stop for either. The only way to remove one today is deleting its
+  `DEXP/PRESnnn.DAT`/`ENSP/PRESnnn.DAT` file directly on a computer —
+  safe for a plain User preset, but doing this to a Dexed preset covered
+  by a recorded Import folder (see *SysEx import* above) leaves that
+  folder's own manifest record pointing at a slot range with a hole in
+  it, since the manifest doesn't verify each slot still exists (Ensemble
+  has no import feature, so this specific risk doesn't apply there).
 - **No SD card hot-swapping while powered on**: the SD socket is
   hand-wired with no card-detect pin (see *Hardware* above), so the
   firmware has no way to know a card was physically pulled and
@@ -2716,21 +3038,27 @@ A few things that are intentional, not bugs:
   real user SysEx import (see *SysEx import* under *Dexed* above)
 - `dexed_factory_data.h/.cpp` — the 3129 embedded factory presets (see
   *Dexed* above), stored packed and unpacked on demand
+- `ensemble_synth.h/.cpp` — the Ensemble instrument, built around the
+  vendored `daisysp::OscillatorBank` (see *Ensemble* above)
+- `ensemble_factory_data.h/.cpp` — the 8 embedded factory presets (see
+  *Ensemble* above) — pure parameter numbers, no audio, same reasoning
+  as Dexed's own factory bank
 - `granular_engine.h/.cpp` — the Grains instrument (see *Grains* above)
 - `ui.h/.cpp` — encoder/button/knob handling + OLED menu rendering, for
-  every screen (Home/Layer/Global/Dexed/Granular/Mixer)
+  every screen (Home/Layer/Global/Dexed/Ensemble/Granular/Mixer)
 - `font_tomthumb.h/.cpp` — the tiny proportional font used in the
   footer rows (see `README.md`'s Thanks section for credit)
 - `performance_store.h/.cpp` — SD card save/load (performances, Dexed
-  Presets, Grains Presets), WAV export, and SD Mgmt's
-  Duplicate/Delete. Performance on-disk format is at `kFileVersion = 13`
+  Presets, Ensemble Presets, Grains Presets), WAV export, and SD Mgmt's
+  Duplicate/Delete. Performance on-disk format is at `kFileVersion = 14`
   (see *Save/load* above; bumped from 5→6 when Pitch's fields were
   removed — see *Pitch removal* below — up through Pad Synth's sound
   being embedded at version 7, then removed again at version 10 once the
   save-file "bubbles" principle was adopted — see *Save-file "bubbles"*
-  above — then 11→12 adding the Dattorro reverb's 6 new parameters and
-  12→13 adding the two per-engine MIDI channels, both backward-
-  compatible bumps, chained together).
+  above — then 11→12 adding the Dattorro reverb's 6 new parameters,
+  12→13 adding the Dexed/Grains MIDI channels, and 13→14 adding
+  Ensemble's own MIDI channel, all backward-compatible bumps, chained
+  together).
 - `dattorro_reverb.h/.cpp` — the shared reverb bus (see *Dattorro plate
   reverb* above)
 - `audio_engine.h` — `g_audio_suspended`, a flag that makes the audio
