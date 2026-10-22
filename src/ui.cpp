@@ -19,38 +19,6 @@ inline float Clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// SampleSynthParamPage::LegacyPreset's own fixed category list -- the
-// original 21 categories this engine shipped with before the licensed
-// sample packs they reference were stripped out of this repo for
-// redistribution (see that enum entry's own doc comment in ui.h).
-// Deliberately kept as a totally separate table from anything the real
-// Preset page uses, so removing/changing one can never silently affect
-// the other. Folder names are real SD subfolders under SAMPLES/.
-constexpr int kLegacySoundCategoryCount = 21;
-constexpr const char* kLegacySoundCategoryFolders[kLegacySoundCategoryCount]
-    = {"OP1", "PIANO", "PADS", "DIGITONE", "LOL3",
-       "MEMSTILL1", "MEMSTILL2", "MEMSTILL3",
-       "MOOG1", "MOOG2", "MOOG3",
-       "PADCREATE1", "PADCREATE2",
-       "MELLOTRON1", "MELLOTRON2", "MELLOTRON3", "MELLOTRON4", "MELLOTRON5",
-       "CAPTURED1", "CAPTURED2",
-       "OTHER"};
-constexpr const char* kLegacySoundCategoryLabels[kLegacySoundCategoryCount]
-    = {"OP-1", "Piano", "Pads", "Digitone", "LoL 3",
-       "Mem Still 1", "Mem Still 2", "Mem Still 3",
-       "Moog 1", "Moog 2", "Moog 3",
-       "Pad Create 1", "Pad Create 2",
-       "Mellotron 1", "Mellotron 2", "Mellotron 3", "Mellotron 4", "Mellotron 5",
-       "Captured 1", "Captured 2",
-       "Other"};
-
-// LegacyPreset's own Kit category -- the original "Starter Kits" range
-// over SAMP/KITxxx.DAT's own numbering, same shape as before.
-constexpr int kLegacyKitCategoryCount = 1;
-constexpr int kLegacyKitCategoryFirst[kLegacyKitCategoryCount] = {1};
-constexpr int kLegacyKitCategoryLast[kLegacyKitCategoryCount]  = {11};
-constexpr const char* kLegacyKitCategoryLabels[kLegacyKitCategoryCount] = {"Starter Kits"};
-
 // How long "Nothing to undo" squats on Layer:Status's waveform before an
 // idle user gets it back -- see undo_status_set_ms_'s own comment in ui.h.
 constexpr uint32_t kUndoStatusTimeoutMs = 1500;
@@ -448,9 +416,6 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             else if(new_page == SampleSynthParamPage::User
                     && sample_synth_param_page_ != SampleSynthParamPage::User)
                 sample_synth_favorites_dirty_ = true; // re-load favorites from the card on entry
-            else if(new_page == SampleSynthParamPage::LegacyPreset
-                    && sample_synth_param_page_ != SampleSynthParamPage::LegacyPreset)
-                sample_synth_legacy_category_ = -1; // always start at category-select
             else
             {
                 // Entering the Capture/Trim/Tune group from any OTHER
@@ -595,23 +560,6 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             // the Advanced page); long-press above still goes all the
             // way to Home, same as every other screen.
             screen_ = Screen::Dexed;
-        }
-        else if(!encoder_long_fired_ && screen_ == Screen::SampleSynth
-                && sample_synth_param_page_ == SampleSynthParamPage::LegacyPreset)
-        {
-            // An intentional, deliberate exception to the generic
-            // Granular/Dexed/Ensemble/SampleSynth click == TogglePauseAll()
-            // rule just below -- this one page's encoder click is its
-            // own Enabled/Disabled toggle instead (see that enum
-            // entry's own doc comment in ui.h for why this content is
-            // off by default). Button1 still does the real Kits/Sounds
-            // toggle once enabled, same as the real Preset page.
-            sample_synth_legacy_enabled_ = !sample_synth_legacy_enabled_;
-            if(sample_synth_legacy_enabled_)
-            {
-                sample_synth_legacy_category_ = -1;
-                sample_synth_legacy_dirty_    = true;
-            }
         }
         else if(!encoder_long_fired_
                 && (screen_ == Screen::Granular || screen_ == Screen::Dexed
@@ -1239,55 +1187,6 @@ void Ui::HandleButton2(const UiControlEvents& events)
             button2_long_fired_ = false;
         }
     }
-    else if(screen_ == Screen::SampleSynth
-            && sample_synth_param_page_ == SampleSynthParamPage::LegacyPreset
-            && sample_synth_legacy_enabled_)
-    {
-        // Same LOAD-ONLY Idle/BrowsingLoad/category-select shape as the
-        // real Preset page -- see that page's own Button2 handling.
-        bool at_category_select = sample_synth_legacy_category_ < 0;
-        int  active_count       = at_category_select
-                                        ? 0
-                                        : (sample_synth_legacy_mode_sounds_
-                                               ? sample_synth_legacy_sound_count_
-                                               : sample_synth_legacy_kit_count_);
-        bool can_confirm_load
-            = save_load_mode_ == SaveLoadMode::BrowsingLoad && active_count > 0;
-        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_load)
-        {
-            button2_long_fired_ = true;
-            TriggerLoadSampleSynthLegacy();
-            save_load_mode_ = SaveLoadMode::Idle;
-        }
-        if(events.btn2_released)
-        {
-            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm_load)
-            {
-                TriggerLoadSampleSynthLegacy();
-                save_load_mode_ = SaveLoadMode::Idle;
-            }
-            else if(!button2_long_fired_ && at_category_select
-                    && save_load_mode_ == SaveLoadMode::BrowsingLoad)
-            {
-                sample_synth_legacy_category_ = sample_synth_legacy_category_cursor_;
-                sample_synth_legacy_dirty_    = true;
-                sample_synth_legacy_cursor_   = 0;
-            }
-            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
-            {
-                if(!PerformanceStore::IsCardPresent())
-                    PerformanceStore::Remount();
-                else
-                {
-                    save_load_mode_               = SaveLoadMode::BrowsingLoad;
-                    load_browsing_files_          = true;
-                    sample_synth_legacy_status_[0] = '\0';
-                    sample_synth_legacy_category_  = -1;
-                }
-            }
-            button2_long_fired_ = false;
-        }
-    }
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::Tempo)
     {
         // Button2 does nothing else on this page -- save the current
@@ -1907,28 +1806,6 @@ void Ui::OnButton1Short()
                 else
                     TriggerAddSampleSynthFavorite();
             }
-            else if(sample_synth_param_page_ == SampleSynthParamPage::LegacyPreset)
-            {
-                // Enabled/Disabled itself toggles via encoder CLICK, not
-                // here (see HandleEncoder()'s own comment) -- while
-                // disabled this button does nothing at all.
-                if(!sample_synth_legacy_enabled_)
-                { /* no-op */
-                }
-                else if(save_load_mode_ != SaveLoadMode::Idle)
-                {
-                    save_load_mode_ = SaveLoadMode::Idle; // Back, same as the real Preset page
-                    sample_synth_legacy_category_ = -1;
-                }
-                else if(!PerformanceStore::IsCardPresent())
-                    PerformanceStore::Remount();
-                else
-                {
-                    sample_synth_legacy_mode_sounds_ = !sample_synth_legacy_mode_sounds_;
-                    sample_synth_legacy_cursor_       = 0;
-                    sample_synth_legacy_category_     = -1;
-                }
-            }
             break;
     }
 }
@@ -2149,8 +2026,6 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case SampleSynthParamPage::Import: return KnobContext::SampleSynthImport;
                 case SampleSynthParamPage::Preset: return KnobContext::SampleSynthPreset;
                 case SampleSynthParamPage::User: return KnobContext::SampleSynthUser;
-                case SampleSynthParamPage::LegacyPreset:
-                    return KnobContext::SampleSynthLegacyPreset;
                 default: return KnobContext::SampleSynthFilter;
             }
         case Screen::Granular:
@@ -2548,7 +2423,6 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::SampleSynthImport: break; // no continuous knobs -- Button1/Button2 only
         case KnobContext::SampleSynthPreset: break; // browses a list directly, no pickup used
         case KnobContext::SampleSynthUser: break;   // ditto -- browses the favorites list
-        case KnobContext::SampleSynthLegacyPreset: break; // ditto -- browses a list directly
         case KnobContext::GranularGrainSizeFill:
             if(granular_)
             {
@@ -3708,37 +3582,6 @@ void Ui::ApplyKnobs()
                         if(idx != sample_synth_favorite_cursor_)
                             sample_synth_favorite_status_[0] = '\0';
                         sample_synth_favorite_cursor_ = idx;
-                    }
-                    break;
-                }
-                case SampleSynthParamPage::LegacyPreset:
-                {
-                    if(!sample_synth_legacy_enabled_)
-                        break;
-                    // Same category-select-then-flat-list shape as the
-                    // real Preset page's own ApplyKnobs() case.
-                    if(sample_synth_legacy_category_ < 0)
-                    {
-                        int cat_count = sample_synth_legacy_mode_sounds_
-                                             ? kLegacySoundCategoryCount
-                                             : kLegacyKitCategoryCount;
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * cat_count);
-                        if(idx >= cat_count)
-                            idx = cat_count - 1;
-                        sample_synth_legacy_category_cursor_ = idx;
-                        break;
-                    }
-                    int total = sample_synth_legacy_mode_sounds_
-                                     ? sample_synth_legacy_sound_count_
-                                     : sample_synth_legacy_kit_count_;
-                    if(total > 0)
-                    {
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * total);
-                        if(idx >= total)
-                            idx = total - 1;
-                        if(idx != sample_synth_legacy_cursor_)
-                            sample_synth_legacy_status_[0] = '\0';
-                        sample_synth_legacy_cursor_ = idx;
                     }
                     break;
                 }
@@ -6901,7 +6744,6 @@ void Ui::DrawSampleSynthScreen()
         case SampleSynthParamPage::Import: page_name = "Import"; break;
         case SampleSynthParamPage::Preset: page_name = "Preset"; break;
         case SampleSynthParamPage::User: page_name = "User"; break;
-        case SampleSynthParamPage::LegacyPreset: page_name = "Legacy"; break;
         default: break;
     }
     char title[24];
@@ -7481,162 +7323,6 @@ void Ui::DrawSampleSynthScreen()
                              save_load_mode_ == SaveLoadMode::Idle
                                  ? "Open"
                                  : (can_hold_load ? "Hold=Load" : ""));
-            break;
-        }
-        case SampleSynthParamPage::LegacyPreset:
-        {
-            // Off by default -- see this page's own doc comment in
-            // ui.h for why, and HandleEncoder()'s own comment for why
-            // encoder CLICK (not Button1, which still does Kits/Sounds
-            // once enabled) is this one page's own Enabled/Disabled
-            // toggle.
-            if(!sample_synth_legacy_enabled_)
-            {
-                TomThumbDrawText(disp_, 0, 15, "Disabled", true);
-                disp_->SetCursor(0, 24);
-                WriteUpper("Click encoder to enable");
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
-                break;
-            }
-            if(!PerformanceStore::IsCardPresent())
-            {
-                disp_->SetCursor(0, 20);
-                WriteUpper("No card");
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
-                break;
-            }
-            bool at_category_select = sample_synth_legacy_category_ < 0;
-
-            if(!at_category_select && sample_synth_legacy_dirty_)
-            {
-                if(!sample_synth_legacy_mode_sounds_)
-                {
-                    int all_numbers[PerformanceStore::kMaxSampleSynthKits];
-                    int all_count = PerformanceStore::ListSampleSynthKits(
-                        all_numbers, PerformanceStore::kMaxSampleSynthKits);
-                    int lo = kLegacyKitCategoryFirst[sample_synth_legacy_category_];
-                    int hi = kLegacyKitCategoryLast[sample_synth_legacy_category_];
-                    int count = 0;
-                    for(int i = 0; i < all_count && count < PerformanceStore::kMaxSampleSynthKits;
-                        i++)
-                    {
-                        if(all_numbers[i] < lo || all_numbers[i] > hi)
-                            continue;
-                        sample_synth_legacy_kit_numbers_[count] = all_numbers[i];
-                        if(!PerformanceStore::PeekSampleSynthKitName(
-                               all_numbers[i], sample_synth_legacy_kit_names_[count],
-                               sizeof(sample_synth_legacy_kit_names_[count])))
-                            sample_synth_legacy_kit_names_[count][0] = '\0';
-                        count++;
-                    }
-                    sample_synth_legacy_kit_count_ = count;
-                }
-                else
-                {
-                    sample_synth_legacy_sound_count_ = PerformanceStore::ListSampleSynthFiles(
-                        sample_synth_legacy_sound_names_, kMaxSampleSynthSoundsListed,
-                        kLegacySoundCategoryFolders[sample_synth_legacy_category_]);
-                }
-                if(sample_synth_legacy_cursor_
-                   >= (sample_synth_legacy_mode_sounds_ ? sample_synth_legacy_sound_count_
-                                                            : sample_synth_legacy_kit_count_))
-                    sample_synth_legacy_cursor_ = 0;
-                sample_synth_legacy_dirty_ = false;
-            }
-
-            int  total = at_category_select
-                              ? 0
-                              : (sample_synth_legacy_mode_sounds_
-                                     ? sample_synth_legacy_sound_count_
-                                     : sample_synth_legacy_kit_count_);
-            bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
-            bool can_hold_load = browsing_load && total > 0 && !at_category_select;
-
-            if(pod_->button2.Pressed() && can_hold_load)
-            {
-                float held = pod_->button2.TimeHeldMs();
-                int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                disp_->SetCursor(0, 20);
-                WriteUpper("Hold: Load...");
-                disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
-                if(w > 0)
-                    disp_->DrawRect(1, 31, w, 33, true, true);
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
-                break;
-            }
-
-            char mode_line[20];
-            if(!at_category_select)
-            {
-                const char* cat_label = sample_synth_legacy_mode_sounds_
-                                             ? kLegacySoundCategoryLabels[sample_synth_legacy_category_]
-                                             : kLegacyKitCategoryLabels[sample_synth_legacy_category_];
-                snprintf(mode_line, sizeof(mode_line), "%s:%s",
-                          sample_synth_legacy_mode_sounds_ ? "Sounds" : "Kits", cat_label);
-            }
-            else
-                snprintf(mode_line, sizeof(mode_line), "%s",
-                          sample_synth_legacy_mode_sounds_ ? "Sounds" : "Kits");
-            TomThumbDrawText(disp_, 0, 15, mode_line, true);
-
-            if(browsing_load)
-            {
-                char line2[24];
-                if(at_category_select)
-                {
-                    const char* cat_label
-                        = sample_synth_legacy_mode_sounds_
-                              ? kLegacySoundCategoryLabels[sample_synth_legacy_category_cursor_]
-                              : kLegacyKitCategoryLabels[sample_synth_legacy_category_cursor_];
-                    snprintf(line2, sizeof(line2), "%s", cat_label);
-                }
-                else if(total > 0)
-                {
-                    if(sample_synth_legacy_mode_sounds_)
-                        snprintf(line2, sizeof(line2), "%s",
-                                  sample_synth_legacy_sound_names_[sample_synth_legacy_cursor_]);
-                    else
-                    {
-                        const char* nm = sample_synth_legacy_kit_names_[sample_synth_legacy_cursor_];
-                        snprintf(line2, sizeof(line2), "%d:%s",
-                                  sample_synth_legacy_kit_numbers_[sample_synth_legacy_cursor_],
-                                  nm[0] != '\0' ? nm : "(unnamed)");
-                    }
-                }
-                else
-                    snprintf(line2, sizeof(line2), "(none on card)");
-                disp_->SetCursor(0, 20);
-                WriteUpper(line2);
-            }
-            else
-            {
-                char line1[24];
-                if(sample_synth_legacy_loaded_name_[0] == '\0')
-                    snprintf(line1, sizeof(line1), "Now: (none)");
-                else
-                    snprintf(line1, sizeof(line1), "Now: %s", sample_synth_legacy_loaded_name_);
-                disp_->SetCursor(0, 20);
-                WriteUpper(line1);
-                if(sample_synth_legacy_status_[0] != '\0')
-                {
-                    disp_->SetCursor(0, 32);
-                    WriteUpper(sample_synth_legacy_status_);
-                }
-            }
-
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, browsing_load ? "Scroll" : "",
-                             "", "", "");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
-                             save_load_mode_ == SaveLoadMode::Idle ? "Kits/Sounds" : "Back", "",
-                             "",
-                             save_load_mode_ == SaveLoadMode::Idle
-                                 ? "Open"
-                                 : (at_category_select
-                                        ? "Open"
-                                        : (can_hold_load ? "Hold=Load" : "")));
             break;
         }
         default: break;
@@ -9115,86 +8801,6 @@ void Ui::TriggerLoadSampleSynthKit()
     g_audio_suspended = false;
 }
 
-void Ui::TriggerLoadSampleSynthLegacy()
-{
-    if(!sample_synth_ || sample_synth_legacy_category_ < 0 || sample_synth_legacy_cursor_ < 0)
-        return;
-
-    if(sample_synth_legacy_mode_sounds_)
-    {
-        if(sample_synth_legacy_cursor_ >= sample_synth_legacy_sound_count_)
-            return;
-        LoadSampleSynthFileIntoEngine(
-            kLegacySoundCategoryFolders[sample_synth_legacy_category_],
-            sample_synth_legacy_sound_names_[sample_synth_legacy_cursor_]);
-        snprintf(sample_synth_legacy_loaded_name_, sizeof(sample_synth_legacy_loaded_name_), "%s",
-                  sample_synth_legacy_sound_names_[sample_synth_legacy_cursor_]);
-        snprintf(sample_synth_legacy_status_, sizeof(sample_synth_legacy_status_), "Loaded");
-        return;
-    }
-
-    // Kit load -- same bump-allocate-into-the-shared-arena shape as
-    // TriggerLoadSampleSynthKit()'s own, just reading from this page's
-    // own separate sample_synth_legacy_* state.
-    if(sample_synth_legacy_cursor_ >= sample_synth_legacy_kit_count_)
-        return;
-    int slot = sample_synth_legacy_kit_numbers_[sample_synth_legacy_cursor_];
-
-    char                                  kit_name[PerformanceStore::kMaxSampleSynthKitNameLen + 1];
-    SampleSynth::SampleSynthPresetData    params;
-    PerformanceStore::SampleSynthKitSlot  slots[PerformanceStore::kMaxSampleSynthSlots];
-
-    g_audio_suspended = true;
-    bool ok = PerformanceStore::LoadSampleSynthKit(slot, kit_name, sizeof(kit_name), &params,
-                                                     slots);
-    if(ok)
-    {
-        sample_synth_->ResetAllVoices();
-        sample_synth_->ApplyPreset(params);
-        size_t cursor       = 0;
-        int    loaded_count = 0;
-        for(int i = 0; i < PerformanceStore::kMaxSampleSynthSlots; i++)
-        {
-            if(slots[i].filename[0] == '\0')
-            {
-                sample_synth_->ClearSlot(i);
-                continue;
-            }
-            if(cursor >= sample_synth_arena_capacity_)
-            {
-                sample_synth_->ClearSlot(i);
-                continue;
-            }
-            size_t len = 0;
-            bool   file_ok
-                = PerformanceStore::ImportWav(slots[i].filename, sample_synth_arena_l_ + cursor,
-                                                sample_synth_arena_r_ + cursor,
-                                                sample_synth_arena_capacity_ - cursor, &len,
-                                                nullptr, PerformanceStore::kSampleSynthFolder);
-            if(!file_ok || len == 0)
-            {
-                sample_synth_->ClearSlot(i);
-                continue;
-            }
-            sample_synth_->LoadSlot(i, sample_synth_arena_l_ + cursor,
-                                      sample_synth_arena_r_ + cursor, (int32_t)len,
-                                      slots[i].chromatic, slots[i].root_note, slots[i].low_note,
-                                      slots[i].high_note, slots[i].volume01);
-            cursor += len;
-            loaded_count++;
-        }
-        snprintf(sample_synth_legacy_loaded_name_, sizeof(sample_synth_legacy_loaded_name_), "%s",
-                  kit_name);
-        snprintf(sample_synth_legacy_status_, sizeof(sample_synth_legacy_status_), "Loaded (%d)",
-                  loaded_count);
-    }
-    else
-    {
-        snprintf(sample_synth_legacy_status_, sizeof(sample_synth_legacy_status_), "Fail:%s",
-                  PerformanceStore::GetLastError());
-    }
-    g_audio_suspended = false;
-}
 
 namespace
 {

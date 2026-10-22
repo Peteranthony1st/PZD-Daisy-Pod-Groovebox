@@ -669,19 +669,6 @@ class Ui
         // loaded -- see OnButton1Short()), this page is LOAD-ONLY, same
         // shape as Preset.
         User,
-        // The original 21-category Sounds list + "Starter Kits" Kit
-        // category this engine shipped with before the licensed sample
-        // packs they reference were stripped out for redistribution --
-        // kept here, off by default, so the person who built this
-        // firmware can still reach their own personal packs without
-        // them being part of what anyone else who clones the repo
-        // gets. Encoder CLICK on this one page toggles Enabled/
-        // Disabled (an intentional, documented exception to this
-        // screen's usual "click == TogglePauseAll()" rule -- see
-        // HandleEncoder()'s own comment); Button1 still does the
-        // Kits/Sounds toggle, same as the real Preset page, once
-        // enabled. LOAD-ONLY, same as Preset.
-        LegacyPreset,
         kCount
     };
 
@@ -913,7 +900,6 @@ class Ui
         SampleSynthImport, // no continuous knobs -- Button1/Button2 only
         SampleSynthPreset, // browses a list directly, no pickup used
         SampleSynthUser,   // ditto -- browses the favorites list
-        SampleSynthLegacyPreset, // browses a list directly, no pickup used
         kCount
     };
     KnobContext CurrentKnobContext() const;
@@ -2092,31 +2078,4 @@ class Ui
     // reports two counts at once ("Kits: 3 ok, 1 skip / Sounds: 2 ok").
     char sample_synth_pack_import_status_[48] = {};
     void TriggerSampleSynthPackImport();
-
-    // --- Legacy presets (SampleSynthParamPage::LegacyPreset) ------------
-    // See that enum entry's own comment. Off by default (sample_synth_
-    // legacy_enabled_), toggled by encoder CLICK on this one page (see
-    // HandleEncoder()'s own comment for why this page is an intentional
-    // exception to this screen's usual click == TogglePauseAll() rule).
-    // Mirrors the real Preset page's own Kits/Sounds browsing shape
-    // (same kMaxSampleSynthSoundsListed/kMaxSampleSynthKits-sized
-    // buffers, same 2-level category->file-list structure) but entirely
-    // separate state, so switching between the two pages never
-    // disturbs whichever one the user had drilled into.
-    bool sample_synth_legacy_enabled_       = false;
-    bool sample_synth_legacy_mode_sounds_   = false;
-    int  sample_synth_legacy_category_        = -1; // -1 = at category-select
-    int  sample_synth_legacy_category_cursor_ = 0;
-    int  sample_synth_legacy_cursor_          = 0; // scrolls whichever list is active
-    bool sample_synth_legacy_dirty_           = true;
-    char sample_synth_legacy_sound_names_[kMaxSampleSynthSoundsListed]
-                                          [PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
-    int  sample_synth_legacy_sound_count_ = 0;
-    int  sample_synth_legacy_kit_numbers_[PerformanceStore::kMaxSampleSynthKits] = {};
-    char sample_synth_legacy_kit_names_[PerformanceStore::kMaxSampleSynthKits]
-                                        [PerformanceStore::kMaxSampleSynthKitNameLen + 1] = {};
-    int  sample_synth_legacy_kit_count_ = 0;
-    char sample_synth_legacy_loaded_name_[PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
-    char sample_synth_legacy_status_[24] = {};
-    void TriggerLoadSampleSynthLegacy();
 };
