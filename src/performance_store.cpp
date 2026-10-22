@@ -95,6 +95,14 @@ void DexedPresetFilename(int slot, char* out, size_t out_size)
     snprintf(out, out_size, "DEXP/PRES%03d.DAT", slot);
 }
 
+// Own subfolder/numbering, same reasoning as DexedPresetFilename() above.
+// Only ever called for USER slots (see SaveEnsemblePreset() and friends'
+// own factory-range guard) -- factory slots are never files.
+void EnsemblePresetFilename(int slot, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "ENSP/PRES%03d.DAT", slot);
+}
+
 // Own subfolder for user-supplied WAV files to import as Grains capture
 // audio -- unlike every other subfolder here, filenames underneath this
 // one are arbitrary (whatever the user named the file on their
@@ -407,6 +415,12 @@ struct FileHeader
     int32_t  dexed_midi_channel;
     int32_t  granular_midi_channel;
 
+    // Which MIDI channel the new Ensemble engine listens on -- added in
+    // version 14, same "append fields, bump the version, stay backward-
+    // compatible" treatment as dexed_midi_channel/granular_midi_channel
+    // above. -1 = Omni. See Ui::GetEnsembleMidiChannel().
+    int32_t  ensemble_midi_channel;
+
     // Pad synth settings (added in version 7, removed in version 10 when
     // Pad synth itself was removed from the project) -- a performance
     // deals ONLY with the looper (audio + tempo/global/per-layer
@@ -442,15 +456,17 @@ struct LayerHeader
 // failed to load rather than being misread.
 //
 // 11 -> 12 (the 6 new DattorroReverb fields) was the FIRST exception to
-// that: Load()/LoadPrefs() accept 11, 12, or 13 (see below), reading one
-// more incremental chunk per version step and defaulting whatever wasn't
-// present yet. 12 -> 13 (the 2 new MIDI-channel fields) extends the SAME
-// chain one more link rather than replacing it -- dropping v11 support
-// now would regress a compatibility promise already shipped. Still
-// version-gated going forward -- anything older than 11 is still a
+// that: Load()/LoadPrefs() accept 11, 12, 13, or 14 (see below), reading
+// one more incremental chunk per version step and defaulting whatever
+// wasn't present yet. 12 -> 13 (the 2 Dexed/Granular MIDI-channel
+// fields) and 13 -> 14 (the new Ensemble MIDI-channel field) each extend
+// the SAME chain one more link rather than replacing it -- dropping v11
+// support now would regress a compatibility promise already shipped.
+// Still version-gated going forward -- anything older than 11 is still a
 // hard, clean reject, same as always; reviving those is explicitly out
 // of scope (see the reverb implementation plan).
-constexpr uint32_t kFileVersion      = 13;
+constexpr uint32_t kFileVersion      = 14;
+constexpr uint32_t kFileVersionV13   = 13;
 constexpr uint32_t kFileVersionV12   = 12;
 constexpr uint32_t kFileVersionPrev  = 11; // the oldest version Load() still accepts
 
@@ -468,6 +484,11 @@ constexpr size_t kFileHeaderV11Size
 // v12-but-not-v13 file has beyond a v11 one.
 constexpr size_t kFileHeaderV12Size
     = offsetof(FileHeader, reverb_damping01) + sizeof(float);
+// Same idea again, marking the boundary right after the 2 Dexed/Granular
+// MIDI-channel fields (v13's own real size) -- everything from here to
+// kFileHeaderV12Size is what a v13-but-not-v14 file has beyond a v12 one.
+constexpr size_t kFileHeaderV13Size
+    = offsetof(FileHeader, granular_midi_channel) + sizeof(int32_t);
 
 } // namespace
 
@@ -734,6 +755,7 @@ bool Save(int                slot,
           float              reverb_damping01,
           int                dexed_midi_channel,
           int                granular_midi_channel,
+          int                ensemble_midi_channel,
           ProgressFn         on_progress)
 {
     if(!card_ready || slot < 1 || slot > kMaxSlots)
@@ -798,6 +820,7 @@ bool Save(int                slot,
     hdr.reverb_damping01               = reverb_damping01;
     hdr.dexed_midi_channel             = (int32_t)dexed_midi_channel;
     hdr.granular_midi_channel          = (int32_t)granular_midi_channel;
+    hdr.ensemble_midi_channel          = (int32_t)ensemble_midi_channel;
 
     UINT bw;
     fr        = f_write(&file, &hdr, sizeof(hdr), &bw);
@@ -892,6 +915,7 @@ bool Load(int          slot,
           float*       out_reverb_damping01,
           int*         out_dexed_midi_channel,
           int*         out_granular_midi_channel,
+          int*         out_ensemble_midi_channel,
           ProgressFn   on_progress)
 {
     if(!card_ready || slot < 1 || slot > kMaxSlots)
@@ -929,8 +953,8 @@ bool Load(int          slot,
     bool ok = fr == FR_OK && br == (UINT)kFileHeaderV11Size;
     bool version_ok
         = ok && memcmp(hdr.magic, "OURO", 4) == 0
-          && (hdr.version == kFileVersion || hdr.version == kFileVersionV12
-              || hdr.version == kFileVersionPrev);
+          && (hdr.version == kFileVersion || hdr.version == kFileVersionV13
+              || hdr.version == kFileVersionV12 || hdr.version == kFileVersionPrev);
 
     if(ok && version_ok && hdr.version >= kFileVersionV12)
     {
@@ -955,13 +979,14 @@ bool Load(int          slot,
         hdr.reverb_damping01           = 0.05f; // -> internal damping_amount_ 0.95
     }
 
-    if(ok && version_ok && hdr.version == kFileVersion)
+    if(ok && version_ok && hdr.version >= kFileVersionV13)
     {
-        // v13 -- the 2 MIDI-channel fields are real, read them too.
+        // v13 or v14 -- the 2 Dexed/Granular MIDI-channel fields are
+        // real, read them too.
         UINT br3;
-        fr = f_read(&file, &hdr.dexed_midi_channel, sizeof(FileHeader) - kFileHeaderV12Size,
+        fr = f_read(&file, &hdr.dexed_midi_channel, kFileHeaderV13Size - kFileHeaderV12Size,
                      &br3);
-        ok = fr == FR_OK && br3 == (UINT)(sizeof(FileHeader) - kFileHeaderV12Size);
+        ok = fr == FR_OK && br3 == (UINT)(kFileHeaderV13Size - kFileHeaderV12Size);
     }
     else if(ok && version_ok)
     {
@@ -970,6 +995,21 @@ bool Load(int          slot,
         // per-engine routing existed.
         hdr.dexed_midi_channel    = -1;
         hdr.granular_midi_channel = -1;
+    }
+
+    if(ok && version_ok && hdr.version == kFileVersion)
+    {
+        // v14 -- the new Ensemble MIDI-channel field is real, read it too.
+        UINT br4;
+        fr = f_read(&file, &hdr.ensemble_midi_channel, sizeof(FileHeader) - kFileHeaderV13Size,
+                     &br4);
+        ok = fr == FR_OK && br4 == (UINT)(sizeof(FileHeader) - kFileHeaderV13Size);
+    }
+    else if(ok && version_ok)
+    {
+        // v11, v12, or v13 -- no Ensemble MIDI-channel field on disk
+        // yet; default to Omni, same reasoning as dexed/granular above.
+        hdr.ensemble_midi_channel = -1;
     }
 
     if(!ok || !version_ok)
@@ -1021,6 +1061,7 @@ bool Load(int          slot,
         *out_reverb_damping01               = hdr.reverb_damping01;
         *out_dexed_midi_channel             = (int)hdr.dexed_midi_channel;
         *out_granular_midi_channel          = (int)hdr.granular_midi_channel;
+        *out_ensemble_midi_channel          = (int)hdr.ensemble_midi_channel;
     }
 
     int n = ok ? (int)hdr.num_layers : 0;
@@ -1140,6 +1181,17 @@ constexpr uint32_t kDexedPresetFileVersionV2 = 2; // previous version, still loa
 // initializers) for v2.
 constexpr size_t kDexedPresetDataV2Size
     = offsetof(DexedSynth::DexedPresetData, fold_amount01);
+
+// Same shape as DexedPresetFileHeader above, own magic/version -- a
+// single, non-incremental version check is enough here (no backward-
+// compatible chain needed yet, same starting point Dexed's own v1/v2
+// presets had before fold_amount01/fold_trim01 were added).
+struct EnsemblePresetFileHeader
+{
+    char     magic[4]; // "ENSP"
+    uint32_t version;
+};
+constexpr uint32_t kEnsemblePresetFileVersion = 1;
 } // namespace
 
 bool SaveGranularPreset(int                                       slot,
@@ -1650,6 +1702,188 @@ bool DuplicateDexedPreset(int slot, int* out_new_slot, ProgressFn on_progress)
     }
     char dst[24];
     DexedPresetFilename(new_slot, dst, sizeof(dst));
+    if(!CopyFileChunked(src, dst, on_progress))
+        return false;
+    *out_new_slot = new_slot;
+    return true;
+}
+
+bool SaveEnsemblePreset(int slot, const EnsembleSynth::EnsemblePresetData& preset)
+{
+    if(!card_ready || slot <= EnsembleSynth::GetNumFactoryPresets() || slot > kMaxEnsemblePresets)
+        return false;
+
+    char fname[24];
+    EnsemblePresetFilename(slot, fname, sizeof(fname));
+
+    FRESULT mkdir_res = f_mkdir("ENSP");
+    if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
+    {
+        SetError("mkdir", mkdir_res);
+        return false;
+    }
+
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static EnsemblePresetFileHeader hdr;
+    hdr = EnsemblePresetFileHeader{};
+    memcpy(hdr.magic, "ENSP", 4);
+    hdr.version = kEnsemblePresetFileVersion;
+
+    static EnsembleSynth::EnsemblePresetData data;
+    data = preset;
+
+    UINT bw;
+    fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(hdr);
+    if(ok)
+    {
+        fr = f_write(&file, &data, sizeof(data), &bw);
+        ok = fr == FR_OK && bw == sizeof(data);
+    }
+    if(!ok)
+        SetError("data", fr);
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
+{
+    if(slot < 1 || slot > kMaxEnsemblePresets || !out_preset)
+        return false;
+    if(slot <= EnsembleSynth::GetNumFactoryPresets())
+    {
+        *out_preset = EnsembleSynth::GetFactoryPreset(slot - 1);
+        return true;
+    }
+    if(!card_ready)
+        return false;
+
+    char fname[24];
+    EnsemblePresetFilename(slot, fname, sizeof(fname));
+
+    ClearError();
+    static FIL file;
+    FRESULT    fr = f_open(&file, fname, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static EnsemblePresetFileHeader hdr;
+    hdr = EnsemblePresetFileHeader{};
+    UINT br;
+    fr      = f_read(&file, &hdr, sizeof(hdr), &br);
+    bool ok = fr == FR_OK && br == sizeof(hdr);
+    if(ok && (memcmp(hdr.magic, "ENSP", 4) != 0 || hdr.version != kEnsemblePresetFileVersion))
+    {
+        ok = false;
+        SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
+    }
+    else if(!ok)
+    {
+        SetError("hdr", fr);
+    }
+
+    static EnsembleSynth::EnsemblePresetData data;
+    data = EnsembleSynth::EnsemblePresetData{};
+    if(ok)
+    {
+        fr = f_read(&file, &data, sizeof(data), &br);
+        ok = fr == FR_OK && br == sizeof(data);
+        if(!ok)
+            SetError("data", fr);
+    }
+    if(ok)
+        *out_preset = data;
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+int ListEnsemblePresets(int* out_numbers, int max_out)
+{
+    if(!card_ready)
+        return 0;
+    int count            = 0;
+    int first_user_slot  = EnsembleSynth::GetNumFactoryPresets() + 1;
+    for(int slot = first_user_slot; slot <= kMaxEnsemblePresets && count < max_out; slot++)
+    {
+        char    fname[24];
+        FILINFO fno;
+        EnsemblePresetFilename(slot, fname, sizeof(fname));
+        if(f_stat(fname, &fno) == FR_OK)
+            out_numbers[count++] = slot;
+    }
+    return count;
+}
+
+int NextFreeEnsemblePresetSlot()
+{
+    if(!card_ready)
+        return -1;
+    int first = EnsembleSynth::GetNumFactoryPresets() + 1;
+    for(int slot = first; slot <= kMaxEnsemblePresets; slot++)
+    {
+        char    fname[24];
+        FILINFO fno;
+        EnsemblePresetFilename(slot, fname, sizeof(fname));
+        if(f_stat(fname, &fno) != FR_OK)
+            return slot;
+    }
+    return -1;
+}
+
+bool DeleteEnsemblePreset(int slot, int* loaded_slot_inout)
+{
+    if(!card_ready || slot <= EnsembleSynth::GetNumFactoryPresets() || slot > kMaxEnsemblePresets)
+        return false;
+    char fname[24];
+    EnsemblePresetFilename(slot, fname, sizeof(fname));
+    if(!DeleteFileGeneric(fname))
+        return false;
+    if(loaded_slot_inout && *loaded_slot_inout == slot)
+        *loaded_slot_inout = 0;
+    CompactSlotsAfterDelete(slot, kMaxEnsemblePresets, EnsemblePresetFilename, loaded_slot_inout);
+    return true;
+}
+
+bool DuplicateEnsemblePreset(int slot, int* out_new_slot, ProgressFn on_progress)
+{
+    if(!out_new_slot)
+        return false;
+    *out_new_slot = -1;
+    if(!card_ready || slot <= EnsembleSynth::GetNumFactoryPresets() || slot > kMaxEnsemblePresets)
+        return false;
+    char    src[24];
+    FILINFO fno;
+    EnsemblePresetFilename(slot, src, sizeof(src));
+    if(f_stat(src, &fno) != FR_OK)
+    {
+        SetError("dupsrc", FR_NO_FILE);
+        return false;
+    }
+    int new_slot = NextFreeEnsemblePresetSlot();
+    if(new_slot < 0)
+    {
+        SetError("dupslot", FR_OK);
+        return false;
+    }
+    char dst[24];
+    EnsemblePresetFilename(new_slot, dst, sizeof(dst));
     if(!CopyFileChunked(src, dst, on_progress))
         return false;
     *out_new_slot = new_slot;
@@ -2802,7 +3036,8 @@ bool SavePrefs(TempoClock&  tempo,
               float        reverb_decay_diffusion01,
               float        reverb_damping01,
               int          dexed_midi_channel,
-              int          granular_midi_channel)
+              int          granular_midi_channel,
+              int          ensemble_midi_channel)
 {
     if(!card_ready)
         return false;
@@ -2840,6 +3075,7 @@ bool SavePrefs(TempoClock&  tempo,
     hdr.reverb_damping01               = reverb_damping01;
     hdr.dexed_midi_channel             = (int32_t)dexed_midi_channel;
     hdr.granular_midi_channel          = (int32_t)granular_midi_channel;
+    hdr.ensemble_midi_channel          = (int32_t)ensemble_midi_channel;
 
     UINT bw;
     fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
@@ -2872,7 +3108,8 @@ bool LoadPrefs(float*      out_bpm,
               float*      out_reverb_decay_diffusion01,
               float*      out_reverb_damping01,
               int*        out_dexed_midi_channel,
-              int*        out_granular_midi_channel)
+              int*        out_granular_midi_channel,
+              int*        out_ensemble_midi_channel)
 {
     // No card, no file, or wrong shape -- all silently "nothing saved
     // yet", not an error (see the header comment: the caller's own
@@ -2897,8 +3134,8 @@ bool LoadPrefs(float*      out_bpm,
     bool ok = fr == FR_OK && br == (UINT)kFileHeaderV11Size;
     bool version_ok
         = ok && memcmp(hdr.magic, "PREF", 4) == 0
-          && (hdr.version == kFileVersion || hdr.version == kFileVersionV12
-              || hdr.version == kFileVersionPrev);
+          && (hdr.version == kFileVersion || hdr.version == kFileVersionV13
+              || hdr.version == kFileVersionV12 || hdr.version == kFileVersionPrev);
 
     if(ok && version_ok && hdr.version >= kFileVersionV12)
     {
@@ -2917,17 +3154,29 @@ bool LoadPrefs(float*      out_bpm,
         hdr.reverb_damping01           = 0.05f;
     }
 
-    if(ok && version_ok && hdr.version == kFileVersion)
+    if(ok && version_ok && hdr.version >= kFileVersionV13)
     {
         UINT br3;
-        fr = f_read(&file, &hdr.dexed_midi_channel, sizeof(FileHeader) - kFileHeaderV12Size,
+        fr = f_read(&file, &hdr.dexed_midi_channel, kFileHeaderV13Size - kFileHeaderV12Size,
                      &br3);
-        ok = fr == FR_OK && br3 == (UINT)(sizeof(FileHeader) - kFileHeaderV12Size);
+        ok = fr == FR_OK && br3 == (UINT)(kFileHeaderV13Size - kFileHeaderV12Size);
     }
     else if(ok && version_ok)
     {
         hdr.dexed_midi_channel    = -1;
         hdr.granular_midi_channel = -1;
+    }
+
+    if(ok && version_ok && hdr.version == kFileVersion)
+    {
+        UINT br4;
+        fr = f_read(&file, &hdr.ensemble_midi_channel, sizeof(FileHeader) - kFileHeaderV13Size,
+                     &br4);
+        ok = fr == FR_OK && br4 == (UINT)(sizeof(FileHeader) - kFileHeaderV13Size);
+    }
+    else if(ok && version_ok)
+    {
+        hdr.ensemble_midi_channel = -1;
     }
 
     f_close(&file);
@@ -2953,6 +3202,7 @@ bool LoadPrefs(float*      out_bpm,
     *out_reverb_input_diffusion2_01     = hdr.reverb_input_diffusion2_01;
     *out_reverb_decay_diffusion01       = hdr.reverb_decay_diffusion01;
     *out_reverb_damping01               = hdr.reverb_damping01;
+    *out_ensemble_midi_channel          = (int)hdr.ensemble_midi_channel;
     return true;
 }
 

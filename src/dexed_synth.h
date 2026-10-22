@@ -48,6 +48,16 @@ class DexedSynth
     // free.
     void NoteOn(uint8_t note, uint8_t velocity);
     void NoteOff(uint8_t note);
+    // MIDI CC 123 (All Notes Off)/120 (All Sound Off) -- releases every
+    // currently-held voice regardless of note number, same real-world
+    // need every polyphonic engine here has: some controllers/
+    // arpeggiators (confirmed: an Akai MPK Mini Plus's own arp) don't
+    // reliably send a matching NoteOff for every NoteOn they sent (most
+    // commonly the very last note when the arp stops/the key releases
+    // mid-cycle), which otherwise leaves that one voice stuck holding
+    // its note forever -- this is the standard MIDI-spec panic path for
+    // exactly that case. See main.cpp's MIDI dispatch.
+    void AllNotesOff();
 
     // Raw 14-bit MIDI pitch bend (0..16383, 8192 = centered) -- this is
     // exactly the CC value Dx7Note::compute() itself expects (see

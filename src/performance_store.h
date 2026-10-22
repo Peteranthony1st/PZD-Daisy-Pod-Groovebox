@@ -5,6 +5,7 @@
 #include "looper_layer.h"
 #include "granular_engine.h"
 #include "dexed_synth.h"
+#include "ensemble_synth.h"
 
 // SD card save/load for a whole "performance" (all layers' audio plus
 // tempo/global/per-layer settings) as one flat binary file per slot.
@@ -99,18 +100,22 @@ bool Save(int                slot,
           float              reverb_decay_diffusion01,
           float              reverb_damping01,
           // Which MIDI channel each engine listens on -- -1 = Omni. See
-          // Ui::GetDexedMidiChannel()/GetGranularMidiChannel().
+          // Ui::GetDexedMidiChannel()/GetGranularMidiChannel()/
+          // GetEnsembleMidiChannel().
           int                dexed_midi_channel,
           int                granular_midi_channel,
+          int                ensemble_midi_channel,
           ProgressFn         on_progress = nullptr);
 
-// Accepts kFileVersion (13) and the two previous versions (12, 11) -- see
-// Load()'s own comment in performance_store.cpp for the incremental
-// per-version chunk scheme this uses to stay backward-compatible. A v11
-// file leaves *out_reverb_predelay01 and friends at the Dattorro
-// library's own tuned defaults (same ones DattorroReverb::Init() uses);
-// a v11 or v12 file leaves *out_dexed_midi_channel/
-// *out_granular_midi_channel at Omni (-1) -- neither fails to load.
+// Accepts kFileVersion (14) and the three previous versions (13, 12, 11)
+// -- see Load()'s own comment in performance_store.cpp for the
+// incremental per-version chunk scheme this uses to stay backward-
+// compatible. A v11 file leaves *out_reverb_predelay01 and friends at
+// the Dattorro library's own tuned defaults (same ones
+// DattorroReverb::Init() uses); a v11 or v12 file leaves
+// *out_dexed_midi_channel/*out_granular_midi_channel at Omni (-1); a
+// v11, v12, or v13 file leaves *out_ensemble_midi_channel at Omni (-1)
+// too -- none of these fail to load.
 bool Load(int          slot,
           TempoClock&  tempo,
           LooperLayer* layers,
@@ -130,6 +135,7 @@ bool Load(int          slot,
           float*       out_reverb_damping01,
           int*         out_dexed_midi_channel,
           int*         out_granular_midi_channel,
+          int*         out_ensemble_midi_channel,
           ProgressFn   on_progress = nullptr);
 
 // Grains (GranularEngine) presets: parameters AND the captured audio
@@ -213,6 +219,27 @@ int  NextFreeDexedPresetSlot(int search_from = -1);
 // ordered factory bank.
 bool DeleteDexedPreset(int slot, int* loaded_slot_inout = nullptr);
 bool DuplicateDexedPreset(int slot, int* out_new_slot, ProgressFn on_progress = nullptr);
+
+// Ensemble presets: parameters only, no audio -- same flat shape as
+// Dexed presets above, just with a much smaller factory range (8 hand-
+// authored patches, see ensemble_factory_data.h/.cpp, vs. Dexed's
+// thousands): slots 1..EnsembleSynth::GetNumFactoryPresets() are the
+// permanently read-only, firmware-embedded factory bank --
+// LoadEnsemblePreset() serves those directly without touching the card,
+// and SaveEnsemblePreset()/NextFreeEnsemblePresetSlot() never target
+// them. User saves start right after that range.
+constexpr int kMaxEnsemblePresets = 107; // 8 factory + 99 user, same user headroom as Grains
+
+bool SaveEnsemblePreset(int slot, const EnsembleSynth::EnsemblePresetData& preset);
+bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset);
+// Lists existing USER slots only (ascending) -- same shape as ListDexedPresets().
+int  ListEnsemblePresets(int* out_numbers, int max_out);
+// Lowest free USER slot, or -1 if the whole range is full/no card.
+int  NextFreeEnsemblePresetSlot();
+// Same shape as DeleteDexedPreset()/DuplicateDexedPreset() -- refuses
+// factory slots, same gap-closing renumbering.
+bool DeleteEnsemblePreset(int slot, int* loaded_slot_inout = nullptr);
+bool DuplicateEnsemblePreset(int slot, int* out_new_slot, ProgressFn on_progress = nullptr);
 
 // Importing a user-supplied DX7 SysEx file (.syx, from a computer,
 // dropped into DXIMPORT/ on the SD card) as new Dexed USER presets --
@@ -398,9 +425,10 @@ bool SavePrefs(TempoClock&  tempo,
                float        reverb_decay_diffusion01,
                float        reverb_damping01,
                int          dexed_midi_channel,
-               int          granular_midi_channel);
+               int          granular_midi_channel,
+               int          ensemble_midi_channel);
 
-// Same v11/v12/v13 backward compatibility as Load() -- see its own comment.
+// Same v11/v12/v13/v14 backward compatibility as Load() -- see its own comment.
 bool LoadPrefs(float*      out_bpm,
                int*        out_bars,
                float*      out_master_volume01,
@@ -419,6 +447,7 @@ bool LoadPrefs(float*      out_bpm,
                float*      out_reverb_decay_diffusion01,
                float*      out_reverb_damping01,
                int*        out_dexed_midi_channel,
-               int*        out_granular_midi_channel);
+               int*        out_granular_midi_channel,
+               int*        out_ensemble_midi_channel);
 
 } // namespace PerformanceStore

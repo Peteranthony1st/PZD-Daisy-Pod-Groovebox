@@ -8,6 +8,7 @@
 
 class GranularEngine;
 class DexedSynth;
+class EnsembleSynth;
 
 // The whole "one encoder + push button, two knobs, two buttons, one small
 // OLED" menu system.
@@ -88,6 +89,9 @@ class Ui
               const float*                  dexed_scope_buf,
               size_t                        dexed_scope_capacity,
               DexedSynth*                   dexed,
+              EnsembleSynth*                ensemble,
+              const float*                  ensemble_scope_buf,
+              size_t                        ensemble_scope_capacity,
               float*                        undo_backup_l,
               float*                        undo_backup_r,
               int*                          undo_owner_layer,
@@ -160,6 +164,7 @@ class Ui
     // MIDI event in main.cpp's MIDI block, not per audio sample.
     int GetDexedMidiChannel() const { return dexed_midi_channel_; }
     int GetGranularMidiChannel() const { return granular_midi_channel_; }
+    int GetEnsembleMidiChannel() const { return ensemble_midi_channel_; }
     // How much of the Bypass live-monitor signal feeds the shared reverb
     // bus above -- independent of every layer's own Send, same shared
     // bus though (see main.cpp's AudioCallback()). 0 (default) = none,
@@ -218,6 +223,9 @@ class Ui
     // independent of Granular the same way Granular is independent of
     // the looper.
     bool IsDexedEnabled() const { return dexed_enabled_; }
+    // Same real-CPU-saving on/off gate, for the new Ensemble engine (see
+    // main.cpp's AudioCallback()).
+    bool IsEnsembleEnabled() const { return ensemble_enabled_; }
     // Global:Looper, Button1 tap -- a REAL stop, not TogglePauseAll()'s
     // own phase-locked pause: main.cpp's AudioCallback() skips every
     // LooperLayer::Process() call entirely while this is false, so
@@ -253,6 +261,9 @@ class Ui
         // Same treatment as Granular above, entered from Global:Dexed.
         // See DexedParamPage for its own pages.
         Dexed,
+        // Same treatment as Granular/Dexed above, entered from
+        // Global:Ensemble. See EnsembleParamPage for its own pages.
+        Ensemble,
         // The advanced per-operator FM editor -- entered from
         // Screen::Dexed's own Advanced page (encoder click), NOT a
         // Global page of its own. Encoder click here returns to
@@ -338,6 +349,9 @@ class Ui
         // Entry point into Screen::Dexed, plus the on/off toggle -- same
         // Button1-tap convention as Granular's own above.
         Dexed,
+        // Entry point into Screen::Ensemble, plus the on/off toggle --
+        // same Button1-tap convention as Granular/Dexed above.
+        Ensemble,
         // On/off toggle only, same treatment as Granular/Dexed above --
         // but for the whole 4-layer loop system, and a REAL stop (see
         // IsLooperEnabled()'s doc comment), not TogglePauseAll()'s own
@@ -509,6 +523,41 @@ class Ui
         kCount
     };
 
+    // Screen::Ensemble's own pages -- same "simple tier" shape as
+    // DexedParamPage/SampleSynthParamPage above, no separate advanced
+    // editor (EnsembleSynth has no per-operator-equivalent depth to
+    // warrant one).
+    enum class EnsembleParamPage
+    {
+        // K1 selects which of the 7 real drawbars (0-6), K2 sets that
+        // drawbar's level -- see EnsembleSynth::SetDrawbarLevel()'s own
+        // doc comment.
+        Registration,
+        // K1/K2 = Attack/Decay or Sustain/Release, Button1/Button2
+        // target toggle -- same shape as SampleSynthParamPage::Env.
+        Env,
+        // K1 = chorus depth, K2 = chorus rate -- the one shared Chorus
+        // instance applied to the summed voice mix.
+        Ensemble,
+        Filter, // Cutoff + Resonance, mode cycled by Button1
+        Mix,    // Output Level + Pan
+        // Button1/Button2 toggle between Reverb Send and Delay Send,
+        // same convention as DexedParamPage::FX/SampleSynthParamPage::FX.
+        FX,
+        // K1 only, knob-quantized across 17 buckets (Omni + channels
+        // 1-16) -- same convention as DexedParamPage::MIDI.
+        MIDI,
+        // Save/Load -- same flat "Files (numbered list, factory presets
+        // first, read-only, then User saves) / Load New" chooser shape as
+        // GranularParamPage::Preset, just with the small bundled factory
+        // bank prepended to the browsable list instead of a separate
+        // category. Positioned last, same relative order as
+        // DexedParamPage/GranularParamPage/SampleSynthParamPage's own
+        // Preset.
+        Preset,
+        kCount
+    };
+
     // Preset page's "Files" branch own group chooser -- one level above
     // the factory-category/User folder list, entered right after
     // picking "Files" from the top-level Save/Load chooser. Added
@@ -628,6 +677,7 @@ class Ui
         GlobalMixer, // entry point only -- see Screen::Mixer instead
         GlobalSdMgmt, // browses a list directly, no pickup used -- see GlobalPage::SdMgmt
         GlobalDexed, // entry point only -- see Screen::Dexed instead
+        GlobalEnsemble, // entry point only -- see Screen::Ensemble instead
         // Screen::Granular's Grain page -- Button1/Button2 toggle which
         // pair the knobs reach (see granular_grain_target_gap_jitter_).
         GranularGrainSizeFill,
@@ -704,6 +754,21 @@ class Ui
         DexedOpAmpModSens,
         DexedOpVelocitySens,
         DexedOpKeybRateScale,
+        // Screen::Ensemble's own pages -- see EnsembleParamPage for what
+        // each one's knobs do.
+        EnsemblePreset, // browses a list directly, no pickup used
+        EnsembleRegistration,
+        // Env page's own Button1/Button2 toggle, same shape as
+        // GranularEnvAD/GranularEnvSR above.
+        EnsembleEnvAD,
+        EnsembleEnvSR,
+        EnsembleEnsemble, // chorus depth + rate, no toggle needed
+        EnsembleFilter,
+        EnsembleMix,
+        // Same shape as DexedFxReverb/DexedFxDelay above.
+        EnsembleFxReverb,
+        EnsembleFxDelay,
+        EnsembleMidi, // K1 only -- which MIDI channel this engine listens on
         kCount
     };
     KnobContext CurrentKnobContext() const;
@@ -766,7 +831,7 @@ class Ui
     // since there are only 8 cases and they already read/write each
     // engine's own real getters/setters directly -- no new state of its
     // own, this is purely another view onto values that already exist.
-    static constexpr int kNumMixerChannels = 8;
+    static constexpr int kNumMixerChannels = 9;
     // Total encoder "stops" in Screen::Mixer -- the 8 real channels above
     // plus the Scope stop (mixer_position_ == kNumMixerChannels). See
     // Screen::Mixer's own comment.
@@ -1088,6 +1153,35 @@ class Ui
     // set, so every existing Button1/Button2 call site reaches this
     // automatically with no per-call-site branching needed.
     void TriggerDexedSyxImport();
+
+    // --- Ensemble presets (EnsembleParamPage::Preset) --------------------
+    // Re-scans the User slot list (ensemble_preset_user_slots_) --
+    // flat, no import-folder filtering needed (Ensemble has no SysEx-
+    // style bulk import).
+    void RefreshEnsemblePresetSlots();
+    // Button1 short tap (force_new=false): smart save -- overwrites
+    // ensemble_loaded_preset_slot_ if it names a real user slot, else a
+    // new one. Button2 short tap (force_new=true): always a new slot.
+    // Same non-destructive reasoning as TriggerSave()'s own force_new.
+    // Factory presets are never overwritable (see
+    // ensemble_loaded_preset_slot_'s own 0-means-factory-or-none
+    // comment), so this always writes to the User range.
+    void TriggerSaveEnsemblePreset(bool force_new = false);
+    // Short tap while a preset is highlighted: applies it immediately to
+    // the live engine without leaving the browser (live preview), same
+    // "preview == commit" behavior as TriggerLoadDexedPreset(). Resolves
+    // ensemble_preset_cursor_ against the combined [factory][user] list
+    // (see ensemble_preset_user_slots_'s own comment) -- cursor <
+    // EnsembleSynth::GetNumFactoryPresets() means a factory preset
+    // (ApplyPreset() from the static table, no SD read, never sets
+    // ensemble_loaded_preset_slot_ to a real slot), otherwise a real SD
+    // user slot (PerformanceStore::LoadEnsemblePreset()).
+    void TriggerLoadEnsemblePreset();
+    // Load chooser confirmed with "New" highlighted -- resets every
+    // parameter to EnsembleSynth::EnsemblePresetData{}'s own defaults,
+    // same fresh-start convention as TriggerNewDexedPreset().
+    void TriggerNewEnsemblePreset();
+
     // Two-row control legend, drawn at the bottom of every screen in
     // Tom Thumb (see font_tomthumb.h): a knob row (circle icon) and a
     // button row (square icon), each with a label flush to the screen
@@ -1215,6 +1309,7 @@ class Ui
     // -1 = Omni (default) -- see GetDexedMidiChannel()/GetGranularMidiChannel().
     int dexed_midi_channel_    = -1;
     int granular_midi_channel_ = -1;
+    int ensemble_midi_channel_ = -1;
     // Global:FX's own toggle between the Reverb pair (Size/Bypass Send,
     // existing) and the Delay pair (Time/Feedback, new) -- same "Button1
     // = pair A, Button2 = pair B" idiom as Grain's Gap+Scan toggle.
@@ -1226,6 +1321,10 @@ class Ui
     // MOD page's own Button2 toggle -- see KnobContext::DexedVibratoSens.
     bool dexed_vibrato_target_sens_ = false;
     bool granular_fx_target_delay_ = false;
+    bool ensemble_fx_target_delay_ = false;
+    // Ensemble's own Env page toggle (Attack/Decay vs Sustain/Release) --
+    // same idiom as GranularEnvAD/GranularEnvSR's own toggle.
+    bool ensemble_env_target_sr_ = false;
     float bypass_reverb_send01_ = 0.f; // see GetBypassReverbSend01()
     float bypass_mix_volume01_  = 0.8f; // see GetBypassMixVolume01()
     float bypass_mix_volume_    = 1.f;  // curved, set properly in the ctor below
@@ -1258,6 +1357,8 @@ class Ui
     // when there was no UI toggle yet and defaulting off would have made
     // Dexed's own real MIDI dispatch unreachable/unheard).
     bool dexed_enabled_    = false;
+    // Same false default as Dexed's own -- see IsEnsembleEnabled().
+    bool ensemble_enabled_ = false;
 
     uint32_t draw_counter_ = 0; // throttles the (slow, blocking-I2C) OLED redraw
 
@@ -1550,4 +1651,43 @@ class Ui
     bool dexed_op_egrate_target_sr_  = false;
     bool dexed_op_eglevel_target_sr_ = false;
     void DrawDexedOperatorScreen();
+    void DrawEnsembleScreen();
+
+    // --- Ensemble engine (Screen::Ensemble) ------------------------------
+    EnsembleSynth*    ensemble_            = nullptr;
+    EnsembleParamPage ensemble_param_page_ = EnsembleParamPage::Registration;
+    // Live output ring buffer for Ensemble's own oscilloscope pages --
+    // same ownership convention as dexed_scope_buf_ above.
+    const float* ensemble_scope_buf_      = nullptr;
+    size_t       ensemble_scope_capacity_ = 0;
+    // Which of the 7 drawbars K2 currently edits on the Registration
+    // page -- K1 browses this directly (same "no pickup, direct scrub"
+    // idiom as Preset browsing elsewhere), K2 edits that one drawbar's
+    // level with real pickup (see ApplyKnobs()'s own resync-on-change
+    // comment, same idiom as dexed_op_index_/mixer_position_).
+    int ensemble_drawbar_index_ = 0;
+
+    // --- Ensemble presets (EnsembleParamPage::Preset) --------------------
+    // Same flat "Files (numbered list)/Load New" shape as
+    // GranularParamPage::Preset -- the small bundled factory bank (see
+    // EnsembleSynth::GetNumFactoryPresets()) occupies the first
+    // kEnsembleNumFactoryPresets entries of the SAME browsable list,
+    // ensemble_preset_user_slots_ (real SD slot numbers, ascending) fills
+    // the rest -- no separate category chooser needed, unlike Dexed's own
+    // Roms/Dexed/Imports/User split (which only exists because Dexed has
+    // 150+ factory patches, not 8).
+    static constexpr int kMaxEnsemblePresetSlots = 99; // must match PerformanceStore::kMaxEnsemblePresets
+    int  ensemble_preset_user_slots_[kMaxEnsemblePresetSlots] = {}; // SD user slots, ascending
+    int  ensemble_preset_user_slot_count_                      = 0;
+    // Index into the combined [factory][user] list above, not a raw slot
+    // number -- see TriggerLoadEnsemblePreset()'s own comment for how
+    // it's resolved.
+    int  ensemble_preset_cursor_      = 0;
+    bool ensemble_preset_slots_dirty_ = true; // forces one RefreshEnsemblePresetSlots() on entry
+    // 0 = nothing loaded yet / a factory preset is loaded (never
+    // overwritable) -- same "<= 0 means force Save New" idiom as
+    // granular_loaded_preset_slot_'s own 0 default, just 0 instead of -1
+    // since a real user slot number is always >= 1 here too.
+    int  ensemble_loaded_preset_slot_ = 0;
+    char ensemble_preset_status_[24]  = {}; // last save/load result
 };

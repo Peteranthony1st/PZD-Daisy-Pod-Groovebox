@@ -350,6 +350,19 @@ void DexedSynth::NoteOff(uint8_t note)
     }
 }
 
+void DexedSynth::AllNotesOff()
+{
+    for(int i = 0; i < kMaxVoices; i++)
+    {
+        if(voices_[i].held_note == -1)
+            continue;
+        __disable_irq();
+        voices_[i].note.keyup();
+        voices_[i].held_note = -1;
+        __enable_irq();
+    }
+}
+
 DSY_ITCM_TEXT
 void DexedSynth::RenderQuantum()
 {

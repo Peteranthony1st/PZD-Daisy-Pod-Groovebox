@@ -80,6 +80,12 @@ class GranularEngine
     // new one has already retriggered doesn't cut the new one short.
     void NoteOn(uint8_t note, uint8_t velocity);
     void NoteOff(uint8_t note);
+    // MIDI CC 123 (All Notes Off)/120 (All Sound Off) -- same real-world
+    // need as DexedSynth::AllNotesOff() (see its own comment): some
+    // controllers/arpeggiators don't reliably send a matching NoteOff
+    // for every NoteOn, leaving a note stuck. Monophonic, so this is
+    // just releasing whatever's currently held, if anything.
+    void AllNotesOff();
     bool IsNoteActive() const { return held_note_ >= 0; }
 
     // --- Size/Gap -- shared by BOTH the Grain and Scan layers (they're

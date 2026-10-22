@@ -267,7 +267,26 @@ void GranularEngine::NoteOn(uint8_t note, uint8_t velocity)
 void GranularEngine::NoteOff(uint8_t note)
 {
     if(held_note_ == (int)note)
-        held_note_ = -1; // Process()'s Adsr gate goes false next block, own Release begins
+    {
+        // ForceRelease() (not just clearing held_note_) -- same
+        // defensive fix as EnsembleSynth::NoteOff(), same underlying
+        // daisysp::Adsr, same structural risk (a fast NoteOn
+        // immediately followed by this NoteOff, with no audio block
+        // ever processed with gate=true in between, leaves the Adsr's
+        // own gate-edge detection never seeing the release -- see
+        // Adsr::ForceRelease()'s own doc comment). Confirmed on
+        // hardware for Ensemble; not yet reproduced here, but this is
+        // the same engine's own envelope used the same sampled-gate
+        // way, so there's no reason to assume it's immune.
+        adsr_.ForceRelease();
+        held_note_ = -1;
+    }
+}
+
+void GranularEngine::AllNotesOff()
+{
+    adsr_.ForceRelease();
+    held_note_ = -1;
 }
 
 void GranularEngine::SetSize01(float v01)

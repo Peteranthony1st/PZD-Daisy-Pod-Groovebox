@@ -135,6 +135,9 @@ void Ui::Init(daisy::DaisyPod*              pod,
               const float*                  dexed_scope_buf,
               size_t                        dexed_scope_capacity,
               DexedSynth*                   dexed,
+              EnsembleSynth*                ensemble,
+              const float*                  ensemble_scope_buf,
+              size_t                        ensemble_scope_capacity,
               float*                        undo_backup_l,
               float*                        undo_backup_r,
               int*                          undo_owner_layer,
@@ -158,6 +161,9 @@ void Ui::Init(daisy::DaisyPod*              pod,
     dexed_                 = dexed;
     dexed_scope_buf_        = dexed_scope_buf;
     dexed_scope_capacity_   = dexed_scope_capacity;
+    ensemble_               = ensemble;
+    ensemble_scope_buf_      = ensemble_scope_buf;
+    ensemble_scope_capacity_ = ensemble_scope_capacity;
     undo_backup_l_          = undo_backup_l;
     undo_backup_r_          = undo_backup_r;
     undo_owner_layer_       = undo_owner_layer;
@@ -188,14 +194,14 @@ void Ui::ApplyStartupDefaults()
     float      bpm, master_vol01, cutoff01, res01, reverb_sz01, byp_send01, metro_vol01;
     float      rev_predelay01, rev_prefilter01, rev_diff1_01, rev_diff2_01, rev_decdiff01,
         rev_damping01;
-    int        bars, dexed_ch, granular_ch;
+    int        bars, dexed_ch, granular_ch, ensemble_ch;
     bool       byp, metro_on;
     FilterMode mode;
     if(!PerformanceStore::LoadPrefs(&bpm, &bars, &master_vol01, &byp, &mode, &cutoff01,
                                       &res01, &reverb_sz01, &byp_send01, &metro_on,
                                       &metro_vol01, &rev_predelay01, &rev_prefilter01,
                                       &rev_diff1_01, &rev_diff2_01, &rev_decdiff01,
-                                      &rev_damping01, &dexed_ch, &granular_ch))
+                                      &rev_damping01, &dexed_ch, &granular_ch, &ensemble_ch))
         return; // nothing saved yet -- Init()'s hardcoded defaults already stand
 
     // SetBpm()/SetBars() are no-ops while locked, but nothing can be
@@ -224,6 +230,7 @@ void Ui::ApplyStartupDefaults()
     reverb_damping01_           = rev_damping01;
     dexed_midi_channel_         = dexed_ch;
     granular_midi_channel_      = granular_ch;
+    ensemble_midi_channel_      = ensemble_ch;
 
     // Init() already called this once with the pre-defaults values (see
     // its own comment above) -- re-seed now that the real starting
@@ -351,6 +358,17 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             int p = (((int)dexed_op_page_ + inc) % n + n) % n;
             dexed_op_page_ = (DexedOpParamPage)p;
         }
+        else if(screen_ == Screen::Ensemble)
+        {
+            int n = (int)EnsembleParamPage::kCount;
+            int p = (((int)ensemble_param_page_ + inc) % n + n) % n;
+            EnsembleParamPage new_ensemble_page = (EnsembleParamPage)p;
+            if(new_ensemble_page == EnsembleParamPage::Preset
+               && ensemble_param_page_ != EnsembleParamPage::Preset)
+                ensemble_preset_slots_dirty_ = true; // re-scan the card on entry
+            ensemble_param_page_ = new_ensemble_page;
+            save_load_mode_      = SaveLoadMode::Idle; // same reset as Global:File above
+        }
         else if(screen_ == Screen::Mixer)
         {
             int n            = kNumMixerPositions;
@@ -439,6 +457,14 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             // convention Global:Granular's own click uses.
             screen_ = Screen::Dexed;
         }
+        else if(!encoder_long_fired_ && screen_ == Screen::Global
+                && global_page_ == GlobalPage::Ensemble)
+        {
+            // Global:Ensemble is an entry point into Screen::Ensemble,
+            // same convention Global:Granular/Global:Dexed's own click
+            // uses.
+            screen_ = Screen::Ensemble;
+        }
         else if(!encoder_long_fired_ && screen_ == Screen::Global)
         {
             TogglePauseAll();
@@ -459,14 +485,15 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             screen_ = Screen::Dexed;
         }
         else if(!encoder_long_fired_
-                && (screen_ == Screen::Granular || screen_ == Screen::Dexed))
+                && (screen_ == Screen::Granular || screen_ == Screen::Dexed
+                    || screen_ == Screen::Ensemble))
         {
             // Same mute-all-loop-layers click as every Global page's own
-            // (TogglePauseAll()) -- every other Granular/Dexed page has
-            // no click-to-drill-in of their own (that's the encoder's
-            // job from Global instead, or Dexed's own Advanced page
-            // above), so there's nothing else useful for their click to
-            // do either.
+            // (TogglePauseAll()) -- every other Granular/Dexed/Ensemble
+            // page has no click-to-drill-in of their own (that's the
+            // encoder's job from Global instead, or Dexed's own Advanced
+            // page above), so there's nothing else useful for their click
+            // to do either.
             TogglePauseAll();
         }
         // Screen::Mixer: rotate already picks the stop (see
@@ -826,6 +853,59 @@ void Ui::HandleButton2(const UiControlEvents& events)
             button2_long_fired_ = false;
         }
     }
+    else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::Preset)
+    {
+        // Button2 confirms whichever of Save/Load is revealed -- same
+        // shared SaveLoadMode shape as Grains'/Dexed's own Preset page.
+        bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
+        bool can_confirm_load = save_load_mode_ == SaveLoadMode::BrowsingLoad
+                                 && (load_browsing_files_ || load_new_selected_);
+        bool can_confirm      = can_confirm_save || can_confirm_load;
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm)
+        {
+            button2_long_fired_ = true;
+            if(can_confirm_save)
+                TriggerSaveEnsemblePreset(save_as_new_);
+            else
+                TriggerLoadEnsemblePreset();
+            save_load_mode_ = SaveLoadMode::Idle;
+        }
+        if(events.btn2_released)
+        {
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm)
+            {
+                if(can_confirm_save)
+                    TriggerSaveEnsemblePreset(save_as_new_);
+                else
+                    TriggerLoadEnsemblePreset();
+                save_load_mode_ = SaveLoadMode::Idle;
+            }
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad
+                     && load_browsing_files_)
+            {
+                // Short tap while browsing the combined [factory][user]
+                // list -- preview it immediately (apply to the live
+                // engine) WITHOUT leaving the browser, same "preview ==
+                // commit, just without exiting" idiom as
+                // TriggerLoadDexedPreset()'s own short-tap behavior.
+                TriggerLoadEnsemblePreset();
+            }
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
+            {
+                // Short tap from Idle only: reveal the preset list to
+                // browse.
+                if(!PerformanceStore::IsCardPresent())
+                    PerformanceStore::Remount();
+                else
+                {
+                    save_load_mode_      = SaveLoadMode::BrowsingLoad;
+                    load_new_selected_   = false;
+                    load_browsing_files_ = false;
+                }
+            }
+            button2_long_fired_ = false;
+        }
+    }
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::Tempo)
     {
         // Button2 does nothing else on this page -- save the current
@@ -986,9 +1066,34 @@ void Ui::OnButton1Short()
                     TriggerExport();
             }
             else if(global_page_ == GlobalPage::Granular)
+            {
                 granular_enabled_ = !granular_enabled_;
+                // Force-release any voice this engine's own NoteOn/
+                // NoteOff dispatch left held (MIDI dispatch updates
+                // held-note state regardless of this toggle -- only
+                // Process() itself is gated by it, see AudioCallback())
+                // on every flip, not just disabling -- a stale held
+                // note from before an OFF->ON flip would otherwise
+                // start sounding again the instant Process() resumes,
+                // with no NoteOn of its own to explain it. Same real
+                // need as CC 123/120 (see AllNotesOff()'s own comment),
+                // just reachable without depending on the MIDI
+                // controller sending that message at all.
+                if(granular_)
+                    granular_->AllNotesOff();
+            }
             else if(global_page_ == GlobalPage::Dexed)
+            {
                 dexed_enabled_ = !dexed_enabled_;
+                if(dexed_)
+                    dexed_->AllNotesOff();
+            }
+            else if(global_page_ == GlobalPage::Ensemble)
+            {
+                ensemble_enabled_ = !ensemble_enabled_;
+                if(ensemble_)
+                    ensemble_->AllNotesOff();
+            }
             else if(global_page_ == GlobalPage::Looper)
             {
                 looper_enabled_ = !looper_enabled_;
@@ -1232,6 +1337,57 @@ void Ui::OnButton1Short()
                 }
             }
             break;
+        case Screen::Ensemble:
+            if(ensemble_param_page_ == EnsembleParamPage::Env)
+                ensemble_env_target_sr_ = false; // knobs -> Attack+Decay
+            else if(ensemble_param_page_ == EnsembleParamPage::FX)
+                ensemble_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
+            else if(ensemble_param_page_ == EnsembleParamPage::Filter && ensemble_)
+            {
+                // Same "Button1 cycles" idiom as Layer:Filter/Dexed:Filter.
+                int n = (int)FilterMode::kNumModes;
+                int m = ((int)ensemble_->GetFilterMode() + 1) % n;
+                ensemble_->SetFilterMode((FilterMode)m);
+            }
+            else if(ensemble_param_page_ == EnsembleParamPage::MIDI && ensemble_)
+                // Same page already shows/sets the MIDI channel -- mod
+                // wheel is a MIDI controller too, and Dexed has no
+                // equivalent free button on its own MIDI page, so this
+                // doesn't collide with any existing convention.
+                ensemble_->CycleModWheelTarget();
+            else if(ensemble_param_page_ == EnsembleParamPage::Preset)
+            {
+                if(save_load_mode_ == SaveLoadMode::BrowsingLoad && load_browsing_files_)
+                {
+                    // Back out of the numbered list to the Files/New
+                    // chooser -- see Global:File's own comment.
+                    load_browsing_files_ = false;
+                }
+                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && !load_new_selected_)
+                {
+                    // "Files" is highlighted -- drill into the combined
+                    // [factory][user] list (Knob1 now scrolls it directly).
+                    load_browsing_files_ = true;
+                }
+                else if(save_load_mode_ != SaveLoadMode::Idle)
+                {
+                    // Back -- Button2 confirms Save/Load (see
+                    // HandleButton2()), so this tap always just returns
+                    // to the page's own idle state, same as Global:File.
+                    save_load_mode_ = SaveLoadMode::Idle;
+                }
+                else if(!PerformanceStore::IsCardPresent())
+                    PerformanceStore::Remount();
+                else
+                {
+                    // Reveal the Overwrite/Save New choice -- Button2's
+                    // hold now confirms it (see HandleButton2()).
+                    save_load_mode_ = SaveLoadMode::ChoosingSave;
+                    save_as_new_
+                        = ensemble_loaded_preset_slot_ <= EnsembleSynth::GetNumFactoryPresets();
+                }
+            }
+            break;
         case Screen::DexedOperator:
         {
             // Button1 cycles which of the 6 operators is being edited --
@@ -1356,6 +1512,10 @@ void Ui::OnButton2Short()
         granular_mix_target_reverb_ = true; // knobs -> Reverb Send
     else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::FX)
         granular_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
+    else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::Env)
+        ensemble_env_target_sr_ = true; // knobs -> Sustain+Release
+    else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::FX)
+        ensemble_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
     else if(screen_ == Screen::Mixer)
         mixer_target_reverb_ = true; // knobs -> Reverb Send (ignored on Master)
     // File's and Pad Preset's short-tap behavior (Save As New) is
@@ -1402,6 +1562,7 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case GlobalPage::Mixer: return KnobContext::GlobalMixer;
                 case GlobalPage::SdMgmt: return KnobContext::GlobalSdMgmt;
                 case GlobalPage::Dexed: return KnobContext::GlobalDexed;
+                case GlobalPage::Ensemble: return KnobContext::GlobalEnsemble;
                 default: return KnobContext::GlobalTempo;
             }
         case Screen::Dexed:
@@ -1441,6 +1602,23 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case DexedOpParamPage::VelocitySens: return KnobContext::DexedOpVelocitySens;
                 case DexedOpParamPage::KeybRateScale: return KnobContext::DexedOpKeybRateScale;
                 default: return KnobContext::DexedOpRatioLevel;
+            }
+        case Screen::Ensemble:
+            switch(ensemble_param_page_)
+            {
+                case EnsembleParamPage::Registration: return KnobContext::EnsembleRegistration;
+                case EnsembleParamPage::Env:
+                    return ensemble_env_target_sr_ ? KnobContext::EnsembleEnvSR
+                                                      : KnobContext::EnsembleEnvAD;
+                case EnsembleParamPage::Ensemble: return KnobContext::EnsembleEnsemble;
+                case EnsembleParamPage::Filter: return KnobContext::EnsembleFilter;
+                case EnsembleParamPage::Mix: return KnobContext::EnsembleMix;
+                case EnsembleParamPage::FX:
+                    return ensemble_fx_target_delay_ ? KnobContext::EnsembleFxDelay
+                                                        : KnobContext::EnsembleFxReverb;
+                case EnsembleParamPage::MIDI: return KnobContext::EnsembleMidi;
+                case EnsembleParamPage::Preset: return KnobContext::EnsemblePreset;
+                default: return KnobContext::EnsembleRegistration;
             }
         case Screen::Granular:
             switch(granular_param_page_)
@@ -1567,6 +1745,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::GlobalMixer: break; // entry point only -- see Screen::Mixer instead
         case KnobContext::GlobalSdMgmt: break; // browses a list directly, no pickup used
         case KnobContext::GlobalDexed: break; // entry point only -- see Screen::Dexed instead
+        case KnobContext::GlobalEnsemble: break; // entry point only -- see Screen::Ensemble instead
         case KnobContext::DexedAlgo:
             if(dexed_)
                 k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(134) / 32.f;
@@ -1707,6 +1886,68 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 13) / 7.f;
             }
             break;
+        case KnobContext::EnsembleRegistration:
+            // K1 browses drawbars directly (no pickup -- see
+            // ApplyKnobs()'s own comment); only K2's pickup (the
+            // currently-selected drawbar's own level) needs seeding.
+            if(ensemble_)
+                k2_pickup_raw_[i] = ensemble_->GetDrawbarLevel(ensemble_drawbar_index_);
+            break;
+        case KnobContext::EnsembleEnvAD:
+            if(ensemble_)
+            {
+                k1_pickup_raw_[i] = ensemble_->GetAttack01();
+                k2_pickup_raw_[i] = ensemble_->GetDecay01();
+            }
+            break;
+        case KnobContext::EnsembleEnvSR:
+            if(ensemble_)
+            {
+                k1_pickup_raw_[i] = ensemble_->GetSustain01();
+                k2_pickup_raw_[i] = ensemble_->GetRelease01();
+            }
+            break;
+        case KnobContext::EnsembleEnsemble:
+            if(ensemble_)
+            {
+                k1_pickup_raw_[i] = ensemble_->GetChorusDepth01();
+                k2_pickup_raw_[i] = ensemble_->GetChorusRate01();
+            }
+            break;
+        case KnobContext::EnsembleFilter:
+            if(ensemble_)
+            {
+                k1_pickup_raw_[i] = ensemble_->GetFilterCutoff01();
+                k2_pickup_raw_[i] = ensemble_->GetFilterResonance01();
+            }
+            break;
+        case KnobContext::EnsembleMix:
+            if(ensemble_)
+            {
+                k1_pickup_raw_[i] = ensemble_->GetOutputLevel01();
+                k2_pickup_raw_[i] = ensemble_->GetPan01();
+            }
+            break;
+        case KnobContext::EnsembleFxReverb:
+            if(ensemble_)
+            {
+                k1_pickup_raw_[i] = ensemble_->GetReverbSend01();
+                k2_pickup_raw_[i] = reverb_size01_;
+            }
+            break;
+        case KnobContext::EnsembleFxDelay:
+            if(ensemble_)
+            {
+                k1_pickup_raw_[i] = ensemble_->GetDelaySend01();
+                k2_pickup_raw_[i] = delay_time01_;
+            }
+            break;
+        case KnobContext::EnsembleMidi:
+            // Same bucket-midpoint idiom as KnobContext::DexedMidi above.
+            k1_pickup_raw_[i]
+                = Clampf(((float)(ensemble_midi_channel_ + 1) + 0.5f) / 16.99f, 0.f, 1.f);
+            break;
+        case KnobContext::EnsemblePreset: break; // browses a list directly, no pickup used
         case KnobContext::GranularGrainSizeFill:
             if(granular_)
             {
@@ -2580,6 +2821,135 @@ void Ui::ApplyKnobs()
             }
             break;
 
+        case Screen::Ensemble:
+            if(!ensemble_)
+                break;
+            switch(ensemble_param_page_)
+            {
+                case EnsembleParamPage::Registration:
+                {
+                    // K1 browses which of the 7 drawbars is selected --
+                    // same "no pickup, direct scrub" idiom as Preset
+                    // browsing/DexedFilesGroup elsewhere (this is a
+                    // selector, not a persisted value of its own).
+                    int idx = (int)(Clampf(k1, 0.f, 1.f) * EnsembleSynth::kNumDrawbars);
+                    if(idx >= EnsembleSynth::kNumDrawbars)
+                        idx = EnsembleSynth::kNumDrawbars - 1;
+                    if(idx != ensemble_drawbar_index_)
+                    {
+                        ensemble_drawbar_index_ = idx;
+                        // K2 now edits a DIFFERENT drawbar's level --
+                        // re-arm its own pickup and reseed it to that
+                        // drawbar's real current value, same "same
+                        // KnobContext, manual resync" fix as
+                        // dexed_op_index_/mixer_position_ use elsewhere.
+                        k2_pickup_engaged_[ci] = false;
+                        if(ensemble_)
+                            k2_pickup_raw_[ci] = ensemble_->GetDrawbarLevel(ensemble_drawbar_index_);
+                    }
+                    if(ensemble_ && KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        ensemble_->SetDrawbarLevel(ensemble_drawbar_index_, k2);
+                    break;
+                }
+                case EnsembleParamPage::Env:
+                    if(!ensemble_env_target_sr_)
+                    {
+                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                            ensemble_->SetAttack01(k1);
+                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                            ensemble_->SetDecay01(k2);
+                    }
+                    else
+                    {
+                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                            ensemble_->SetSustain01(k1);
+                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                            ensemble_->SetRelease01(k2);
+                    }
+                    break;
+                case EnsembleParamPage::Ensemble:
+                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        ensemble_->SetChorusDepth01(k1);
+                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        ensemble_->SetChorusRate01(k2);
+                    break;
+                case EnsembleParamPage::Filter:
+                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        ensemble_->SetFilterCutoff01(k1);
+                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        ensemble_->SetFilterResonance01(k2);
+                    break;
+                case EnsembleParamPage::Mix:
+                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        ensemble_->SetOutputLevel01(k1);
+                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        ensemble_->SetPan01(k2);
+                    break;
+                case EnsembleParamPage::FX:
+                    if(!ensemble_fx_target_delay_)
+                    {
+                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                            ensemble_->SetReverbSend01(k1);
+                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                            reverb_size01_ = Clampf(k2, 0.f, 1.f);
+                    }
+                    else
+                    {
+                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                            ensemble_->SetDelaySend01(k1);
+                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                            delay_time01_ = Clampf(k2, 0.f, 1.f);
+                    }
+                    break;
+                case EnsembleParamPage::MIDI:
+                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        ensemble_midi_channel_ = -1 + (int)(k1 * 16.99f);
+                    break;
+                case EnsembleParamPage::Preset:
+                {
+                    if(save_load_mode_ == SaveLoadMode::ChoosingSave)
+                    {
+                        // Overwrite is only a real option once a real
+                        // user slot (not a factory one) is loaded -- same
+                        // idiom as DexedParamPage::Preset above.
+                        save_as_new_
+                            = ensemble_loaded_preset_slot_ <= EnsembleSynth::GetNumFactoryPresets()
+                                  ? true
+                                  : k1 >= 0.5f;
+                        break;
+                    }
+                    if(save_load_mode_ != SaveLoadMode::BrowsingLoad)
+                        break;
+                    if(!load_browsing_files_)
+                    {
+                        // Top-level chooser -- Files is always a real
+                        // option here (the factory bank always exists,
+                        // unlike Grains' own Preset page), same reasoning
+                        // as Dexed's own top-level chooser.
+                        load_new_selected_ = k1 >= 0.5f;
+                        break;
+                    }
+                    // Drilled into the combined [factory][user] list --
+                    // see ensemble_preset_user_slots_'s own comment.
+                    {
+                        int total = EnsembleSynth::GetNumFactoryPresets()
+                                    + ensemble_preset_user_slot_count_;
+                        if(total > 0)
+                        {
+                            int idx = (int)(Clampf(k1, 0.f, 1.f) * total);
+                            if(idx >= total)
+                                idx = total - 1;
+                            if(idx != ensemble_preset_cursor_)
+                                ensemble_preset_status_[0] = '\0';
+                            ensemble_preset_cursor_ = idx;
+                        }
+                    }
+                    break;
+                }
+                default: break;
+            }
+            break;
+
         case Screen::DexedOperator:
         {
             if(!dexed_)
@@ -2831,6 +3201,7 @@ void Ui::Draw()
         case Screen::Granular: DrawGranularScreen(); break;
         case Screen::Mixer: DrawMixerScreen(); break;
         case Screen::Dexed: DrawDexedScreen(); break;
+        case Screen::Ensemble: DrawEnsembleScreen(); break;
         case Screen::DexedOperator: DrawDexedOperatorScreen(); break;
     }
     disp_->Update();
@@ -3453,6 +3824,27 @@ void Ui::DrawGlobalScreen()
         WriteUpper(dexed_enabled_ ? "Enabled" : "Disabled");
         disp_->SetCursor(0, 30);
         WriteUpper("Click to open Dexed");
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Toggle On/Off", "", "", "");
+        return;
+    }
+    if(global_page_ == GlobalPage::Ensemble)
+    {
+        // Entry point into Screen::Ensemble, plus the on/off toggle --
+        // same treatment as Global:Granular/Global:Dexed above.
+        disp_->SetCursor(0, 0);
+        // "Ensmbl" not "Ensemble" -- same budget as Global:Grains'
+        // own shortened label (title row reserves the right 41px for
+        // the beat indicator, ~14 chars max in Font_6x8 before it
+        // overlaps -- "Global:Ensemble" didn't fit, confirmed on real
+        // hardware).
+        WriteUpper("Global:Ensmbl");
+        DrawBeatIndicator(disp_->Width() - 41, 0, 3);
+        disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
+        disp_->SetCursor(0, 20);
+        WriteUpper(ensemble_enabled_ ? "Enabled" : "Disabled");
+        disp_->SetCursor(0, 30);
+        WriteUpper("Click to open Ensmbl");
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Toggle On/Off", "", "", "");
         return;
@@ -4628,8 +5020,9 @@ const char* Ui::MixerChannelName(int ch) const
         case 3: return "L4";
         case 4: return "GR";
         case 5: return "DXD";
-        case 6: return "BYP";
-        case 7: return "MAS";
+        case 6: return "ESB";
+        case 7: return "BYP";
+        case 8: return "MAS";
         default: return "?";
     }
 }
@@ -4641,8 +5034,9 @@ float Ui::MixerGetVolume01(int ch) const
         case 0: case 1: case 2: case 3: return layers_[ch].GetVolume01();
         case 4: return granular_ ? granular_->GetOutputLevel01() : 0.f;
         case 5: return dexed_ ? dexed_->GetOutputLevel01() : 0.f;
-        case 6: return bypass_mix_volume01_;
-        case 7: return master_volume01_;
+        case 6: return ensemble_ ? ensemble_->GetOutputLevel01() : 0.f;
+        case 7: return bypass_mix_volume01_;
+        case 8: return master_volume01_;
         default: return 0.f;
     }
 }
@@ -4654,7 +5048,8 @@ float Ui::MixerGetPan01(int ch) const
         case 0: case 1: case 2: case 3: return layers_[ch].GetPan01();
         case 4: return granular_ ? granular_->GetPan01() : 0.5f;
         case 5: return dexed_ ? dexed_->GetPan01() : 0.5f;
-        case 6: return bypass_pan01_;
+        case 6: return ensemble_ ? ensemble_->GetPan01() : 0.5f;
+        case 7: return bypass_pan01_;
         default: return 0.5f; // Master has none
     }
 }
@@ -4666,7 +5061,8 @@ float Ui::MixerGetSend01(int ch) const
         case 0: case 1: case 2: case 3: return layers_[ch].GetReverbSend01();
         case 4: return granular_ ? granular_->GetReverbSend01() : 0.f;
         case 5: return dexed_ ? dexed_->GetReverbSend01() : 0.f;
-        case 6: return bypass_reverb_send01_;
+        case 6: return ensemble_ ? ensemble_->GetReverbSend01() : 0.f;
+        case 7: return bypass_reverb_send01_;
         default: return 0.f; // Master uses Reverb Size instead (see reverb_size01_)
     }
 }
@@ -4678,8 +5074,9 @@ void Ui::MixerSetVolume01(int ch, float v01)
         case 0: case 1: case 2: case 3: layers_[ch].SetVolume01(v01); break;
         case 4: if(granular_) granular_->SetOutputLevel01(v01); break;
         case 5: if(dexed_) dexed_->SetOutputLevel01(v01); break;
-        case 6: SetBypassMixVolume01(v01); break;
-        case 7:
+        case 6: if(ensemble_) ensemble_->SetOutputLevel01(v01); break;
+        case 7: SetBypassMixVolume01(v01); break;
+        case 8:
             master_volume01_ = Clampf(v01, 0.f, 1.f);
             master_volume_   = powf(master_volume01_, 2.5f) * 1.43f;
             if(master_volume_ < 0.f)
@@ -4696,7 +5093,8 @@ void Ui::MixerSetPan01(int ch, float v01)
         case 0: case 1: case 2: case 3: layers_[ch].SetPan01(v01); break;
         case 4: if(granular_) granular_->SetPan01(v01); break;
         case 5: if(dexed_) dexed_->SetPan01(v01); break;
-        case 6: SetBypassPan01(v01); break;
+        case 6: if(ensemble_) ensemble_->SetPan01(v01); break;
+        case 7: SetBypassPan01(v01); break;
         default: break; // Master has no Pan -- no-op
     }
 }
@@ -4708,7 +5106,8 @@ void Ui::MixerSetSend01(int ch, float v01)
         case 0: case 1: case 2: case 3: layers_[ch].SetReverbSend01(v01); break;
         case 4: if(granular_) granular_->SetReverbSend01(v01); break;
         case 5: if(dexed_) dexed_->SetReverbSend01(v01); break;
-        case 6: bypass_reverb_send01_ = Clampf(v01, 0.f, 1.f); break;
+        case 6: if(ensemble_) ensemble_->SetReverbSend01(v01); break;
+        case 7: bypass_reverb_send01_ = Clampf(v01, 0.f, 1.f); break;
         default: break; // Master uses Reverb Size instead, set directly in ApplyKnobs()
     }
 }
@@ -4737,8 +5136,9 @@ float Ui::MixerGetLevel01(int ch) const
         // hard" and what that bar would have shown.
         case 4: return granular_ ? granular_->GetPreLimiterLevel01() : 0.f;
         case 5: return dexed_ ? dexed_->GetPreLimiterLevel01() : 0.f;
-        case 6: return g_bypass_level;
-        case 7: return g_master_level;
+        case 6: return ensemble_ ? ensemble_->GetPreLimiterLevel01() : 0.f;
+        case 7: return g_bypass_level;
+        case 8: return g_master_level;
         default: return 0.f;
     }
 }
@@ -4759,8 +5159,9 @@ bool Ui::MixerIsClipping(int ch) const
         // so those two keep using the plain post-chain check.
         case 4: return granular_ && granular_->IsLimiting();
         case 5: return dexed_ && dexed_->IsLimiting();
-        case 6: return g_bypass_clip_hold > 0.f;
-        case 7: return g_master_clip_hold > 0.f;
+        case 6: return ensemble_ && ensemble_->IsLimiting();
+        case 7: return g_bypass_clip_hold > 0.f;
+        case 8: return g_master_clip_hold > 0.f;
         default: return false;
     }
 }
@@ -5311,6 +5712,301 @@ void Ui::DrawDexedScreen()
     }
 }
 
+void Ui::DrawEnsembleScreen()
+{
+    if(!ensemble_)
+        return;
+
+    // "Ensmbl" not "Ensemble", and "Regist" not "Registration" -- same
+    // ~14-char budget as every other engine's own title row (beat
+    // indicator reserves the right 41px), confirmed too long on real
+    // hardware with the full names.
+    const char* page_name = "Regist";
+    switch(ensemble_param_page_)
+    {
+        case EnsembleParamPage::Registration: page_name = "Regist"; break;
+        case EnsembleParamPage::Env: page_name = "Env"; break;
+        case EnsembleParamPage::Ensemble: page_name = "Chorus"; break;
+        case EnsembleParamPage::Filter: page_name = "Filter"; break;
+        case EnsembleParamPage::Mix: page_name = "Mix"; break;
+        case EnsembleParamPage::FX: page_name = "FX"; break;
+        case EnsembleParamPage::MIDI: page_name = "MIDI"; break;
+        case EnsembleParamPage::Preset: page_name = "Preset"; break;
+        default: break;
+    }
+    char title[24];
+    snprintf(title, sizeof(title), "Ensmbl:%s", page_name);
+    disp_->SetCursor(0, 0);
+    WriteUpper(title);
+    DrawBeatIndicator(disp_->Width() - 41, 0, 3);
+    disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
+
+    switch(ensemble_param_page_)
+    {
+        case EnsembleParamPage::Registration:
+        {
+            // Organ-stop names, same order as EnsembleSynth::
+            // SetDrawbarLevel()'s own idx (0=Saw8' .. 6=Saw1').
+            static const char* const kDrawbarNames[EnsembleSynth::kNumDrawbars]
+                = {"Saw 8'", "Sq 8'", "Saw 4'", "Sq 4'", "Saw 2'", "Sq 2'", "Saw 1'"};
+            int idx = ensemble_drawbar_index_;
+            if(idx < 0 || idx >= EnsembleSynth::kNumDrawbars)
+                idx = 0;
+            TomThumbDrawText(disp_, 0, 15, kDrawbarNames[idx], true);
+            DrawOscilloscope(18, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
+            char val[8];
+            snprintf(val, sizeof(val), "%d%%",
+                      (int)(ensemble_->GetDrawbarLevel(idx) * 100.f + 0.5f));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Select", "", val, "Level");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+            break;
+        }
+        case EnsembleParamPage::Env:
+        {
+            // Same shape as GranularParamPage::ADSR's own graphic -- all
+            // four stages always shown together.
+            DrawAdsrShape(12, kFooterDividerY - 2, ensemble_->GetAttackSeconds(),
+                          ensemble_->GetDecaySeconds(), ensemble_->GetSustain01(),
+                          ensemble_->GetReleaseSeconds());
+            if(!ensemble_env_target_sr_)
+            {
+                char a_val[8], d_val[8];
+                snprintf(a_val, sizeof(a_val), "%d%%",
+                          (int)(ensemble_->GetAttack01() * 100.f + 0.5f));
+                snprintf(d_val, sizeof(d_val), "%d%%",
+                          (int)(ensemble_->GetDecay01() * 100.f + 0.5f));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Attack", a_val, d_val,
+                                 "Decay");
+            }
+            else
+            {
+                char s_val[8], r_val[8];
+                snprintf(s_val, sizeof(s_val), "%d%%",
+                          (int)(ensemble_->GetSustain01() * 100.f + 0.5f));
+                snprintf(r_val, sizeof(r_val), "%d%%",
+                          (int)(ensemble_->GetRelease01() * 100.f + 0.5f));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Sustain", s_val, r_val,
+                                 "Release");
+            }
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             ensemble_env_target_sr_ ? "AD" : "AD*", "", "",
+                             ensemble_env_target_sr_ ? "SR*" : "SR");
+            break;
+        }
+        case EnsembleParamPage::Ensemble:
+        {
+            DrawOscilloscope(12, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
+            char depth_val[8], rate_val[8];
+            snprintf(depth_val, sizeof(depth_val), "%d%%",
+                      (int)(ensemble_->GetChorusDepth01() * 100.f + 0.5f));
+            snprintf(rate_val, sizeof(rate_val), "%d%%",
+                      (int)(ensemble_->GetChorusRate01() * 100.f + 0.5f));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Depth", depth_val, rate_val,
+                             "Rate");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+            break;
+        }
+        case EnsembleParamPage::Filter:
+        {
+            char mode_line[20];
+            snprintf(mode_line, sizeof(mode_line), "Mode: %s",
+                      FilterModeName(ensemble_->GetFilterMode()));
+            TomThumbDrawText(disp_, 0, 15, mode_line, true);
+            DrawOscilloscope(18, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
+            char cutoff_val[8], res_val[8];
+            snprintf(cutoff_val, sizeof(cutoff_val), "%d%%",
+                      (int)(ensemble_->GetFilterCutoff01() * 100.f + 0.5f));
+            snprintf(res_val, sizeof(res_val), "%d%%",
+                      (int)(ensemble_->GetFilterResonance01() * 100.f + 0.5f));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Cutoff", cutoff_val, res_val,
+                             "Res");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Cycle mode", "", "", "");
+            break;
+        }
+        case EnsembleParamPage::Mix:
+        {
+            DrawOscilloscope(12, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
+            char out_val[8], pan_val[8];
+            snprintf(out_val, sizeof(out_val), "%d%%",
+                      (int)(ensemble_->GetOutputLevel01() * 100.f + 0.5f));
+            snprintf(pan_val, sizeof(pan_val), "%d%%",
+                      (int)(ensemble_->GetPan01() * 100.f + 0.5f));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, pan_val, "Pan");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+            break;
+        }
+        case EnsembleParamPage::FX:
+        {
+            if(!ensemble_fx_target_delay_)
+            {
+                char send_val[8], size_val[8];
+                snprintf(send_val, sizeof(send_val), "%d%%",
+                          (int)(ensemble_->GetReverbSend01() * 100.f + 0.5f));
+                snprintf(size_val, sizeof(size_val), "%d%%",
+                          (int)(reverb_size01_ * 100.f + 0.5f));
+                TomThumbDrawText(disp_, 0, 15, "Reverb", true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Send", send_val, size_val,
+                                 "Size");
+            }
+            else
+            {
+                char send_val[8], time_val[8];
+                snprintf(send_val, sizeof(send_val), "%d%%",
+                          (int)(ensemble_->GetDelaySend01() * 100.f + 0.5f));
+                snprintf(time_val, sizeof(time_val), "%d%%",
+                          (int)(delay_time01_ * 100.f + 0.5f));
+                TomThumbDrawText(disp_, 0, 15, "Delay", true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Send", send_val, time_val,
+                                 "Time");
+            }
+            DrawOscilloscope(18, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             ensemble_fx_target_delay_ ? "Reverb" : "Reverb*", "", "",
+                             ensemble_fx_target_delay_ ? "Delay*" : "Delay");
+            break;
+        }
+        case EnsembleParamPage::MIDI:
+        {
+            char chan_val[8];
+            if(ensemble_midi_channel_ < 0)
+                snprintf(chan_val, sizeof(chan_val), "Omni");
+            else
+                snprintf(chan_val, sizeof(chan_val), "%d", ensemble_midi_channel_ + 1);
+            char wheel_line[24];
+            snprintf(wheel_line, sizeof(wheel_line), "Wheel: %s", ensemble_->GetModWheelTargetName());
+            TomThumbDrawText(disp_, 0, 15, wheel_line, true);
+            DrawOscilloscope(18, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Channel", chan_val, "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Cycle wheel tgt", "", "", "");
+            break;
+        }
+        case EnsembleParamPage::Preset:
+        {
+            if(!PerformanceStore::IsCardPresent())
+            {
+                disp_->SetCursor(0, 20);
+                WriteUpper("No card");
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
+                break;
+            }
+            if(ensemble_preset_slots_dirty_)
+                RefreshEnsemblePresetSlots();
+
+            int  factory_count = EnsembleSynth::GetNumFactoryPresets();
+            bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
+            bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
+            bool load_chooser  = browsing_load && !load_browsing_files_;
+            bool can_hold_load = browsing_load && (load_browsing_files_ || load_new_selected_);
+
+            // Same "Button2 hold takes over the whole display" idiom as
+            // GranularParamPage::Preset -- Ensemble presets are a single
+            // small struct (no audio), so this never actually runs long,
+            // but the same shape keeps this in sync with every other
+            // Preset page.
+            if(pod_->button2.Pressed() && (choosing_save || can_hold_load))
+            {
+                float       held     = pod_->button2.TimeHeldMs();
+                int         w        = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
+                const char* hold_msg = choosing_save ? "Hold: Save..." : "Hold: Load...";
+                disp_->SetCursor(0, 20);
+                WriteUpper(hold_msg);
+                disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
+                if(w > 0)
+                    disp_->DrawRect(1, 31, w, 33, true, true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+                break;
+            }
+
+            if(choosing_save)
+            {
+                bool can_overwrite = ensemble_loaded_preset_slot_ > factory_count;
+                char line1[24], line2[16];
+                snprintf(line1, sizeof(line1), "%c Overwrite%s", !save_as_new_ ? '>' : ' ',
+                          can_overwrite ? "" : " (n/a)");
+                snprintf(line2, sizeof(line2), "%c Save New", save_as_new_ ? '>' : ' ');
+                disp_->SetCursor(0, 16);
+                WriteUpper(line1);
+                disp_->SetCursor(0, 28);
+                WriteUpper(line2);
+            }
+            else if(load_chooser)
+            {
+                // Unlike Grains' own Preset page, Files is always a real
+                // option here (the 8-preset factory bank always exists).
+                char line1[24], line2[16];
+                snprintf(line1, sizeof(line1), "%c Files", !load_new_selected_ ? '>' : ' ');
+                snprintf(line2, sizeof(line2), "%c Load New", load_new_selected_ ? '>' : ' ');
+                disp_->SetCursor(0, 16);
+                WriteUpper(line1);
+                disp_->SetCursor(0, 28);
+                WriteUpper(line2);
+            }
+            else if(browsing_load)
+            {
+                // Drilled into the combined [factory][user] list --
+                // cursor < factory_count shows the factory preset's real
+                // name, otherwise the real SD slot number.
+                char line2[24];
+                if(ensemble_preset_cursor_ < factory_count)
+                    snprintf(line2, sizeof(line2), "Load: %s",
+                              EnsembleSynth::GetFactoryPresetName(ensemble_preset_cursor_));
+                else
+                    snprintf(line2, sizeof(line2), "Load: %d",
+                              ensemble_preset_user_slots_[ensemble_preset_cursor_
+                                                           - factory_count]);
+                disp_->SetCursor(0, 20);
+                WriteUpper(line2);
+            }
+            else
+            {
+                char line1[24];
+                if(ensemble_loaded_preset_slot_ <= 0)
+                    snprintf(line1, sizeof(line1), "Now: (custom)");
+                else if(ensemble_loaded_preset_slot_ <= factory_count)
+                    snprintf(line1, sizeof(line1), "Now: %s",
+                              EnsembleSynth::GetFactoryPresetName(ensemble_loaded_preset_slot_ - 1));
+                else
+                    snprintf(line1, sizeof(line1), "Now: %d", ensemble_loaded_preset_slot_);
+                disp_->SetCursor(0, 20);
+                WriteUpper(line1);
+                if(ensemble_preset_status_[0] != '\0')
+                {
+                    disp_->SetCursor(0, 32);
+                    WriteUpper(ensemble_preset_status_);
+                }
+            }
+
+            {
+                const char* b1_label;
+                if(save_load_mode_ == SaveLoadMode::Idle)
+                    b1_label = "Save";
+                else if(load_chooser && !load_new_selected_)
+                    b1_label = "Select";
+                else
+                    b1_label = "Back";
+                const char* b2_label;
+                if(save_load_mode_ == SaveLoadMode::Idle)
+                    b2_label = "Load";
+                else if(choosing_save)
+                    b2_label = "Hold=Save";
+                else if(can_hold_load)
+                    b2_label = "Hold=Load";
+                else
+                    b2_label = "";
+
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
+                                 (choosing_save || browsing_load) ? "Scroll" : "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1_label, "", "",
+                                 b2_label);
+            }
+            break;
+        }
+        default: break;
+    }
+}
+
 void Ui::DrawDexedOperatorScreen()
 {
     if(!dexed_)
@@ -5498,7 +6194,15 @@ void Ui::DrawMixerScreen()
 
     for(int col = 0; col < 2; col++)
     {
-        int  ch       = group_start + col;
+        int ch = group_start + col;
+        // 9 real channels (odd) since Ensemble was added -- the last
+        // group has only one real channel (Master, alone); leave the
+        // second column blank rather than reading/drawing channel 9
+        // (out of range, MixerChannelName()/MixerGet*01() would all
+        // silently fall through to their own "?"/0.f defaults, a real
+        // but confusing-looking bug rather than a crash).
+        if(ch >= kNumMixerChannels)
+            break;
         bool selected = ch == mixer_position_;
         int  col_x    = kColW * col;
         int  bars_w   = kBarW * 3 + kBarGap * 2;
@@ -5991,7 +6695,8 @@ void Ui::TriggerSave(bool force_new)
                                        reverb_prefilter01_, reverb_input_diffusion1_01_,
                                        reverb_input_diffusion2_01_, reverb_decay_diffusion01_,
                                        reverb_damping01_, dexed_midi_channel_,
-                                       granular_midi_channel_, &Ui::OnSaveLoadProgress);
+                                       granular_midi_channel_, ensemble_midi_channel_,
+                                       &Ui::OnSaveLoadProgress);
     file_op_in_progress_ = false;
     g_progress_disp       = nullptr;
     g_audio_suspended     = false;
@@ -6048,7 +6753,7 @@ void Ui::TriggerLoad()
                                        &reverb_input_diffusion2_01_,
                                        &reverb_decay_diffusion01_, &reverb_damping01_,
                                        &dexed_midi_channel_, &granular_midi_channel_,
-                                       &Ui::OnSaveLoadProgress);
+                                       &ensemble_midi_channel_, &Ui::OnSaveLoadProgress);
     file_op_in_progress_ = false;
     g_progress_disp       = nullptr;
     g_audio_suspended     = false; // every layer + tempo phase is consistent now
@@ -6718,6 +7423,104 @@ void Ui::TriggerDexedSyxImport()
                   last_slot);
 }
 
+void Ui::RefreshEnsemblePresetSlots()
+{
+    ensemble_preset_user_slot_count_ = PerformanceStore::ListEnsemblePresets(
+        ensemble_preset_user_slots_, kMaxEnsemblePresetSlots);
+    int total = EnsembleSynth::GetNumFactoryPresets() + ensemble_preset_user_slot_count_;
+    if(ensemble_preset_cursor_ >= total)
+        ensemble_preset_cursor_ = total > 0 ? total - 1 : 0;
+    ensemble_preset_slots_dirty_ = false;
+}
+
+void Ui::TriggerSaveEnsemblePreset(bool force_new)
+{
+    if(!ensemble_)
+        return;
+    // Smart save (force_new=false): overwrite ensemble_loaded_preset_slot_
+    // if it names a real USER slot; a factory slot or nothing loaded (0)
+    // has no slot to overwrite, so fall back to a new one -- same
+    // reasoning TriggerSaveDexedPreset() uses.
+    int slot = (!force_new
+                 && ensemble_loaded_preset_slot_ > EnsembleSynth::GetNumFactoryPresets())
+                   ? ensemble_loaded_preset_slot_
+                   : PerformanceStore::NextFreeEnsemblePresetSlot();
+    if(slot < 0)
+    {
+        snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Card full/missing");
+        return;
+    }
+    // See the g_audio_suspended comment in TriggerSave() above -- same
+    // short-lived single-struct write as TriggerSaveDexedPreset(), same
+    // in-principle race.
+    g_audio_suspended = true;
+    bool ok           = PerformanceStore::SaveEnsemblePreset(slot, ensemble_->CapturePreset());
+    g_audio_suspended = false;
+    if(ok)
+    {
+        ensemble_loaded_preset_slot_ = slot;
+        snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Saved %d", slot);
+        ensemble_preset_slots_dirty_ = true; // a new slot may now exist
+    }
+    else
+    {
+        snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Fail:%s",
+                  PerformanceStore::GetLastError());
+    }
+}
+
+void Ui::TriggerNewEnsemblePreset()
+{
+    if(!ensemble_)
+        return;
+    ensemble_->ApplyPreset(EnsembleSynth::EnsemblePresetData{});
+    ensemble_loaded_preset_slot_ = 0;
+    snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "New");
+}
+
+void Ui::TriggerLoadEnsemblePreset()
+{
+    if(!ensemble_)
+        return;
+    // !load_browsing_files_ means the top-level chooser confirmed with
+    // "New" highlighted (can_confirm_load only allows a confirm here when
+    // that's the case -- see HandleButton2()).
+    if(!load_browsing_files_)
+    {
+        TriggerNewEnsemblePreset();
+        return;
+    }
+    int factory_count = EnsembleSynth::GetNumFactoryPresets();
+    int total          = factory_count + ensemble_preset_user_slot_count_;
+    if(ensemble_preset_cursor_ < 0 || ensemble_preset_cursor_ >= total)
+        return;
+    // Resolve the combined [factory][user] list directly into a real
+    // slot number -- cursor < factory_count means a factory preset
+    // (slots are 1-based, matching PerformanceStore::LoadEnsemblePreset()'s
+    // own factory-range convention), otherwise a real SD user slot.
+    int slot = ensemble_preset_cursor_ < factory_count
+                   ? ensemble_preset_cursor_ + 1
+                   : ensemble_preset_user_slots_[ensemble_preset_cursor_ - factory_count];
+
+    EnsembleSynth::EnsemblePresetData preset;
+    bool ok = PerformanceStore::LoadEnsemblePreset(slot, &preset);
+    if(ok)
+    {
+        ensemble_->ApplyPreset(preset);
+        ensemble_loaded_preset_slot_ = slot;
+        if(slot <= factory_count)
+            snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Loaded %s",
+                      EnsembleSynth::GetFactoryPresetName(slot - 1));
+        else
+            snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Loaded %d", slot);
+    }
+    else
+    {
+        snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Fail:%s",
+                  PerformanceStore::GetLastError());
+    }
+}
+
 void Ui::TriggerSaveDefaults()
 {
     bool ok = PerformanceStore::SavePrefs(*tempo_, master_volume01_, bypass_,
@@ -6727,7 +7530,8 @@ void Ui::TriggerSaveDefaults()
                                             reverb_prefilter01_, reverb_input_diffusion1_01_,
                                             reverb_input_diffusion2_01_,
                                             reverb_decay_diffusion01_, reverb_damping01_,
-                                            dexed_midi_channel_, granular_midi_channel_);
+                                            dexed_midi_channel_, granular_midi_channel_,
+                                            ensemble_midi_channel_);
     if(ok)
         snprintf(tempo_status_, sizeof(tempo_status_), "Saved as default");
     else
