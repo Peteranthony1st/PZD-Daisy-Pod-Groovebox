@@ -1,4 +1,4 @@
-# PZD-Daisy-Pod-Looper-DX7-FM-Granular — design notes
+# PZD-Daisy-Pod-Groovebox — design notes
 
 ## Credit
 
@@ -2616,17 +2616,26 @@ universal rule.
 
 ## SD card management (Global:SdMgmt)
 
-Lets you browse either of 2 save categories — Performances, Grains
-Presets — and Duplicate or Delete individual files directly from the
-Pod, no computer needed. Reuses the exact same cached slot-list arrays
-and dirty-flag/`Refresh*()` functions those save pages already scan and
-cache — no duplicate directory-scanning logic anywhere.
+Lets you browse 4 save categories — Performances, Grains Presets,
+Ensemble Presets, SampleSynth Captures — and Duplicate or Delete
+individual files directly from the Pod, no computer needed. Reuses the
+exact same cached slot-list arrays and dirty-flag/`Refresh*()`
+functions those save pages already scan and cache — no duplicate
+directory-scanning logic anywhere. The folder list outgrew the big
+default font once it hit 4 entries (the 4th crowded the footer
+divider); it now draws with `TomThumbDrawText()` instead, evenly
+spread across the body area — see that draw call's own comment for the
+baseline-vs-row-top mixup that caused the first attempt at this to draw
+"Performances" into the header.
 `DeleteDexedPreset()`/`DuplicateDexedPreset()` already exist in
 `PerformanceStore` with the identical shape, but **`SdMgmtFolder` has
 never actually been extended to cover Dexed Presets** — a real,
 currently-open gap (see *Known limitations* below), not a deliberate
 omission; the only way to remove a Dexed preset today is deleting its
-`DEXP/PRESnnn.DAT` file directly from a computer.
+`DEXP/PRESnnn.DAT` file directly from a computer. SampleSynth's own
+Kits and ordinary Sounds aren't covered either (only its Captures
+category) — manage those directly on a computer under `SAMP/` and
+`SAMPLES/SOUNDS/`.
 
 - **Duplicate** (Button 1 held 800ms): byte-for-byte chunked copy into
   the next free slot in that category (`CopyFileChunked()`, shared by
@@ -3222,3 +3231,223 @@ losing a capability nothing was actively relying on. `kFileVersion` bumped
 5 → 6 for `LayerHeader`'s dropped fields — a save from v1.5.0 or earlier
 fails to load cleanly under v1.6.0+ (shown as a version-mismatch error on
 the File page) rather than being misread.
+
+## OP-1 `.aif` pack import (SampleSynth)
+
+SampleSynth shipped with 21 hardcoded "Sounds" category folders and a
+"Starter Kits" Kit category, all referencing real OP-1 sample-pack
+content that can't legally be bundled with this repo. Rather than ship
+with nothing, this adds a one-time Import step: drop raw OP-1 `.aif`
+packs (from [op1fun](https://op1.fun/) or the OP-1 pack builder) into
+`SampleKit/`/`SampleSound/` at the SD card's root, and
+`SampleSynthParamPage::Import` batch-converts them into real Kits/
+Sounds using the pack's own real splice/pitch metadata — after which
+they behave exactly like any other Kit/Sound already in this codebase.
+Deliberately a wholly separate page from `SampleSynthParamPage::
+Capture`'s own `-2` Import source (that one pulls a single `.wav` from
+Grains' shared `IMPORT/` folder into the Capture buffer for manual
+Trim/Tune; this one goes straight from a finished OP-1 patch to a
+finished Kit/Sound, no Trim/Tune step, since a drum pack's pre-sliced,
+pre-mapped pads have no single buffer to trim, and a sampler pack
+already carries its own precise pitch) — confirmed directly with the
+user after an initial plan to fold it into Capture was rejected for
+exactly that reason.
+
+**AIFF/AIFF-C decoding.** Scoped from directly inspecting real files
+downloaded from op1fun, not from memory of the format: `FORM`/`COMM`/
+`SSND` chunks, big-endian fields, chunks padded to even length, an
+80-bit IEEE-extended sample rate in `COMM` (decoded via the standard
+sign/exponent/mantissa bit layout, verified against real data to equal
+exactly 44100 Hz). A hand-rolled JSON field reader (not a general
+parser, matching this file's own existing "targeted binary/text
+reader" style) locates the `APPL`/`"op-1"` chunk and reads `type`,
+`start`/`end` (drum), `base_freq` (sampler). Some real op1fun files
+turned out to be **AIFF-C**, not plain AIFF — confirmed by hex-dumping
+one that kept failing import with no useful error: `FORM` type `AIFC`,
+with an extended `COMM` chunk (2 extra fields past the base 18 bytes:
+a 4-byte compression-type ID, then a Pascal string) and a compression
+type of `sowt` (little-endian PCM) rather than AIFF's always-big-endian.
+Fixed by accepting both `AIFF` and `AIFC` form types and switching
+sample byte order on the declared compression type (`sowt` → little-
+endian, `NONE`/plain `AIFF` → big-endian unchanged); any other real
+compressed codec is rejected as out of scope, same reasoning every
+other unsupported-format case in this importer already uses.
+
+**The real splice-decode bug.** The first implementation assumed
+`start`/`end` were a fraction of the *file's own* decoded length
+(`value / 4294967295.0 * total_len`). This was wrong, and only looked
+plausible because the two real drum test packs both happen to sit
+close to the OP-1's own 12-second drum-sample ceiling, making "fraction
+of this file's length" and "fraction of the real fixed reference"
+nearly the same number by coincidence. Cross-checked against
+`padenot/libop1` (a real, working, MIT-licensed OP-1 AIFF encoder/
+decoder, cloned and read directly rather than guessed at): its own
+`frame_to_op1_time()` encodes a frame index against a **fixed 12-
+second/44100Hz reference** (`0x7FFFFFFE / (44100*2*12)`, integer-
+truncated — matched exactly rather than redone as a cleaner float
+ratio, since real exported files are already baked against that exact
+truncated value), independent of any particular file's own duration.
+Re-deriving a real pack's 3 real slices with the fixed-reference
+formula landed the last slice's end within ~250 frames (~5.7ms) of the
+file's own true length — i.e. the 3 slices span the whole recording
+back-to-back, exactly what a break chopped into 3 parts should do. The
+old formula instead packed all 3 into the first ~49% of the file and
+silently discarded the rest — the real cause of imported drum content
+sounding cut short/full of gaps, not a resampling or source-quality
+issue as first suspected. A slot is padding (not a real slice) when
+its `(start,end)` pair exactly repeats the immediately preceding one —
+confirmed against real data that the first occurrence of a repeated
+pair is still real, every one after it is filler.
+
+**Sampler pitch.** `base_freq` (Hz) converts to a MIDI root note via
+the standard `69 + 12*log2(freq/440)`. Independently cross-checked
+against `schollz/teoperator` (another real OP-1 tool, cloned and read
+directly): its own embedded example data contains the exact same
+`261.6253662109375` value found in a real downloaded file, confirming
+both the field's meaning and the conversion. A file with no `op-1`
+chunk at all (a plain recording someone included in a pack) falls back
+to `ParseNoteNameFromFilename()` on the source filename, defaulting to
+C4 if that finds nothing either.
+
+**One-shot playback was gated by note-off, and shouldn't have been.**
+`SampleSynth::NoteOn()` already treats non-chromatic (drum) slots as
+fixed-pitch regardless of which key triggered them, same as a real
+drum pad; `NoteOff()` still unconditionally called `ForceRelease()` on
+every slot type, including those. With the default ~18ms release time,
+any normal brief MIDI tap (completely ordinary for programming a drum
+hit) released the voice almost the instant it started, truncating
+anything longer than a very short one-shot to a near-silent snippet —
+confirmed as the actual cause of imported drum-break slices sounding
+"cut short," not a slicing bug. Fixed by making one-shot slots ignore
+note-off's hold duration entirely (`NoteOn()`'s gate forces true for
+them; `NoteOff()` skips `ForceRelease()` for them) and instead free
+themselves once `read_pos` reaches the sample's own natural end.
+
+That end is usually not a zero-crossing, though — a real op-1 break
+slice is cut wherever the *next* hit begins, not wherever the signal
+happens to be quiet, so stopping dead there clicks. `OneShotFadeWindow()`
+forces a short fade (~40ms, `kOneShotTailFadeSamples`) into the last
+part of playback — but capped at *half the slice's own length*, not a
+flat duration: an earlier version used the flat duration unconditionally,
+which meant a slice shorter than the fade window had `remaining < window`
+true from its very first sample, so short hits played back already
+attenuated from the start, sometimes to near silence — found on real
+hardware ("some splices are not working now... cutting off time also
+cuts some samples all together"), not a coincidence.
+
+**Mono/Choke** (`SampleSynthPresetData::mono_choke`) — when on, a new
+one-shot pad chokes (fades out, via the same window above, rather than
+cutting abruptly) every other currently-ringing one-shot voice instead
+of layering over it. Off by default, matching every kit saved before
+this existed and the correct behavior for a real drum kit's
+independent kick/snare/hihat pads (which should keep overlapping
+freely) — but `ImportAifDrumPack()` turns it on specifically for its
+own fresh imports, since every pad in an OP-1 drum pack is a sequential
+slice of *one* continuous recording, not an independent sound, so two
+of them ringing at once is never musically intended. User-toggleable
+per kit afterward (`SampleSynthParamPage::Mix`, Button 1 — that page's
+own Button1/Button2 were both otherwise unused). Persisting the new
+field required the same version-tolerant read `kDexedPresetFileVersion`
+already established for its own v2→v3 bump: `kSampleSynthKitFileVersion`
+bumped 2→3, with `kSampleSynthKitDataV2Size` (an `offsetof()` up to the
+new field) marking how many bytes a v2 file actually has on disk, so
+existing kits (KIT001-011) keep loading unaffected with the new field
+simply defaulting to off.
+
+**The real root cause of a persistent, pitch-scaling crackle was a
+hardware SD-read bug, not a decode or DSP-quality issue.** This took
+several wrong turns before landing on real proof, each one worth
+recording since they're exactly the kind of plausible-but-wrong
+explanation this class of bug produces:
+- First suspected: simple linear interpolation during pitch-shifted
+  playback (a known, real artifact class). Upgraded `RenderVoice()`
+  from 2-point linear to the same Catmull-Rom cubic kernel already
+  proven for the import-time resampler — a real improvement, but didn't
+  fix the reported crackle.
+- Next suspected: the source content's own sharp waveform edges (a
+  real synth's PWM/oscillator character does produce dense, genuinely
+  sharp transitions, confirmed by direct analysis of the decoded PCM).
+  Ruled out by the user's own controlled test: pitch-shifting the raw
+  file on a computer (a different, offline algorithm) produced no
+  audible click at all, meaning the content itself isn't inherently
+  unlistenable when pitch-shifted — something in this specific
+  real-time path was.
+- Next suspected (and wrongly "confirmed" once): a periodic defect at
+  the `kChunkSamples`=4096-frame SD-read chunk boundary. A first,
+  flawed self-comparison test (checking local prediction-error at an
+  *estimated* boundary position, a few samples off from the true one)
+  showed elevated anomalies there and was reported as confirmed —
+  then retracted once redone properly: the *precise* boundary position
+  (tracked via a faithful resampler simulation, not estimated by
+  formula) showed no elevation at all, matching ordinary random
+  positions almost exactly. A real lesson in not trusting a same-file
+  self-comparison without a genuine, independent ground truth.
+- The real proof: comparing the actual firmware-exported `.wav` against
+  **two independent references** — macOS's own trusted `afconvert`
+  decode of the identical source file, and a pure-software Python
+  simulation that faithfully replicates the exact chunked-read
+  structure with no real hardware/DMA/SD card involved at all. The
+  simulation came back completely clean (proving the decode/resample
+  *algorithm* is correct), while the real firmware output showed
+  severe (tens of thousands of int16 units), *consistently periodic*
+  corruption recurring every ~4455-4456 samples — which converts back
+  to almost exactly 4096 input frames, i.e. once per SD-read chunk.
+  That combination (algorithm provably clean in isolation, real
+  hardware output corrupted at a period tied to the chunk size) is
+  what actually nails this as a real SD-read/chunking artifact rather
+  than anything in the decode math — most likely a FatFs/cache/DMA-
+  alignment interaction specific to reading from this file's own
+  (non-sector-aligned) byte offset, though the exact low-level
+  mechanism inside FatFs/the SD driver was never chased down further
+  than that, since a direct fix was available without it.
+- **The fix**: rather than chase the exact low-level mechanism, remove
+  the condition it depends on. `ImportAif()`/`ImportWav()` now use a
+  separate `kAudioDecodeChunkSamples` (600,000 — comfortably past the
+  OP-1's own ~529,200-frame/12-second recording ceiling) instead of the
+  shared `kChunkSamples` (4096, left untouched since it's also used by
+  several of `ExportWav()`'s own real-time-adjacent scratch buffers,
+  which should not grow for this). Every realistic single file now
+  decodes in one `f_read()`, so the chunk boundary this bug lived at
+  simply doesn't exist for it any more. Cost: ~6.8MB more SDRAM for the
+  two bigger `raw_buf` buffers (89.4% used after, comfortably under).
+- This also, independently, explained part of the earlier "click at
+  the end of each drum hit" investigation: `ImportAifDrumPack()`
+  decodes a whole source file in one `ImportAif()` call before
+  slicing it, so a long file crossing ~100+ chunk boundaries had that
+  many chances for this corruption to land at or near a slice edge,
+  stacking on top of the separate, genuine "cut isn't at a zero-
+  crossing" issue the tail fade above addresses. Fixing the chunk bug
+  doesn't make the tail fade redundant — they're two independent real
+  issues, one hardware-level corruption and one an inherent property
+  of how OP-1 break slices are cut — but it likely explains why the
+  tail-fade fix alone kept helping without ever fully eliminating it.
+
+**Progress bar granularity.** The Import page's own progress callback
+was originally called once per *file*, not once per step within a
+file — for a multi-slice drum pack (up to 24 separate SD writes) this
+meant the bar sat still for however long that file took, then jumped,
+looking like it "didn't come up straight away." Fixed two ways: the
+shared `Ui::OnSaveLoadProgress()` throttle now always draws the first
+and last frame of any sequence (previously only throttled by a call
+counter that could skip every frame of a short batch), and
+`ImportAifDrumPack()` takes an optional per-slot progress callback
+(rescaled into that file's own share of the overall bar via
+`Ui::OnSampleSynthImportFileProgress()` and matching
+`g_progress_file_base01_`/`_span01_` globals, same "static state read
+by a plain `ProgressFn`" shape `g_progress_disp` already uses) so a
+22-slice kit's own import now visibly increments 22 times, not once.
+
+**Legacy Presets removed from the distributable branch.** The original
+21-category Sounds list and "Starter Kits" Kit category were kept,
+off by default, as `SampleSynthParamPage::LegacyPreset` (toggled by an
+intentional, documented exception to this screen's own encoder-click-
+== `TogglePauseAll()` rule) specifically so the person who built this
+firmware could still reach their own personal packs without that
+content being part of what anyone else who clones the repo gets. On
+request, that page was removed entirely from the `user-sample` branch
+(pure deletion — the page, its own state, its category tables, every
+switch case that referenced it; no licensed content was ever tracked
+in git, so this was purely a code change) — a `personal-legacy-sounds`
+branch, forked from the commit right before the removal, keeps it for
+personal use going forward. The two branches otherwise share the
+identical OP-1 import feature and every fix described above.
