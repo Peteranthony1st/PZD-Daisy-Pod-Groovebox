@@ -421,6 +421,12 @@ struct FileHeader
     // above. -1 = Omni. See Ui::GetEnsembleMidiChannel().
     int32_t  ensemble_midi_channel;
 
+    // Which MIDI channel the new SampleSynth engine listens on -- added
+    // in version 15, same "append fields, bump the version, stay
+    // backward-compatible" treatment as ensemble_midi_channel above.
+    // -1 = Omni. See Ui::GetSampleSynthMidiChannel().
+    int32_t  sample_synth_midi_channel;
+
     // Pad synth settings (added in version 7, removed in version 10 when
     // Pad synth itself was removed from the project) -- a performance
     // deals ONLY with the looper (audio + tempo/global/per-layer
@@ -456,16 +462,18 @@ struct LayerHeader
 // failed to load rather than being misread.
 //
 // 11 -> 12 (the 6 new DattorroReverb fields) was the FIRST exception to
-// that: Load()/LoadPrefs() accept 11, 12, 13, or 14 (see below), reading
-// one more incremental chunk per version step and defaulting whatever
-// wasn't present yet. 12 -> 13 (the 2 Dexed/Granular MIDI-channel
-// fields) and 13 -> 14 (the new Ensemble MIDI-channel field) each extend
-// the SAME chain one more link rather than replacing it -- dropping v11
-// support now would regress a compatibility promise already shipped.
+// that: Load()/LoadPrefs() accept 11, 12, 13, 14, or 15 (see below),
+// reading one more incremental chunk per version step and defaulting
+// whatever wasn't present yet. 12 -> 13 (the 2 Dexed/Granular MIDI-
+// channel fields), 13 -> 14 (the new Ensemble MIDI-channel field), and
+// 14 -> 15 (the new SampleSynth MIDI-channel field) each extend the SAME
+// chain one more link rather than replacing it -- dropping v11 support
+// now would regress a compatibility promise already shipped.
 // Still version-gated going forward -- anything older than 11 is still a
 // hard, clean reject, same as always; reviving those is explicitly out
 // of scope (see the reverb implementation plan).
-constexpr uint32_t kFileVersion      = 14;
+constexpr uint32_t kFileVersion      = 15;
+constexpr uint32_t kFileVersionV14   = 14;
 constexpr uint32_t kFileVersionV13   = 13;
 constexpr uint32_t kFileVersionV12   = 12;
 constexpr uint32_t kFileVersionPrev  = 11; // the oldest version Load() still accepts
@@ -489,6 +497,11 @@ constexpr size_t kFileHeaderV12Size
 // kFileHeaderV12Size is what a v13-but-not-v14 file has beyond a v12 one.
 constexpr size_t kFileHeaderV13Size
     = offsetof(FileHeader, granular_midi_channel) + sizeof(int32_t);
+// Same idea again, marking the boundary right after the Ensemble MIDI-
+// channel field (v14's own real size) -- everything from here to
+// kFileHeaderV13Size is what a v14-but-not-v15 file has beyond a v13 one.
+constexpr size_t kFileHeaderV14Size
+    = offsetof(FileHeader, ensemble_midi_channel) + sizeof(int32_t);
 
 } // namespace
 
@@ -756,6 +769,7 @@ bool Save(int                slot,
           int                dexed_midi_channel,
           int                granular_midi_channel,
           int                ensemble_midi_channel,
+          int                sample_synth_midi_channel,
           ProgressFn         on_progress)
 {
     if(!card_ready || slot < 1 || slot > kMaxSlots)
@@ -821,6 +835,7 @@ bool Save(int                slot,
     hdr.dexed_midi_channel             = (int32_t)dexed_midi_channel;
     hdr.granular_midi_channel          = (int32_t)granular_midi_channel;
     hdr.ensemble_midi_channel          = (int32_t)ensemble_midi_channel;
+    hdr.sample_synth_midi_channel      = (int32_t)sample_synth_midi_channel;
 
     UINT bw;
     fr        = f_write(&file, &hdr, sizeof(hdr), &bw);
@@ -916,6 +931,7 @@ bool Load(int          slot,
           int*         out_dexed_midi_channel,
           int*         out_granular_midi_channel,
           int*         out_ensemble_midi_channel,
+          int*         out_sample_synth_midi_channel,
           ProgressFn   on_progress)
 {
     if(!card_ready || slot < 1 || slot > kMaxSlots)
@@ -953,12 +969,13 @@ bool Load(int          slot,
     bool ok = fr == FR_OK && br == (UINT)kFileHeaderV11Size;
     bool version_ok
         = ok && memcmp(hdr.magic, "OURO", 4) == 0
-          && (hdr.version == kFileVersion || hdr.version == kFileVersionV13
-              || hdr.version == kFileVersionV12 || hdr.version == kFileVersionPrev);
+          && (hdr.version == kFileVersion || hdr.version == kFileVersionV14
+              || hdr.version == kFileVersionV13 || hdr.version == kFileVersionV12
+              || hdr.version == kFileVersionPrev);
 
     if(ok && version_ok && hdr.version >= kFileVersionV12)
     {
-        // v12 or v13 -- the 6 reverb fields are real, read them too
+        // v12 or newer -- the 6 reverb fields are real, read them too
         // (continuing from the current file position, right after the
         // v11 prefix above).
         UINT br2;
@@ -981,7 +998,7 @@ bool Load(int          slot,
 
     if(ok && version_ok && hdr.version >= kFileVersionV13)
     {
-        // v13 or v14 -- the 2 Dexed/Granular MIDI-channel fields are
+        // v13 or newer -- the 2 Dexed/Granular MIDI-channel fields are
         // real, read them too.
         UINT br3;
         fr = f_read(&file, &hdr.dexed_midi_channel, kFileHeaderV13Size - kFileHeaderV12Size,
@@ -997,19 +1014,35 @@ bool Load(int          slot,
         hdr.granular_midi_channel = -1;
     }
 
-    if(ok && version_ok && hdr.version == kFileVersion)
+    if(ok && version_ok && hdr.version >= kFileVersionV14)
     {
-        // v14 -- the new Ensemble MIDI-channel field is real, read it too.
+        // v14 or newer -- the Ensemble MIDI-channel field is real, read
+        // it too.
         UINT br4;
-        fr = f_read(&file, &hdr.ensemble_midi_channel, sizeof(FileHeader) - kFileHeaderV13Size,
+        fr = f_read(&file, &hdr.ensemble_midi_channel, kFileHeaderV14Size - kFileHeaderV13Size,
                      &br4);
-        ok = fr == FR_OK && br4 == (UINT)(sizeof(FileHeader) - kFileHeaderV13Size);
+        ok = fr == FR_OK && br4 == (UINT)(kFileHeaderV14Size - kFileHeaderV13Size);
     }
     else if(ok && version_ok)
     {
         // v11, v12, or v13 -- no Ensemble MIDI-channel field on disk
         // yet; default to Omni, same reasoning as dexed/granular above.
         hdr.ensemble_midi_channel = -1;
+    }
+
+    if(ok && version_ok && hdr.version == kFileVersion)
+    {
+        // v15 -- the new SampleSynth MIDI-channel field is real, read it too.
+        UINT br5;
+        fr = f_read(&file, &hdr.sample_synth_midi_channel, sizeof(FileHeader) - kFileHeaderV14Size,
+                     &br5);
+        ok = fr == FR_OK && br5 == (UINT)(sizeof(FileHeader) - kFileHeaderV14Size);
+    }
+    else if(ok && version_ok)
+    {
+        // v11, v12, v13, or v14 -- no SampleSynth MIDI-channel field on
+        // disk yet; default to Omni, same reasoning as the others above.
+        hdr.sample_synth_midi_channel = -1;
     }
 
     if(!ok || !version_ok)
@@ -1062,6 +1095,7 @@ bool Load(int          slot,
         *out_dexed_midi_channel             = (int)hdr.dexed_midi_channel;
         *out_granular_midi_channel          = (int)hdr.granular_midi_channel;
         *out_ensemble_midi_channel          = (int)hdr.ensemble_midi_channel;
+        *out_sample_synth_midi_channel      = (int)hdr.sample_synth_midi_channel;
     }
 
     int n = ok ? (int)hdr.num_layers : 0;
@@ -1926,15 +1960,648 @@ int ListImportWavFiles(char out_names[][kMaxImportWavNameLen + 1], int max_out)
     return count;
 }
 
+int ListSampleSynthFiles(char out_names[][kMaxSampleSynthWavNameLen + 1], int max_out,
+                          const char* subfolder)
+{
+    if(!card_ready)
+        return 0;
+    char path[40];
+    if(subfolder && subfolder[0] != '\0')
+        snprintf(path, sizeof(path), "%s/%s", kSampleSynthFolder, subfolder);
+    else
+        snprintf(path, sizeof(path), "%s", kSampleSynthFolder);
+    static DIR dir; // see the DTCMRAM/DMA comment on Save() above
+    if(f_opendir(&dir, path) != FR_OK)
+        return 0; // no such folder yet -- not an error, just nothing to list
+
+    int            count = 0;
+    static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
+    while(count < max_out)
+    {
+        if(f_readdir(&dir, &fno) != FR_OK || fno.fname[0] == 0)
+            break; // error or end of directory
+        if(fno.fattrib & AM_DIR)
+            continue;
+        if(fno.fname[0] == '.' && fno.fname[1] == '_')
+            continue; // macOS AppleDouble sidecar file, see ListImportWavFiles()'s own comment
+        size_t len = strlen(fno.fname);
+        if(len < 4)
+            continue; // too short for a ".wav"/".snd" extension
+        char ext[5];
+        for(int i = 0; i < 4; i++)
+            ext[i] = (char)tolower((unsigned char)fno.fname[len - 4 + i]);
+        ext[4] = '\0';
+        // ".snd" is a multi-sample manifest (see LoadSampleSynthSound()'s
+        // own doc comment) listed right alongside plain .wav files --
+        // Ui::TriggerLoadSampleSynthSound() tells them apart by this same
+        // extension check when the user actually picks one.
+        if(strcmp(ext, ".wav") != 0 && strcmp(ext, ".snd") != 0)
+            continue;
+        if(len > kMaxSampleSynthWavNameLen)
+            continue; // skip, don't truncate -- see ListImportWavFiles()'s own comment
+        snprintf(out_names[count], kMaxSampleSynthWavNameLen + 1, "%s", fno.fname);
+        count++;
+    }
+    f_closedir(&dir);
+    return count;
+}
+
+void SampleSynthKitFilename(int slot, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "SAMP/KIT%03d.DAT", slot);
+}
+
+namespace
+{
+struct SampleSynthKitFileHeader
+{
+    char     magic[4]; // "SMPK"
+    uint32_t version;
+};
+// 2: added the name field (right after the header, before params) --
+// a clean reject of version 1 files, same "first-ever format change,
+// no real content exists yet to preserve" reasoning GranularPresetData's
+// own original kGranularPresetFileVersion comment documents.
+constexpr uint32_t kSampleSynthKitFileVersion = 2;
+} // namespace
+
+bool SaveSampleSynthKit(int slot, const char* name,
+                         const SampleSynth::SampleSynthPresetData& params,
+                         const SampleSynthKitSlot slots[kMaxSampleSynthSlots])
+{
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthKits)
+        return false;
+
+    FRESULT mkdir_res = f_mkdir("SAMP");
+    if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
+    {
+        SetError("mkdir", mkdir_res);
+        return false;
+    }
+
+    char fname[24];
+    SampleSynthKitFilename(slot, fname, sizeof(fname));
+
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static SampleSynthKitFileHeader hdr;
+    hdr = SampleSynthKitFileHeader{};
+    memcpy(hdr.magic, "SMPK", 4);
+    hdr.version = kSampleSynthKitFileVersion;
+
+    static char name_buf[kMaxSampleSynthKitNameLen + 1];
+    memset(name_buf, 0, sizeof(name_buf));
+    if(name)
+        snprintf(name_buf, sizeof(name_buf), "%s", name);
+
+    static SampleSynth::SampleSynthPresetData data;
+    data = params;
+    static SampleSynthKitSlot slot_data[kMaxSampleSynthSlots];
+    for(int i = 0; i < kMaxSampleSynthSlots; i++)
+        slot_data[i] = slots[i];
+
+    UINT bw;
+    fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(hdr);
+    if(ok)
+    {
+        fr = f_write(&file, name_buf, sizeof(name_buf), &bw);
+        ok = fr == FR_OK && bw == sizeof(name_buf);
+    }
+    if(ok)
+    {
+        fr = f_write(&file, &data, sizeof(data), &bw);
+        ok = fr == FR_OK && bw == sizeof(data);
+    }
+    if(ok)
+    {
+        fr = f_write(&file, slot_data, sizeof(slot_data), &bw);
+        ok = fr == FR_OK && bw == sizeof(slot_data);
+    }
+    if(!ok)
+        SetError("data", fr);
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+// Shared by LoadSampleSynthKit()/PeekSampleSynthKitName() -- opens the
+// file, validates magic/version, reads just the name field, and
+// (unless peek_only) leaves the file open positioned right after the
+// name for the caller to keep reading params/slots. Returns the open
+// FIL* on success (caller must f_close() it), nullptr on failure
+// (error already set).
+FIL* OpenSampleSynthKitAndReadName(int slot, char* out_name, size_t out_name_size)
+{
+    char fname[24];
+    SampleSynthKitFilename(slot, fname, sizeof(fname));
+
+    ClearError();
+    static FIL file;
+    FRESULT    fr = f_open(&file, fname, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return nullptr;
+    }
+
+    static SampleSynthKitFileHeader hdr;
+    hdr = SampleSynthKitFileHeader{};
+    UINT br;
+    fr      = f_read(&file, &hdr, sizeof(hdr), &br);
+    bool ok = fr == FR_OK && br == sizeof(hdr);
+    if(ok && (memcmp(hdr.magic, "SMPK", 4) != 0 || hdr.version != kSampleSynthKitFileVersion))
+    {
+        ok = false;
+        SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
+    }
+    else if(!ok)
+    {
+        SetError("hdr", fr);
+    }
+
+    static char name_buf[kMaxSampleSynthKitNameLen + 1];
+    memset(name_buf, 0, sizeof(name_buf));
+    if(ok)
+    {
+        fr = f_read(&file, name_buf, sizeof(name_buf), &br);
+        ok = fr == FR_OK && br == sizeof(name_buf);
+        if(!ok)
+            SetError("name", fr);
+    }
+    if(ok && out_name)
+        snprintf(out_name, out_name_size, "%s", name_buf);
+
+    if(!ok)
+    {
+        f_close(&file);
+        return nullptr;
+    }
+    return &file;
+}
+
+bool LoadSampleSynthKit(int slot, char* out_name, size_t out_name_size,
+                         SampleSynth::SampleSynthPresetData* out_params,
+                         SampleSynthKitSlot out_slots[kMaxSampleSynthSlots])
+{
+    if(slot < 1 || slot > kMaxSampleSynthKits || !out_params || !out_slots)
+        return false;
+    if(!card_ready)
+        return false;
+
+    static SampleSynth::SampleSynthPresetData data;
+    data = SampleSynth::SampleSynthPresetData{};
+    static SampleSynthKitSlot slot_data[kMaxSampleSynthSlots];
+    for(int i = 0; i < kMaxSampleSynthSlots; i++)
+        slot_data[i] = SampleSynthKitSlot{};
+
+    FIL* file = OpenSampleSynthKitAndReadName(slot, out_name, out_name_size);
+    if(!file)
+        return false;
+
+    UINT br;
+    FRESULT fr = f_read(file, &data, sizeof(data), &br);
+    bool    ok = fr == FR_OK && br == sizeof(data);
+    if(ok)
+    {
+        fr = f_read(file, slot_data, sizeof(slot_data), &br);
+        ok = fr == FR_OK && br == sizeof(slot_data);
+    }
+    if(!ok)
+        SetError("data", fr);
+    if(ok)
+    {
+        *out_params = data;
+        for(int i = 0; i < kMaxSampleSynthSlots; i++)
+            out_slots[i] = slot_data[i];
+    }
+
+    FRESULT close_res = f_close(file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+bool PeekSampleSynthKitName(int slot, char* out_name, size_t out_name_size)
+{
+    if(slot < 1 || slot > kMaxSampleSynthKits || !out_name)
+        return false;
+    if(!card_ready)
+        return false;
+    FIL* file = OpenSampleSynthKitAndReadName(slot, out_name, out_name_size);
+    if(!file)
+        return false;
+    FRESULT close_res = f_close(file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return close_res == FR_OK;
+}
+
+int ListSampleSynthKits(int* out_numbers, int max_out)
+{
+    if(!card_ready)
+        return 0;
+    int count = 0;
+    for(int slot = 1; slot <= kMaxSampleSynthKits && count < max_out; slot++)
+    {
+        char    fname[24];
+        FILINFO fno;
+        SampleSynthKitFilename(slot, fname, sizeof(fname));
+        if(f_stat(fname, &fno) == FR_OK)
+            out_numbers[count++] = slot;
+    }
+    return count;
+}
+
+namespace
+{
+struct SampleSynthSoundFileHeader
+{
+    char     magic[4]; // "SNDM"
+    uint32_t version;
+};
+constexpr uint32_t kSampleSynthSoundFileVersion = 1;
+} // namespace
+
+bool LoadSampleSynthSound(const char* filename, SampleSynthKitSlot out_slots[kMaxSampleSynthSlots],
+                          const char* subfolder)
+{
+    if(!card_ready || !filename || !out_slots)
+        return false;
+
+    char fname[64];
+    if(subfolder && subfolder[0] != '\0')
+        snprintf(fname, sizeof(fname), "%s/%s/%s", kSampleSynthFolder, subfolder, filename);
+    else
+        snprintf(fname, sizeof(fname), "%s/%s", kSampleSynthFolder, filename);
+
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, fname, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static SampleSynthSoundFileHeader hdr;
+    hdr = SampleSynthSoundFileHeader{};
+    UINT br;
+    fr      = f_read(&file, &hdr, sizeof(hdr), &br);
+    bool ok = fr == FR_OK && br == sizeof(hdr);
+    if(ok
+       && (memcmp(hdr.magic, "SNDM", 4) != 0 || hdr.version != kSampleSynthSoundFileVersion))
+    {
+        ok = false;
+        SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
+    }
+    else if(!ok)
+    {
+        SetError("hdr", fr);
+    }
+
+    static SampleSynthKitSlot slot_data[kMaxSampleSynthSlots];
+    for(int i = 0; i < kMaxSampleSynthSlots; i++)
+        slot_data[i] = SampleSynthKitSlot{};
+    if(ok)
+    {
+        fr = f_read(&file, slot_data, sizeof(slot_data), &br);
+        ok = fr == FR_OK && br == sizeof(slot_data);
+        if(!ok)
+            SetError("data", fr);
+    }
+    if(ok)
+    {
+        for(int i = 0; i < kMaxSampleSynthSlots; i++)
+            out_slots[i] = slot_data[i];
+    }
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+namespace
+{
+constexpr const char* kSampleSynthFavoritesFilename = "SAMP/FAVS.DAT";
+struct SampleSynthFavoritesFileHeader
+{
+    char     magic[4]; // "SMPF"
+    uint32_t version;
+};
+constexpr uint32_t kSampleSynthFavoritesFileVersion = 1;
+} // namespace
+
+bool SaveSampleSynthFavorites(const SampleSynthFavorite favorites[kMaxSampleSynthFavorites])
+{
+    if(!card_ready)
+        return false;
+
+    FRESULT mkdir_res = f_mkdir("SAMP");
+    if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
+    {
+        SetError("mkdir", mkdir_res);
+        return false;
+    }
+
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, kSampleSynthFavoritesFilename, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static SampleSynthFavoritesFileHeader hdr;
+    hdr = SampleSynthFavoritesFileHeader{};
+    memcpy(hdr.magic, "SMPF", 4);
+    hdr.version = kSampleSynthFavoritesFileVersion;
+
+    static SampleSynthFavorite data[kMaxSampleSynthFavorites];
+    for(int i = 0; i < kMaxSampleSynthFavorites; i++)
+        data[i] = favorites[i];
+
+    UINT bw;
+    fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(hdr);
+    if(ok)
+    {
+        fr = f_write(&file, data, sizeof(data), &bw);
+        ok = fr == FR_OK && bw == sizeof(data);
+    }
+    if(!ok)
+        SetError("data", fr);
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+bool LoadSampleSynthFavorites(SampleSynthFavorite out_favorites[kMaxSampleSynthFavorites])
+{
+    if(!card_ready)
+        return false;
+
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, kSampleSynthFavoritesFilename, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false; // no favorites saved yet -- a real, expected case
+    }
+
+    static SampleSynthFavoritesFileHeader hdr;
+    hdr = SampleSynthFavoritesFileHeader{};
+    UINT br;
+    fr      = f_read(&file, &hdr, sizeof(hdr), &br);
+    bool ok = fr == FR_OK && br == sizeof(hdr);
+    if(ok
+       && (memcmp(hdr.magic, "SMPF", 4) != 0 || hdr.version != kSampleSynthFavoritesFileVersion))
+    {
+        ok = false;
+        SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
+    }
+    else if(!ok)
+    {
+        SetError("hdr", fr);
+    }
+
+    static SampleSynthFavorite data[kMaxSampleSynthFavorites];
+    for(int i = 0; i < kMaxSampleSynthFavorites; i++)
+        data[i] = SampleSynthFavorite{};
+    if(ok)
+    {
+        fr = f_read(&file, data, sizeof(data), &br);
+        ok = fr == FR_OK && br == sizeof(data);
+        if(!ok)
+            SetError("data", fr);
+    }
+    if(ok)
+    {
+        for(int i = 0; i < kMaxSampleSynthFavorites; i++)
+            out_favorites[i] = data[i];
+    }
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+bool SaveSampleSynthCapture(const char* category_folder, const float* buf_l, const float* buf_r,
+                             size_t len, char* out_filename, size_t out_filename_size)
+{
+    if(!card_ready || !category_folder || !buf_l || !buf_r || len == 0 || !out_filename)
+        return false;
+
+    f_mkdir(kSampleSynthFolder); // harmless if it already exists
+    char dir_path[40];
+    snprintf(dir_path, sizeof(dir_path), "%s/%s", kSampleSynthFolder, category_folder);
+    f_mkdir(dir_path); // ditto -- CAPTURED1/2 should already exist, but don't assume it
+
+    // Same "scan then pick the first free one" idiom as
+    // NextFreeGranularPresetSlot(), just over filenames in this folder
+    // instead of a fixed numbered-file scheme -- CAPnnn.wav, 001-032,
+    // same per-category cap as every other Sounds category.
+    char path[48];
+    int  chosen = -1;
+    for(int n = 1; n <= 32; n++)
+    {
+        char fname[16];
+        snprintf(fname, sizeof(fname), "CAP%03d.wav", n);
+        snprintf(path, sizeof(path), "%s/%s", dir_path, fname);
+        FILINFO fno;
+        if(f_stat(path, &fno) != FR_OK)
+        {
+            chosen = n;
+            break;
+        }
+    }
+    if(chosen < 0)
+        return false; // this category is full -- caller tries the next one
+
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, path, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    const uint32_t data_size = (uint32_t)len * 2 * (uint32_t)sizeof(int16_t);
+    static WavHeader hdr;
+    memcpy(hdr.riff, "RIFF", 4);
+    hdr.riff_size = 36 + data_size;
+    memcpy(hdr.wave, "WAVE", 4);
+    memcpy(hdr.fmt, "fmt ", 4);
+    hdr.fmt_size        = 16;
+    hdr.audio_format    = 1; // PCM
+    hdr.num_channels    = 2;
+    hdr.sample_rate     = 48000; // every capture source already produces 48kHz
+    hdr.bits_per_sample = 16;
+    hdr.block_align     = (uint16_t)(hdr.num_channels * (hdr.bits_per_sample / 8));
+    hdr.byte_rate       = hdr.sample_rate * hdr.block_align;
+    memcpy(hdr.data, "data", 4);
+    hdr.data_size = data_size;
+
+    UINT bw;
+    fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(hdr);
+    if(!ok)
+        SetError("hdr", fr);
+
+    // Chunked float->int16 PCM write, same conversion
+    // (sample*32767, clamped) ExportWav() already uses -- the whole
+    // capture (up to 6s/288000 samples) is already SDRAM-resident, so
+    // this is just downconverting on the way out, not streaming from
+    // anywhere slower.
+    constexpr size_t kWriteChunkFrames = 2048;
+    static int16_t   pcm_chunk[kWriteChunkFrames * 2] DSY_SDRAM_BSS;
+    size_t           written_frames = 0;
+    while(ok && written_frames < len)
+    {
+        size_t n = len - written_frames;
+        if(n > kWriteChunkFrames)
+            n = kWriteChunkFrames;
+        for(size_t i = 0; i < n; i++)
+        {
+            float l = Clampf(buf_l[written_frames + i], -1.f, 1.f);
+            float r = Clampf(buf_r[written_frames + i], -1.f, 1.f);
+            pcm_chunk[2 * i]     = (int16_t)(l * 32767.f);
+            pcm_chunk[2 * i + 1] = (int16_t)(r * 32767.f);
+        }
+        UINT bytes = (UINT)(n * 2 * sizeof(int16_t));
+        fr         = f_write(&file, pcm_chunk, bytes, &bw);
+        ok         = fr == FR_OK && bw == bytes;
+        if(!ok)
+            SetError("data", fr);
+        written_frames += n;
+    }
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    ok = ok && close_res == FR_OK;
+
+    if(ok)
+        snprintf(out_filename, out_filename_size, "CAP%03d.wav", chosen);
+    return ok;
+}
+
+void SampleSynthCaptureFilename(const char* category_folder, int n, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "%s/%s/CAP%03d.wav", kSampleSynthFolder, category_folder, n);
+}
+
+namespace
+{
+// CompactSlotsAfterDelete()'s filename_fn is a fixed 2-arg function
+// pointer (int, char*, size_t) -- no room for a category string -- so
+// these two trivial wrappers each close over one fixed category purely
+// so that generic helper can be reused as-is for Captures too.
+void SampleSynthCaptured1Filename(int n, char* out, size_t out_size)
+{
+    SampleSynthCaptureFilename("CAPTURED1", n, out, out_size);
+}
+void SampleSynthCaptured2Filename(int n, char* out, size_t out_size)
+{
+    SampleSynthCaptureFilename("CAPTURED2", n, out, out_size);
+}
+} // namespace
+
+int ListSampleSynthCapturesInCategory(const char* category_folder, int* out_numbers, int max_out)
+{
+    if(!card_ready || !category_folder || !out_numbers)
+        return 0;
+    int count = 0;
+    for(int n = 1; n <= 32 && count < max_out; n++)
+    {
+        char fname[48];
+        SampleSynthCaptureFilename(category_folder, n, fname, sizeof(fname));
+        FILINFO fno;
+        if(f_stat(fname, &fno) == FR_OK)
+            out_numbers[count++] = n;
+    }
+    return count;
+}
+
+bool DeleteSampleSynthCapture(const char* category_folder, int n)
+{
+    if(!card_ready || !category_folder || n < 1 || n > 32)
+        return false;
+    char fname[48];
+    SampleSynthCaptureFilename(category_folder, n, fname, sizeof(fname));
+    if(!DeleteFileGeneric(fname))
+        return false;
+    bool is_cat1 = strcmp(category_folder, "CAPTURED1") == 0;
+    CompactSlotsAfterDelete(
+        n, 32, is_cat1 ? SampleSynthCaptured1Filename : SampleSynthCaptured2Filename, nullptr);
+    return true;
+}
+
+bool DuplicateSampleSynthCapture(const char* category_folder, int n, int* out_new_n,
+                                  ProgressFn on_progress)
+{
+    if(!out_new_n)
+        return false;
+    *out_new_n = -1;
+    if(!card_ready || !category_folder || n < 1 || n > 32)
+        return false;
+    char    src[48];
+    FILINFO fno;
+    SampleSynthCaptureFilename(category_folder, n, src, sizeof(src));
+    if(f_stat(src, &fno) != FR_OK)
+    {
+        SetError("dupsrc", FR_NO_FILE);
+        return false;
+    }
+    int new_n = -1;
+    for(int i = 1; i <= 32; i++)
+    {
+        char fname[48];
+        SampleSynthCaptureFilename(category_folder, i, fname, sizeof(fname));
+        if(f_stat(fname, &fno) != FR_OK)
+        {
+            new_n = i;
+            break;
+        }
+    }
+    if(new_n < 0)
+    {
+        SetError("dupslot", FR_OK);
+        return false; // this category is full -- caller does NOT spill to the other one
+    }
+    char dst[48];
+    SampleSynthCaptureFilename(category_folder, new_n, dst, sizeof(dst));
+    if(!CopyFileChunked(src, dst, on_progress))
+        return false;
+    *out_new_n = new_n;
+    return true;
+}
+
 bool ImportWav(const char* filename, float* out_l, float* out_r, size_t audio_capacity,
-               size_t* out_len, ProgressFn on_progress)
+               size_t* out_len, ProgressFn on_progress, const char* folder)
 {
     if(!card_ready || !filename || !out_l || !out_r || !out_len)
         return false;
     *out_len = 0;
 
     char fname[64];
-    ImportWavFilename(filename, fname, sizeof(fname));
+    snprintf(fname, sizeof(fname), "%s/%s", folder, filename);
 
     ClearError();
     static FIL file; // see the DTCMRAM/DMA comment on Save() above
@@ -3037,7 +3704,8 @@ bool SavePrefs(TempoClock&  tempo,
               float        reverb_damping01,
               int          dexed_midi_channel,
               int          granular_midi_channel,
-              int          ensemble_midi_channel)
+              int          ensemble_midi_channel,
+              int          sample_synth_midi_channel)
 {
     if(!card_ready)
         return false;
@@ -3076,6 +3744,7 @@ bool SavePrefs(TempoClock&  tempo,
     hdr.dexed_midi_channel             = (int32_t)dexed_midi_channel;
     hdr.granular_midi_channel          = (int32_t)granular_midi_channel;
     hdr.ensemble_midi_channel          = (int32_t)ensemble_midi_channel;
+    hdr.sample_synth_midi_channel      = (int32_t)sample_synth_midi_channel;
 
     UINT bw;
     fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
@@ -3109,7 +3778,8 @@ bool LoadPrefs(float*      out_bpm,
               float*      out_reverb_damping01,
               int*        out_dexed_midi_channel,
               int*        out_granular_midi_channel,
-              int*        out_ensemble_midi_channel)
+              int*        out_ensemble_midi_channel,
+              int*        out_sample_synth_midi_channel)
 {
     // No card, no file, or wrong shape -- all silently "nothing saved
     // yet", not an error (see the header comment: the caller's own
@@ -3134,8 +3804,9 @@ bool LoadPrefs(float*      out_bpm,
     bool ok = fr == FR_OK && br == (UINT)kFileHeaderV11Size;
     bool version_ok
         = ok && memcmp(hdr.magic, "PREF", 4) == 0
-          && (hdr.version == kFileVersion || hdr.version == kFileVersionV13
-              || hdr.version == kFileVersionV12 || hdr.version == kFileVersionPrev);
+          && (hdr.version == kFileVersion || hdr.version == kFileVersionV14
+              || hdr.version == kFileVersionV13 || hdr.version == kFileVersionV12
+              || hdr.version == kFileVersionPrev);
 
     if(ok && version_ok && hdr.version >= kFileVersionV12)
     {
@@ -3167,16 +3838,28 @@ bool LoadPrefs(float*      out_bpm,
         hdr.granular_midi_channel = -1;
     }
 
-    if(ok && version_ok && hdr.version == kFileVersion)
+    if(ok && version_ok && hdr.version >= kFileVersionV14)
     {
         UINT br4;
-        fr = f_read(&file, &hdr.ensemble_midi_channel, sizeof(FileHeader) - kFileHeaderV13Size,
+        fr = f_read(&file, &hdr.ensemble_midi_channel, kFileHeaderV14Size - kFileHeaderV13Size,
                      &br4);
-        ok = fr == FR_OK && br4 == (UINT)(sizeof(FileHeader) - kFileHeaderV13Size);
+        ok = fr == FR_OK && br4 == (UINT)(kFileHeaderV14Size - kFileHeaderV13Size);
     }
     else if(ok && version_ok)
     {
         hdr.ensemble_midi_channel = -1;
+    }
+
+    if(ok && version_ok && hdr.version == kFileVersion)
+    {
+        UINT br5;
+        fr = f_read(&file, &hdr.sample_synth_midi_channel, sizeof(FileHeader) - kFileHeaderV14Size,
+                     &br5);
+        ok = fr == FR_OK && br5 == (UINT)(sizeof(FileHeader) - kFileHeaderV14Size);
+    }
+    else if(ok && version_ok)
+    {
+        hdr.sample_synth_midi_channel = -1;
     }
 
     f_close(&file);
@@ -3203,6 +3886,7 @@ bool LoadPrefs(float*      out_bpm,
     *out_reverb_decay_diffusion01       = hdr.reverb_decay_diffusion01;
     *out_reverb_damping01               = hdr.reverb_damping01;
     *out_ensemble_midi_channel          = (int)hdr.ensemble_midi_channel;
+    *out_sample_synth_midi_channel      = (int)hdr.sample_synth_midi_channel;
     return true;
 }
 

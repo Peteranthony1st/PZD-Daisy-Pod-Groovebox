@@ -11,6 +11,7 @@
 #include "granular_engine.h"
 #include "dexed_synth.h"
 #include "ensemble_synth.h"
+#include "sample_synth.h"
 #include "dattorro_reverb.h"
 
 using namespace daisy;
@@ -104,6 +105,25 @@ float DSY_SDRAM_BSS g_granular_capture_r[kGranularCaptureSamples];
 volatile bool   g_granular_capturing        = false;
 volatile size_t g_granular_capture_write_pos = 0;
 
+// SampleSynth's own SDRAM arena -- one kit's worth of sample audio at a
+// time (Ui::TriggerLoadSampleSynthKit() owns the bump-allocator loop
+// that fills this from WAV files on load; loading a new kit resets the
+// write cursor and re-fills from the start). ~1,000,000 samples/channel
+// (~20.8s @ 48kHz) -- generous for a 24-slot kit of short/medium hits.
+constexpr size_t kSampleSynthArenaSamples = 1000000;
+float DSY_SDRAM_BSS g_sample_synth_arena_l[kSampleSynthArenaSamples];
+float DSY_SDRAM_BSS g_sample_synth_arena_r[kSampleSynthArenaSamples];
+
+// SampleSynth's own dedicated capture buffer -- same "Direct Record/
+// Import/From Layer" pattern as Grains' own g_granular_capture_l/r
+// above, sized shorter (6s, not 10s) since this plays one-shots, not
+// sustained/scanned texture.
+constexpr size_t kSampleSynthCaptureSamples = 288000; // 6s @ 48kHz
+float DSY_SDRAM_BSS g_sample_synth_capture_l[kSampleSynthCaptureSamples];
+float DSY_SDRAM_BSS g_sample_synth_capture_r[kSampleSynthCaptureSamples];
+volatile bool   g_sample_synth_capturing        = false;
+volatile size_t g_sample_synth_capture_write_pos = 0;
+
 TempoClock  tempo;
 LooperLayer layers[kNumLayers];
 Ui          ui;
@@ -180,6 +200,12 @@ DexedSynth dexed;
 // for 8 voices + the shared Chorus, well within budget alongside
 // Dexed/Grains/the looper.
 EnsembleSynth ensemble;
+
+// A 10-voice polyphonic sample player (see sample_synth.h -- combines
+// DexedSynth's own voice-stealing pattern with GranularEngine's
+// pitch-tracking/clamp-at-ends buffer read). Ported from the `optimise`
+// branch, where it was originally built alongside Dexed/Grains.
+SampleSynth sample_synth;
 
 // See audio_engine.h.
 volatile bool g_audio_suspended = false;
@@ -311,6 +337,11 @@ constexpr size_t kEnsembleScopeSamples = 1024;
 static float      g_ensemble_scope_l[kEnsembleScopeSamples];
 static size_t      g_ensemble_scope_write_pos = 0;
 
+// Same convention, for Screen::SampleSynth's own live oscilloscope pages.
+constexpr size_t kSampleSynthScopeSamples = 1024;
+static float      g_sample_synth_scope_l[kSampleSynthScopeSamples];
+static size_t      g_sample_synth_scope_write_pos = 0;
+
 // Same convention, for Screen::Mixer's own oscilloscope page -- captures
 // the actual final post-fader mix (after reverb/bypass/master filter/
 // click/master volume), not any one instrument's own signal.
@@ -366,9 +397,10 @@ void ControlTimerCallback(void*)
     // GetGranularMidiChannel()'s own doc comment. Read once per poll
     // (not once per event) since both can only change between UI
     // redraws anyway, not mid-event-queue.
-    int dexed_ch    = ui.GetDexedMidiChannel();
-    int granular_ch = ui.GetGranularMidiChannel();
-    int ensemble_ch = ui.GetEnsembleMidiChannel();
+    int dexed_ch        = ui.GetDexedMidiChannel();
+    int granular_ch     = ui.GetGranularMidiChannel();
+    int ensemble_ch     = ui.GetEnsembleMidiChannel();
+    int sample_synth_ch = ui.GetSampleSynthMidiChannel();
     while(hw.midi.HasEvents())
     {
         MidiEvent event = hw.midi.PopEvent();
@@ -381,6 +413,8 @@ void ControlTimerCallback(void*)
                 dexed.NoteOn(noteon.note, noteon.velocity);
             if(ensemble_ch == -1 || noteon.channel == ensemble_ch)
                 ensemble.NoteOn(noteon.note, noteon.velocity);
+            if(sample_synth_ch == -1 || noteon.channel == sample_synth_ch)
+                sample_synth.NoteOn(noteon.note, noteon.velocity);
         }
         else if(event.type == NoteOff)
         {
@@ -391,6 +425,8 @@ void ControlTimerCallback(void*)
                 dexed.NoteOff(noteoff.note);
             if(ensemble_ch == -1 || noteoff.channel == ensemble_ch)
                 ensemble.NoteOff(noteoff.note);
+            if(sample_synth_ch == -1 || noteoff.channel == sample_synth_ch)
+                sample_synth.NoteOff(noteoff.note);
         }
         else if(event.type == PitchBend)
         {
@@ -414,6 +450,12 @@ void ControlTimerCallback(void*)
                 raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
                 ensemble.SetPitchBend14bit((uint16_t)raw);
             }
+            if(sample_synth_ch == -1 || pb.channel == sample_synth_ch)
+            {
+                int32_t raw = (int32_t)pb.value + 8192;
+                raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
+                sample_synth.SetPitchBend14bit((uint16_t)raw);
+            }
         }
         else if(event.type == ControlChange)
         {
@@ -430,6 +472,12 @@ void ControlTimerCallback(void*)
                     dexed.SetModWheel01((float)cc.value / 127.f);
                 if(ensemble_ch == -1 || cc.channel == ensemble_ch)
                     ensemble.SetModWheel01((float)cc.value / 127.f);
+                // SampleSynth's own mod wheel drives a fixed pitch
+                // vibrato (see SampleSynth::SetModWheel01()'s own
+                // comment) -- no target concept to gate here, same as
+                // Dexed's own always-on targets.
+                if(sample_synth_ch == -1 || cc.channel == sample_synth_ch)
+                    sample_synth.SetModWheel01((float)cc.value / 127.f);
             }
             // CC 123 (All Notes Off) / CC 120 (All Sound Off) -- see
             // DexedSynth::AllNotesOff()'s own doc comment for why this
@@ -445,6 +493,8 @@ void ControlTimerCallback(void*)
                     dexed.AllNotesOff();
                 if(ensemble_ch == -1 || cc.channel == ensemble_ch)
                     ensemble.AllNotesOff();
+                if(sample_synth_ch == -1 || cc.channel == sample_synth_ch)
+                    sample_synth.AllNotesOff();
             }
         }
     }
@@ -472,6 +522,8 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     static float dexed_r[256];
     static float ensemble_l[256];
     static float ensemble_r[256];
+    static float samp_l[256];
+    static float samp_r[256];
 
     const float sample_rate = hw.AudioSampleRate(); // needed by both paths below
     g_cpu_meter_avg.OnBlockStart();
@@ -611,6 +663,55 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         g_ensemble_scope_write_pos = (g_ensemble_scope_write_pos + 1) % kEnsembleScopeSamples;
     }
 
+    // Skipped entirely when disabled from Global:SampleSynth -- same
+    // real CPU-saving pattern as ui.IsEnsembleEnabled() above.
+    if(ui.IsSampleSynthEnabled())
+    {
+        sample_synth.Process(size, samp_l, samp_r, reverb_send_l, reverb_send_r, delay_send_l,
+                              delay_send_r);
+    }
+    else
+    {
+        for(size_t i = 0; i < size; i++)
+        {
+            samp_l[i] = 0.f;
+            samp_r[i] = 0.f;
+        }
+    }
+
+    // Same for SampleSynth's own oscilloscope pages -- captured after
+    // the enabled/disabled branch above either way, so the scope just
+    // shows silence while SampleSynth's off.
+    for(size_t i = 0; i < size; i++)
+    {
+        g_sample_synth_scope_l[g_sample_synth_scope_write_pos] = samp_l[i];
+        g_sample_synth_scope_write_pos
+            = (g_sample_synth_scope_write_pos + 1) % kSampleSynthScopeSamples;
+    }
+
+    // SampleSynth's own Direct Record capture -- same shape as Grains'
+    // own g_granular_capturing block below, writing live input plus
+    // every OTHER generated-audio engine (Dexed/Grains/Ensemble, not
+    // SampleSynth's own samp_l/r -- that would be a self-capture
+    // feedback loop, same reasoning as Grains' own capture excluding
+    // gran_l/r).
+    if(g_sample_synth_capturing)
+    {
+        for(size_t i = 0; i < size; i++)
+        {
+            if(g_sample_synth_capture_write_pos >= kSampleSynthCaptureSamples)
+            {
+                g_sample_synth_capturing = false;
+                break;
+            }
+            g_sample_synth_capture_l[g_sample_synth_capture_write_pos]
+                = in[0][i] + dexed_l[i] + gran_l[i] + ensemble_l[i];
+            g_sample_synth_capture_r[g_sample_synth_capture_write_pos]
+                = in[1][i] + dexed_r[i] + gran_r[i] + ensemble_r[i];
+            g_sample_synth_capture_write_pos++;
+        }
+    }
+
     // Grains' Direct Record capture -- see g_granular_capturing's own
     // comment above. Writes live input PLUS Dexed's own generated audio
     // (not Grains' own gran_l/r -- that would be a self-capture feedback
@@ -629,9 +730,9 @@ void AudioCallback(AudioHandle::InputBuffer  in,
                 break;
             }
             g_granular_capture_l[g_granular_capture_write_pos]
-                = in[0][i] + dexed_l[i] + ensemble_l[i];
+                = in[0][i] + dexed_l[i] + ensemble_l[i] + samp_l[i];
             g_granular_capture_r[g_granular_capture_write_pos]
-                = in[1][i] + dexed_r[i] + ensemble_r[i];
+                = in[1][i] + dexed_r[i] + ensemble_r[i] + samp_r[i];
             g_granular_capture_write_pos++;
         }
     }
@@ -647,8 +748,8 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     static float mixed_in_r[256];
     for(size_t i = 0; i < size; i++)
     {
-        mixed_in_l[i] = in[0][i] + gran_l[i] + dexed_l[i] + ensemble_l[i];
-        mixed_in_r[i] = in[1][i] + gran_r[i] + dexed_r[i] + ensemble_r[i];
+        mixed_in_l[i] = in[0][i] + gran_l[i] + dexed_l[i] + ensemble_l[i] + samp_l[i];
+        mixed_in_r[i] = in[1][i] + gran_r[i] + dexed_r[i] + ensemble_r[i] + samp_r[i];
     }
     const float* const       mixed_ptr_arr[2] = {mixed_in_l, mixed_in_r};
     AudioHandle::InputBuffer mixed_in         = mixed_ptr_arr;
@@ -687,8 +788,8 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // than needing its own separate mute.)
     for(size_t i = 0; i < size; i++)
     {
-        out[0][i] += gran_l[i] + dexed_l[i] + ensemble_l[i];
-        out[1][i] += gran_r[i] + dexed_r[i] + ensemble_r[i];
+        out[0][i] += gran_l[i] + dexed_l[i] + ensemble_l[i] + samp_l[i];
+        out[1][i] += gran_r[i] + dexed_r[i] + ensemble_r[i] + samp_r[i];
     }
 
     const float mv           = ui.GetMasterVolume();
@@ -1025,6 +1126,7 @@ int main(void)
     granular.Init(hw.AudioSampleRate());
     dexed.Init(hw.AudioSampleRate());
     ensemble.Init(hw.AudioSampleRate());
+    sample_synth.Init(hw.AudioSampleRate());
 
     // The Stage-1 diagnostic overrides that used to force max Fill/zero
     // Gap/an always-on Scan sweep (needed back when there were no real
@@ -1087,7 +1189,11 @@ int main(void)
             kGranularScopeSamples, g_granular_capture_l, g_granular_capture_r,
             kGranularCaptureSamples, &g_granular_capturing, &g_granular_capture_write_pos,
             g_master_scope_l, kMasterScopeSamples, g_dexed_scope_l, kDexedScopeSamples,
-            &dexed, &ensemble, g_ensemble_scope_l, kEnsembleScopeSamples, g_undo_backup_l,
+            &dexed, &ensemble, g_ensemble_scope_l, kEnsembleScopeSamples,
+            &sample_synth, g_sample_synth_scope_l, kSampleSynthScopeSamples,
+            g_sample_synth_arena_l, g_sample_synth_arena_r, kSampleSynthArenaSamples,
+            g_sample_synth_capture_l, g_sample_synth_capture_r, kSampleSynthCaptureSamples,
+            &g_sample_synth_capturing, &g_sample_synth_capture_write_pos, g_undo_backup_l,
             g_undo_backup_r, &g_undo_owner_layer,
             &g_undo_backup_len);
     ui.ApplyStartupDefaults(); // no-op if nothing's been saved yet (see PerformanceStore::LoadPrefs())

@@ -9,6 +9,7 @@
 class GranularEngine;
 class DexedSynth;
 class EnsembleSynth;
+class SampleSynth;
 
 // The whole "one encoder + push button, two knobs, two buttons, one small
 // OLED" menu system.
@@ -92,6 +93,17 @@ class Ui
               EnsembleSynth*                ensemble,
               const float*                  ensemble_scope_buf,
               size_t                        ensemble_scope_capacity,
+              SampleSynth*                  sample_synth,
+              const float*                  sample_synth_scope_buf,
+              size_t                        sample_synth_scope_capacity,
+              float*                        sample_synth_arena_l,
+              float*                        sample_synth_arena_r,
+              size_t                        sample_synth_arena_capacity,
+              float*                        sample_synth_capture_buf_l,
+              float*                        sample_synth_capture_buf_r,
+              size_t                        sample_synth_capture_capacity,
+              volatile bool*                sample_synth_capturing,
+              volatile size_t*              sample_synth_capture_write_pos,
               float*                        undo_backup_l,
               float*                        undo_backup_r,
               int*                          undo_owner_layer,
@@ -165,6 +177,7 @@ class Ui
     int GetDexedMidiChannel() const { return dexed_midi_channel_; }
     int GetGranularMidiChannel() const { return granular_midi_channel_; }
     int GetEnsembleMidiChannel() const { return ensemble_midi_channel_; }
+    int GetSampleSynthMidiChannel() const { return sample_synth_midi_channel_; }
     // How much of the Bypass live-monitor signal feeds the shared reverb
     // bus above -- independent of every layer's own Send, same shared
     // bus though (see main.cpp's AudioCallback()). 0 (default) = none,
@@ -226,6 +239,8 @@ class Ui
     // Same real-CPU-saving on/off gate, for the new Ensemble engine (see
     // main.cpp's AudioCallback()).
     bool IsEnsembleEnabled() const { return ensemble_enabled_; }
+    // Same real-CPU-saving on/off gate, for the new SampleSynth engine.
+    bool IsSampleSynthEnabled() const { return sample_synth_enabled_; }
     // Global:Looper, Button1 tap -- a REAL stop, not TogglePauseAll()'s
     // own phase-locked pause: main.cpp's AudioCallback() skips every
     // LooperLayer::Process() call entirely while this is false, so
@@ -264,6 +279,9 @@ class Ui
         // Same treatment as Granular/Dexed above, entered from
         // Global:Ensemble. See EnsembleParamPage for its own pages.
         Ensemble,
+        // Same treatment as Granular/Dexed/Ensemble above, entered from
+        // Global:SampleSynth. See SampleSynthParamPage for its own pages.
+        SampleSynth,
         // The advanced per-operator FM editor -- entered from
         // Screen::Dexed's own Advanced page (encoder click), NOT a
         // Global page of its own. Encoder click here returns to
@@ -352,6 +370,9 @@ class Ui
         // Entry point into Screen::Ensemble, plus the on/off toggle --
         // same Button1-tap convention as Granular/Dexed above.
         Ensemble,
+        // Entry point into Screen::SampleSynth, plus the on/off toggle --
+        // same treatment as Granular/Dexed/Ensemble above.
+        SampleSynth,
         // On/off toggle only, same treatment as Granular/Dexed above --
         // but for the whole 4-layer loop system, and a REAL stop (see
         // IsLooperEnabled()'s doc comment), not TogglePauseAll()'s own
@@ -369,6 +390,21 @@ class Ui
     {
         Performances,
         GranularPresets,
+        // User-saved Ensemble presets only -- the factory bank isn't
+        // real files (nothing to delete), same "factory + user, only
+        // user is manageable here" split GranularPresets/Dexed's own
+        // presets use, reusing the same RefreshEnsemblePresetSlots()/
+        // ensemble_preset_user_slots_ EnsembleParamPage::Preset already
+        // maintains.
+        EnsemblePresets,
+        // SampleSynth's own Captures (SampleSynthParamPage::Trim's B2
+        // hold-to-save, see TriggerSaveSampleSynthCapture()) -- NOT
+        // Kits, NOT ordinary Sounds, just the CAPTURED1/CAPTURED2
+        // category files. Presented as one combined 1-64 list here
+        // (1-32 = CAPTURED1, 33-64 = CAPTURED2+32) even though the real
+        // files underneath are two separate 1-32 numbered folders --
+        // see sd_mgmt_captures_numbers_'s own comment.
+        SampleSynthCaptures,
         kCount
     };
 
@@ -558,6 +594,70 @@ class Ui
         kCount
     };
 
+    // Screen::SampleSynth's own pages -- no kit-load/assign page yet
+    // (needs PerformanceStore's own kit-loading pipeline first), just
+    // the controls SampleSynth already has: filter, per-voice ADSR, and
+    // output mix/FX sends, each mirroring Dexed/Grains' own identical
+    // pages.
+    enum class SampleSynthParamPage
+    {
+        Filter, // Cutoff + Resonance, mode cycled by Button1 -- same shape as Dexed/Grains
+        // K1/K2 = Attack/Decay (AD) or Sustain/Release (SR), Button1
+        // targets AD, Button2 targets SR -- same explicit-set convention
+        // DexedParamPage::FX's own Reverb/Delay toggle uses.
+        Env,
+        Mix, // Output Level + Pan
+        // Reverb send / Delay send, Button1/Button2 toggle -- same shape
+        // as DexedParamPage::FX.
+        FX,
+        // K1 only, same knob-quantized idiom as DexedParamPage::MIDI/
+        // GranularParamPage::MIDI -- which incoming MIDI channel this
+        // engine responds to. Default Omni. Sits right after FX, same
+        // relative position Grains' own MIDI page has.
+        MIDI,
+        // Record live input, pull from a loop layer, or import a .wav --
+        // same Direct Record/From Layer/Import source cycle as
+        // GranularParamPage::Capture, writing into sample_synth_capture_
+        // buf_l_/r_ instead of Grains' own buffer. Always lands in slot
+        // 0 (see sample_synth_trim_start01_'s own comment) and replaces
+        // whatever Sound/Kit was loaded -- every other slot gets
+        // cleared, by explicit decision (this is a scratchpad for new
+        // content, not a way to add one more layer to an existing kit).
+        Capture,
+        // K1/K2 = trim start/end, non-destructive (only which sub-range
+        // of the capture buffer slot 0 points at changes -- see
+        // sample_synth_trim_start01_'s own comment). Button1 = Play
+        // (SampleSynth::PlayPreview(), plays exactly the trimmed range
+        // once). Button2 held 800ms = save the trimmed range as a real
+        // Sound file (TriggerSaveSampleSynthCapture()) -- unlike Grains,
+        // which saves a whole self-contained preset on a separate page,
+        // a captured Sound here becomes an ordinary file under
+        // SAMPLES/CAPTURED1 or 2, ready to browse/favorite/use in a Kit
+        // like anything else.
+        Trim,
+        // K1 = Tune, same +-24 semitone range/quantization and dead-
+        // center-is-zero feel as GranularParamPage::Tune (0 = "play back
+        // exactly as captured"), only audible once chromatic is on.
+        // Button1 toggles chromatic on/off -- same meaning as Grains'
+        // own Map-to-Note. Both map onto fields SampleSlot already has
+        // (chromatic/root_note -- see sample_synth_tune_root_note_'s own
+        // comment for the semitones<->root_note conversion), no new
+        // engine API needed.
+        Tune,
+        // Load a pre-made kit -- LOAD-ONLY for now, see
+        // sample_synth_kit_numbers_'s own doc comment in this header.
+        Preset,
+        // Favorited individual Sounds (not Kits, not .snd multi-samples
+        // -- see sample_synth_favorites_'s own comment) -- a flat,
+        // category-free list so a sound you like from deep inside a
+        // category doesn't mean re-browsing it every time. Bookmarked
+        // from this page itself (Button1 bookmarks whatever's currently
+        // loaded -- see OnButton1Short()), this page is LOAD-ONLY, same
+        // shape as Preset.
+        User,
+        kCount
+    };
+
     // Preset page's "Files" branch own group chooser -- one level above
     // the factory-category/User folder list, entered right after
     // picking "Files" from the top-level Save/Load chooser. Added
@@ -678,6 +778,7 @@ class Ui
         GlobalSdMgmt, // browses a list directly, no pickup used -- see GlobalPage::SdMgmt
         GlobalDexed, // entry point only -- see Screen::Dexed instead
         GlobalEnsemble, // entry point only -- see Screen::Ensemble instead
+        GlobalSampleSynth, // no continuous knobs -- Button1 toggle only, same as GlobalLooper
         // Screen::Granular's Grain page -- Button1/Button2 toggle which
         // pair the knobs reach (see granular_grain_target_gap_jitter_).
         GranularGrainSizeFill,
@@ -769,6 +870,21 @@ class Ui
         EnsembleFxReverb,
         EnsembleFxDelay,
         EnsembleMidi, // K1 only -- which MIDI channel this engine listens on
+        // Screen::SampleSynth's own pages -- same shapes as Dexed/
+        // Grains' own Filter/Mix/FX, Env split AD/SR same as
+        // GranularEnvAD/GranularEnvSR above.
+        SampleSynthFilter,
+        SampleSynthEnvAD,
+        SampleSynthEnvSR,
+        SampleSynthMix,
+        SampleSynthFxReverb,
+        SampleSynthFxDelay,
+        SampleSynthMidi, // K1 only -- which MIDI channel this engine listens on
+        SampleSynthCapture, // no continuous knobs outside Import mode -- see that page's own comment
+        SampleSynthTrim,    // start/end, same shape as GranularTrim
+        SampleSynthTune,    // root note only
+        SampleSynthPreset, // browses a list directly, no pickup used
+        SampleSynthUser,   // ditto -- browses the favorites list
         kCount
     };
     KnobContext CurrentKnobContext() const;
@@ -825,21 +941,23 @@ class Ui
     void DrawGranularScreen();
     void DrawMixerScreen();
     void DrawDexedScreen();
+    void DrawSampleSynthScreen();
     // Screen::Mixer's own per-channel accessors -- channel index 0..3 is
-    // Layer 1..4, 4 is Grains, 5 is Dexed, 6 is Bypass, 7 is Master.
-    // Kept as small indexed switches rather than a polymorphic interface
-    // since there are only 8 cases and they already read/write each
-    // engine's own real getters/setters directly -- no new state of its
-    // own, this is purely another view onto values that already exist.
-    static constexpr int kNumMixerChannels = 9;
-    // Total encoder "stops" in Screen::Mixer -- the 8 real channels above
+    // Layer 1..4, 4 is Grains, 5 is Dexed, 6 is Ensemble, 7 is
+    // SampleSynth, 8 is Bypass, 9 is Master. Kept as small indexed
+    // switches rather than a polymorphic interface since there are only
+    // 10 cases and they already read/write each engine's own real
+    // getters/setters directly -- no new state of its own, this is
+    // purely another view onto values that already exist.
+    static constexpr int kNumMixerChannels = 10;
+    // Total encoder "stops" in Screen::Mixer -- the real channels above
     // plus the Scope stop (mixer_position_ == kNumMixerChannels). See
     // Screen::Mixer's own comment.
     static constexpr int kNumMixerPositions = kNumMixerChannels + 1;
     const char* MixerChannelName(int ch) const;
     float       MixerGetVolume01(int ch) const;
-    float       MixerGetPan01(int ch) const; // Master (ch 7) has none -- returns 0.5f
-    float       MixerGetSend01(int ch) const; // Master (ch 7) has none -- returns 0.f
+    float       MixerGetPan01(int ch) const; // Master (last channel) has none -- returns 0.5f
+    float       MixerGetSend01(int ch) const; // Master (last channel) has none -- returns 0.f
     void        MixerSetVolume01(int ch, float v01);
     void        MixerSetPan01(int ch, float v01);   // no-op on Master
     void        MixerSetSend01(int ch, float v01);  // no-op on Master
@@ -999,10 +1117,16 @@ class Ui
     void TriggerLoad();
 
     // --- SD MGMT (Global:SdMgmt page) ------------------------------------
-    // Returns whichever of file_slots_/granular_preset_user_slots_
-    // applies to sd_mgmt_folder_ (refreshing it first if that folder's
-    // own dirty flag is set) and writes its count to *out_count.
+    // Returns whichever of file_slots_/granular_preset_user_slots_/
+    // ensemble_preset_user_slots_/sd_mgmt_captures_numbers_ applies to
+    // sd_mgmt_folder_ (refreshing it first if that folder's own dirty
+    // flag is set) and writes its count to *out_count.
     const int* SdMgmtSlots(int* out_count);
+    // Rebuilds sd_mgmt_captures_numbers_ -- see that field's own
+    // comment. Called from SdMgmtSlots() when sd_mgmt_captures_dirty_
+    // is set, same "refresh on demand, not every frame" convention as
+    // RefreshGranularPresetSlots() etc.
+    void RefreshSdMgmtCaptures();
     // Button1 hold (800ms) while browsing a folder's files: duplicates
     // the browsed file via PerformanceStore::Duplicate*() -- same
     // "WORKING..." full-screen progress overlay as Save/Load for
@@ -1306,10 +1430,12 @@ class Ui
     // own delay_bypassed), so a fresh boot doesn't pay delay's fixed
     // per-sample cost until you actually turn the knob up.
     float delay_feedback01_ = 0.35f; // shared delay bus's Feedback, see GetDelayFeedback01()
-    // -1 = Omni (default) -- see GetDexedMidiChannel()/GetGranularMidiChannel().
-    int dexed_midi_channel_    = -1;
-    int granular_midi_channel_ = -1;
-    int ensemble_midi_channel_ = -1;
+    // -1 = Omni (default) -- see GetDexedMidiChannel()/GetGranularMidiChannel()/
+    // GetSampleSynthMidiChannel().
+    int dexed_midi_channel_        = -1;
+    int granular_midi_channel_     = -1;
+    int ensemble_midi_channel_     = -1;
+    int sample_synth_midi_channel_ = -1;
     // Global:FX's own toggle between the Reverb pair (Size/Bypass Send,
     // existing) and the Delay pair (Time/Feedback, new) -- same "Button1
     // = pair A, Button2 = pair B" idiom as Grain's Gap+Scan toggle.
@@ -1322,9 +1448,13 @@ class Ui
     bool dexed_vibrato_target_sens_ = false;
     bool granular_fx_target_delay_ = false;
     bool ensemble_fx_target_delay_ = false;
+    bool sample_synth_fx_target_delay_ = false;
     // Ensemble's own Env page toggle (Attack/Decay vs Sustain/Release) --
     // same idiom as GranularEnvAD/GranularEnvSR's own toggle.
     bool ensemble_env_target_sr_ = false;
+    // SampleSynthParamPage::Env's own Button1/Button2 toggle (AD vs SR) --
+    // same explicit-set convention as the FX toggles above.
+    bool sample_synth_adsr_target_sr_  = false;
     float bypass_reverb_send01_ = 0.f; // see GetBypassReverbSend01()
     float bypass_mix_volume01_  = 0.8f; // see GetBypassMixVolume01()
     float bypass_mix_volume_    = 1.f;  // curved, set properly in the ctor below
@@ -1359,6 +1489,8 @@ class Ui
     bool dexed_enabled_    = false;
     // Same false default as Dexed's own -- see IsEnsembleEnabled().
     bool ensemble_enabled_ = false;
+    // Same false default as Dexed/Granular/Ensemble's own.
+    bool sample_synth_enabled_ = false;
 
     uint32_t draw_counter_ = 0; // throttles the (slow, blocking-I2C) OLED redraw
 
@@ -1411,6 +1543,16 @@ class Ui
     bool         sd_mgmt_in_folder_ = false; // false = picking a folder, true = browsing its files
     int          sd_mgmt_cursor_    = 0;     // index into the current folder's own slot list
     char         sd_mgmt_status_[24] = {};   // last duplicate/delete result
+    // SdMgmtFolder::SampleSynthCaptures' own combined view -- 1-32 are
+    // CAPTURED1's own real numbers as-is, 33-64 are CAPTURED2's own
+    // real numbers +32 (see RefreshSdMgmtCaptures()). The underlying
+    // PerformanceStore::*SampleSynthCapture() calls only ever see one
+    // real category + its own 1-32 number; this virtual range is purely
+    // this page's own presentation so 2 real folders show up as ONE
+    // SdMgmtFolder entry.
+    int  sd_mgmt_captures_numbers_[64] = {};
+    int  sd_mgmt_captures_count_       = 0;
+    bool sd_mgmt_captures_dirty_       = true; // forces one RefreshSdMgmtCaptures() on entry
 
     // --- WAV export (Global:Export page) ------------------------------
     bool export_op_in_progress_     = false; // true only while inside ExportWav()
@@ -1690,4 +1832,201 @@ class Ui
     // since a real user slot number is always >= 1 here too.
     int  ensemble_loaded_preset_slot_ = 0;
     char ensemble_preset_status_[24]  = {}; // last save/load result
+
+    // --- SampleSynth engine (Screen::SampleSynth) ------------------------
+    SampleSynth*         sample_synth_            = nullptr;
+    SampleSynthParamPage sample_synth_param_page_ = SampleSynthParamPage::Filter;
+    const float*         sample_synth_scope_buf_      = nullptr;
+    size_t                sample_synth_scope_capacity_ = 0;
+    // Shared SDRAM arena -- see main.cpp's own g_sample_synth_arena_l/r
+    // doc comment. Owned by main.cpp, just pointed at here, same
+    // convention granular_capture_buf_l_/r_ already uses.
+    float* sample_synth_arena_l_        = nullptr;
+    float* sample_synth_arena_r_        = nullptr;
+    size_t sample_synth_arena_capacity_ = 0;
+    // Preset (kit) browsing state -- same shared SaveLoadMode/
+    // load_browsing_files_ machinery Grains/Dexed's own Preset pages
+    // use, but LOAD-ONLY: there's no on-device way yet to build a kit's
+    // own slot assignments (that's a real, separate future feature --
+    // see the plan's own "per-slot editor" discussion), so there's
+    // nothing meaningful to Save back yet. Button2's short tap jumps
+    // straight to BrowsingLoad (skipping Grains' own "Files vs New"
+    // top-level chooser -- there's no "New" concept for a kit either).
+    int  sample_synth_kit_numbers_[PerformanceStore::kMaxSampleSynthKits] = {};
+    char sample_synth_kit_names_[PerformanceStore::kMaxSampleSynthKits]
+                                 [PerformanceStore::kMaxSampleSynthKitNameLen + 1] = {};
+    int  sample_synth_kit_count_       = 0;
+    bool sample_synth_kits_dirty_      = true; // re-scan on first entry
+    int  sample_synth_kit_cursor_      = 0;
+    // Kits mode's own category level -- same shape as Sounds' own
+    // sample_synth_sound_category_ (see its own comment just below),
+    // just range-based instead of folder-based since kits are numbered
+    // slots, not real SD subfolders -- see kSampleSynthKitCategoryFirst/
+    // Last/Labels in ui.cpp. -1 = still at category-select.
+    int  sample_synth_kit_category_        = -1;
+    int  sample_synth_kit_category_cursor_ = 0;
+    int  sample_synth_loaded_kit_slot_ = -1;
+    char sample_synth_loaded_kit_name_[PerformanceStore::kMaxSampleSynthKitNameLen + 1] = {};
+    char sample_synth_kit_status_[24]  = {};
+    void TriggerLoadSampleSynthKit();
+
+    // --- Play an individual sound directly, no kit needed -- a direct
+    // request after kits alone felt too all-or-nothing: Button1 (Idle,
+    // card present) toggles this page between browsing whole Kits
+    // (above) and browsing raw files in SAMPLES/ one at a time (same
+    // listing GranularEngine's own WAV import already proved out, see
+    // ListSampleSynthFiles()). Loading a single sound clears every
+    // slot and puts just that one file in slot 0, chromatic, full
+    // keyboard range -- current ADSR/filter/output/pan/send settings
+    // are left exactly as they are (unlike a kit load, which restores
+    // its own saved settings), since this is "quickly audition a
+    // sound," not "recall a whole configuration."
+    static constexpr int kMaxSampleSynthSoundsListed = 32;
+    bool sample_synth_preset_mode_sounds_ = false;
+    bool sample_synth_sounds_dirty_       = true; // re-scan on first entry into Sounds mode
+    char sample_synth_sound_names_[kMaxSampleSynthSoundsListed]
+                                   [PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
+    int  sample_synth_sound_count_      = 0;
+    char sample_synth_loaded_sound_name_[PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
+    // Which kSampleSynthCategoryFolders entry sample_synth_loaded_sound_name_
+    // came from -- -1 when nothing's loaded (or a Kit is loaded instead
+    // of an individual Sound). Only tracked so the User/favorites page
+    // (see SampleSynthParamPage::User) knows what to bookmark; nothing
+    // else needs it, Sounds mode's own load path already knows its
+    // category from sample_synth_sound_category_ at load time.
+    int  sample_synth_loaded_sound_category_ = -1;
+    void TriggerLoadSampleSynthSound();
+    // Shared by TriggerLoadSampleSynthSound()/TriggerLoadSampleSynthFavorite()
+    // -- see its own doc comment in ui.cpp for why.
+    void LoadSampleSynthFileIntoEngine(const char* category_folder, const char* filename);
+
+    // --- Favorited Sounds -- see SampleSynthParamPage::User's own
+    // comment and PerformanceStore::SampleSynthFavorite's own doc
+    // comment for the full reasoning (reference, not a copy; its own
+    // page so you're never stuck re-browsing a 32-item category for a
+    // sound you already know you like). B1 bookmarks whatever's
+    // currently loaded (sample_synth_loaded_sound_name_/_category_
+    // above); B2 is the same Open/Load as every other list; K1 scrolls
+    // -- same convention as Preset's own Kits/Sounds lists, just with
+    // no category level in front of it.
+    bool sample_synth_favorites_dirty_ = true; // re-scan (load from card) on first entry
+    PerformanceStore::SampleSynthFavorite
+         sample_synth_favorites_[PerformanceStore::kMaxSampleSynthFavorites];
+    int  sample_synth_favorite_count_  = 0; // how many of the above are actually filled
+    int  sample_synth_favorite_cursor_ = 0;
+    char sample_synth_favorite_status_[24] = {}; // "Added", "Already a favorite", "Full", etc.
+    void TriggerAddSampleSynthFavorite();
+    void TriggerLoadSampleSynthFavorite();
+
+    // Sounds now has enough entries (OP-1 pack, piano patches, pad
+    // patches, plus any future multi-sample .snd manifests) that one
+    // flat scroll stopped being usable -- a category level sits in
+    // front of it instead. -1 = still at category-select (encoder
+    // scrolls sample_synth_sound_category_cursor_ through the fixed
+    // category list below); 0..kSampleSynthSoundCategoryCount-1 =
+    // drilled into that category's own SAMPLES/<folder>/ file list
+    // (encoder now scrolls sample_synth_kit_cursor_ as before, just
+    // scoped to that subfolder). Encoder CLICK toggles between the two
+    // levels -- same "click drills into a sub-list" convention Dexed's
+    // own Advanced page and the Performances/Grains "Files" chooser
+    // already use elsewhere in this file. Resets to -1 whenever Button1
+    // (re)enters Sounds mode, same "start over at the top" reasoning
+    // sample_synth_kit_cursor_'s own reset already follows. The fixed
+    // category count/folder/label tables themselves live in ui.cpp
+    // (kSampleSynthCategoryFolders/Labels) -- not needed here.
+    int sample_synth_sound_category_        = -1;
+    int sample_synth_sound_category_cursor_ = 0;
+
+    // --- SampleSynth Capture/Trim/Tune (SampleSynthParamPage::Capture/
+    // Trim/Tune) -- same Direct Record/From Layer/Import workflow as
+    // GranularParamPage::Capture/Trim, but always into slot 0 and saved
+    // out as a real Sound file (see TriggerSaveSampleSynthCapture())
+    // rather than Grains' own self-contained preset. Mutable (not
+    // const) -- Ui writes into these directly for the From-Layer copy,
+    // and main.cpp's AudioCallback() writes into them sample-by-sample
+    // for Direct Record, same split as granular_capture_buf_l_/r_.
+    float*           sample_synth_capture_buf_l_     = nullptr;
+    float*           sample_synth_capture_buf_r_     = nullptr;
+    size_t           sample_synth_capture_capacity_  = 0;
+    volatile bool*   sample_synth_capturing_         = nullptr;
+    volatile size_t* sample_synth_capture_write_pos_ = nullptr;
+    // -1 = Direct Record, -2 = Import (IMPORT/ on the SD card -- reusing
+    // Grains' own folder rather than adding a third near-identical one,
+    // since this is a one-time external-WAV staging step, not a
+    // persisted/browsable content library the way SAMPLES/ itself is),
+    // 0..num_layers_-1 = that loop layer. Same Button1 cycle idiom as
+    // granular_capture_source_.
+    int  sample_synth_capture_source_ = -1;
+    bool sample_synth_was_capturing_  = false; // edge-detection, mirrors granular_was_capturing_
+    char sample_synth_capture_status_[24] = {}; // last From-Layer/Import/Save result
+
+    // --- SampleSynth WAV import (sample_synth_capture_source_ == -2) ----
+    static constexpr int kMaxSampleSynthImportFiles = 16;
+    char sample_synth_import_names_[kMaxSampleSynthImportFiles][61] = {};
+    int  sample_synth_import_file_count_ = 0;
+    int  sample_synth_import_cursor_     = 0;
+    bool sample_synth_import_files_dirty_ = true; // forces one refresh on entry
+
+    // --- SampleSynth trim (SampleSynthParamPage::Trim) ------------------
+    // The true, untrimmed length of whatever was most recently captured
+    // -- slot 0's own len instead reflects whatever sub-range is
+    // CURRENTLY active, so this is tracked separately as the reference
+    // the trim points are computed against, same split as Grains' own
+    // granular_capture_full_len_.
+    size_t sample_synth_capture_full_len_ = 0;
+    float  sample_synth_trim_start01_     = 0.f;
+    float  sample_synth_trim_end01_       = 1.f;
+    // Peaks over the FULL untrimmed capture -- 63, matching
+    // GranularEngine::kWaveformCols (reused here as the fixed column
+    // count for DrawGranularWaveform(), a generic Ui:: method despite
+    // its name -- see that page's own comment in ui.cpp). Computed once
+    // per new capture (OnNewSampleSynthCapture()); unlike Grains' own
+    // equivalent, SampleSynth has no second "live active sub-range"
+    // waveform page that also needs a throttled per-tick recompute --
+    // Trim here always shows the full capture with markers, nothing
+    // else reads a sub-range view, so no throttle is needed.
+    float sample_synth_capture_peaks_[63] = {};
+
+    // --- SampleSynth tune (SampleSynthParamPage::Tune) ------------------
+    // Direct UI for fields SampleSlot already has -- see SampleSynth::
+    // LoadSlot()'s own params. Preserved across Trim adjustments (not
+    // reset when start01/end01 change) and re-applied on every Tune
+    // change via the same ApplySampleSynthTrim() call Trim itself uses.
+    // root_note_ is the ONLY one of these two actually stored (there's
+    // no separate "semitones" field) -- the knob maps to it via
+    // `root_note = 60 - semitones` (see ApplyKnobs()'s own
+    // SampleSynthParamPage::Tune case), so 60 here means 0 semitones,
+    // i.e. "play back exactly as captured" -- same feel as Grains' own
+    // Tune knob, which is centered on zero the same way.
+    bool    sample_synth_tune_chromatic_  = false;
+    uint8_t sample_synth_tune_root_note_  = 60;
+
+    void TriggerSampleSynthCaptureFromLayer();
+    void RefreshSampleSynthImportFiles();
+    void TriggerSampleSynthImport();
+    // Common finalize step for all 3 capture sources -- resets trim to
+    // 0%/100% and rebuilds sample_synth_capture_peaks_ over the new
+    // full_len, mirrors Ui::OnNewGranularCapture().
+    void OnNewSampleSynthCapture(size_t full_len);
+    // Shared by ApplySampleSynthTrim() and TriggerSaveSampleSynthCapture()
+    // -- both need the same start01_/end01_ -> real sample-index range,
+    // with the same 1% minimum-gap guard Grains' own ApplyGranularTrim()
+    // uses, and must never drift out of sync with each other.
+    void ComputeSampleSynthTrimRange(size_t* out_start, size_t* out_end) const;
+    // Recomputes slot 0's actual start/len from sample_synth_trim_
+    // start01_/end01_ (via ComputeSampleSynthTrimRange() above) and
+    // calls SampleSynth::LoadSlot() -- the only "trim" operation that
+    // exists, since LoadSlot() already takes raw pointers (see
+    // sample_synth.h's own doc comment on why no new engine API was
+    // needed for this). Also applies whatever Tune currently has
+    // selected (chromatic_/root_note_), so a Tune change calls this too
+    // rather than needing its own apply function.
+    void ApplySampleSynthTrim();
+    // Entering the Capture/Trim/Tune group from any other page --
+    // resets every voice and clears slots 1-23 (see
+    // SampleSynthParamPage::Capture's own comment for why this replaces
+    // whatever Sound/Kit was loaded), called once from the page-cycle
+    // handler, not per-page within the group.
+    void OnEnterSampleSynthCaptureGroup();
+    void TriggerSaveSampleSynthCapture();
 };

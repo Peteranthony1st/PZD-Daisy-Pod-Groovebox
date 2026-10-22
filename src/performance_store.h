@@ -6,6 +6,7 @@
 #include "granular_engine.h"
 #include "dexed_synth.h"
 #include "ensemble_synth.h"
+#include "sample_synth.h"
 
 // SD card save/load for a whole "performance" (all layers' audio plus
 // tempo/global/per-layer settings) as one flat binary file per slot.
@@ -101,21 +102,23 @@ bool Save(int                slot,
           float              reverb_damping01,
           // Which MIDI channel each engine listens on -- -1 = Omni. See
           // Ui::GetDexedMidiChannel()/GetGranularMidiChannel()/
-          // GetEnsembleMidiChannel().
+          // GetEnsembleMidiChannel()/GetSampleSynthMidiChannel().
           int                dexed_midi_channel,
           int                granular_midi_channel,
           int                ensemble_midi_channel,
+          int                sample_synth_midi_channel,
           ProgressFn         on_progress = nullptr);
 
-// Accepts kFileVersion (14) and the three previous versions (13, 12, 11)
-// -- see Load()'s own comment in performance_store.cpp for the
+// Accepts kFileVersion (15) and the four previous versions (14, 13, 12,
+// 11) -- see Load()'s own comment in performance_store.cpp for the
 // incremental per-version chunk scheme this uses to stay backward-
 // compatible. A v11 file leaves *out_reverb_predelay01 and friends at
 // the Dattorro library's own tuned defaults (same ones
 // DattorroReverb::Init() uses); a v11 or v12 file leaves
 // *out_dexed_midi_channel/*out_granular_midi_channel at Omni (-1); a
-// v11, v12, or v13 file leaves *out_ensemble_midi_channel at Omni (-1)
-// too -- none of these fail to load.
+// v11, v12, or v13 file leaves *out_ensemble_midi_channel at Omni (-1);
+// a v11-v14 file leaves *out_sample_synth_midi_channel at Omni (-1) too
+// -- none of these fail to load.
 bool Load(int          slot,
           TempoClock&  tempo,
           LooperLayer* layers,
@@ -136,6 +139,7 @@ bool Load(int          slot,
           int*         out_dexed_midi_channel,
           int*         out_granular_midi_channel,
           int*         out_ensemble_midi_channel,
+          int*         out_sample_synth_midi_channel,
           ProgressFn   on_progress = nullptr);
 
 // Grains (GranularEngine) presets: parameters AND the captured audio
@@ -341,13 +345,142 @@ int  ListImportWavFiles(char out_names[][kMaxImportWavNameLen + 1], int max_out)
 // the file's own length (after any resampling) is truncated to that,
 // same "never write past what the caller owns" rule as
 // LoadGranularPreset(). *out_len is set to however many samples were
-// actually produced.
+// actually produced. folder defaults to "IMPORT" (Grains' own, unchanged
+// for every existing call site) -- SampleSynth's own loader passes
+// kSampleSynthFolder instead, same RIFF-decode/resample logic either
+// way, just a different SD folder (see kSampleSynthFolder's own comment
+// for why this is a separate folder rather than sharing IMPORT/).
 bool ImportWav(const char* filename,
                float*      out_l,
                float*      out_r,
                size_t      audio_capacity,
                size_t*     out_len,
-               ProgressFn  on_progress = nullptr);
+               ProgressFn  on_progress = nullptr,
+               const char* folder      = "IMPORT");
+
+// SampleSynth's own SD folder for user-supplied WAV files -- deliberately
+// separate from Grains' IMPORT/ and Dexed's DXIMPORT/, same "never mix
+// different engines' own file listings into one folder" reasoning
+// ImportSyxFilename()'s own comment already documents for DXIMPORT/.
+constexpr const char* kSampleSynthFolder        = "SAMPLES";
+constexpr int         kMaxSampleSynthWavNameLen = kMaxImportWavNameLen;
+// Same shape/rules as ListImportWavFiles() above, just scoped to
+// kSampleSynthFolder (or a category subfolder of it -- see Ui's own
+// sample_synth_sound_category_ comment) instead of IMPORT/. subfolder
+// is appended under kSampleSynthFolder when non-null (e.g. "PIANO" ->
+// scans "SAMPLES/PIANO"); nullptr/empty scans kSampleSynthFolder itself.
+int ListSampleSynthFiles(char out_names[][kMaxSampleSynthWavNameLen + 1], int max_out,
+                          const char* subfolder = nullptr);
+
+// SampleSynth's own "kit" -- a small manifest (which WAV file maps to
+// which slot, chromatic/fixed-pitch, note range, volume) plus the
+// engine's own knob settings. Mirrors Dexed/Grains' own "preset !=
+// captured audio" split, but unlike Grains' own preset (which embeds
+// its single captured buffer directly in the preset file), a kit only
+// ever stores filenames -- the referenced WAVs stay as plain files in
+// SAMPLES/, since one kit can reference up to SampleSynth::kMaxVoices
+// different files and embedding would mean duplicating audio that's
+// often shared across several kits.
+struct SampleSynthKitSlot
+{
+    char    filename[kMaxSampleSynthWavNameLen + 1] = {}; // empty = unused slot
+    bool    chromatic  = false;
+    uint8_t root_note  = 60;
+    uint8_t low_note   = 0;
+    uint8_t high_note  = 127;
+    float   volume01   = 0.8f;
+};
+constexpr int kMaxSampleSynthKits       = 99; // same small range as kMaxGranularPresets
+constexpr int kMaxSampleSynthSlots      = 24; // matches SampleSynth::kMaxSampleSlots
+constexpr int kMaxSampleSynthKitNameLen = 23; // a short display label, not a filename
+
+// name is a short display label (e.g. "Snaps Drums+Violin"), NOT a
+// filename -- shown in the Preset page's browse list so kits read as
+// named content, not just numbers, same reasoning Dexed/Grains presets
+// show their own real name rather than a bare slot number.
+bool SaveSampleSynthKit(int slot, const char* name,
+                         const SampleSynth::SampleSynthPresetData& params,
+                         const SampleSynthKitSlot slots[kMaxSampleSynthSlots]);
+bool LoadSampleSynthKit(int slot, char* out_name, size_t out_name_size,
+                         SampleSynth::SampleSynthPresetData* out_params,
+                         SampleSynthKitSlot out_slots[kMaxSampleSynthSlots]);
+// Lightweight -- reads only the header+name, not the full params/slots,
+// for the browse list to show real names without a full load per kit
+// per list refresh.
+bool PeekSampleSynthKitName(int slot, char* out_name, size_t out_name_size);
+// Same shape as ListGranularPresets() -- a plain per-slot f_stat() loop,
+// fine at this small a range (see ListDexedPresets()'s own comment on
+// why a real directory scan only matters once the range gets large).
+int ListSampleSynthKits(int* out_numbers, int max_out);
+
+// A multi-sample melodic "Sound" -- several recordings of the SAME
+// instrument at different pitches (e.g. a violin sampled at F3 and C4),
+// each covering its own zone of the keyboard so a note is always played
+// from its nearest real recording instead of one sample stretched
+// across all 88 keys. Lives in SAMPLES/ itself (not SAMP/, unlike a
+// Kit) with a ".SND" extension, right alongside the plain .wav files it
+// references -- ListSampleSynthFiles() lists both side by side, and
+// Ui::TriggerLoadSampleSynthSound() dispatches on the extension: a
+// plain .wav loads as before (one chromatic sample, full range); a
+// .SND file loads every zone it lists via LoadSampleSynthSound() below.
+// Reuses SampleSynthKitSlot verbatim for each zone (same byte-verified
+// layout) -- no preset params, no name field (the filename itself is
+// the display name, same as a plain .wav "Sound"), since this is
+// still "audition a sound," not "recall a configuration" the way a
+// Kit load is.
+// subfolder works exactly like ListSampleSynthFiles()'s own -- a
+// category subfolder under kSampleSynthFolder (e.g. "OTHER" for
+// "SAMPLES/OTHER"), nullptr/empty for kSampleSynthFolder itself.
+bool LoadSampleSynthSound(const char* filename, SampleSynthKitSlot out_slots[kMaxSampleSynthSlots],
+                           const char* subfolder = nullptr);
+
+// Bookmarked individual Sounds -- a reference (which category + which
+// filename), never a copy of the audio itself, so favoriting something
+// from e.g. Mellotron 4 doesn't duplicate that WAV anywhere. Lives on
+// its own SampleSynthParamPage::User (see that enum's own comment) as
+// a flat, category-free list -- the whole point is not having to
+// re-browse categories for something you already know you like.
+struct SampleSynthFavorite
+{
+    char category[17] = {}; // a kSampleSynthCategoryFolders entry, e.g. "MELLOTRON3"
+    char filename[kMaxSampleSynthWavNameLen + 1] = {}; // empty = unused slot
+};
+constexpr int kMaxSampleSynthFavorites = 32; // same per-list cap as every category
+
+// Whole-file read/write -- 32 fixed records, no name/preset fields,
+// much simpler than a kit's own save/load (see SaveSampleSynthKit()).
+bool SaveSampleSynthFavorites(const SampleSynthFavorite favorites[kMaxSampleSynthFavorites]);
+bool LoadSampleSynthFavorites(SampleSynthFavorite out_favorites[kMaxSampleSynthFavorites]);
+
+// Writes a trimmed Capture/Trim selection out as a real, plain 16-bit
+// PCM stereo WAV under SAMPLES/<category_folder>/ (e.g. "CAPTURED1"),
+// auto-numbered CAPnnn.wav (001-032, same "scan then pick the first
+// free one" idiom as NextFreeGranularPresetSlot(), just over filenames
+// instead of a fixed numbered-file scheme) -- this is the whole reason
+// a captured Sound becomes an ordinary file afterward (browsable,
+// favoritable, usable in a Kit) instead of a second, Grains-style
+// preset format that embeds audio directly. Always 48kHz (every
+// capture source -- Direct Record, From Layer, Import -- already
+// produces 48kHz, ImportWav() resamples on the way in), stereo.
+// Returns false (category full, no free CAPnnn slot, or a real SD
+// error) without creating anything -- the caller tries the next
+// category, or reports "Captured full" once both are exhausted. On
+// success, out_filename receives the chosen name (e.g. "CAP003.wav").
+bool SaveSampleSynthCapture(const char* category_folder, const float* buf_l, const float* buf_r,
+                             size_t len, char* out_filename, size_t out_filename_size);
+
+// Global:SdMgmt's own view into Captures -- lists/deletes/duplicates
+// real CAPnnn.wav files (001-032) within ONE category_folder
+// ("CAPTURED1" or "CAPTURED2"), same shape as ListSlots()/DeleteSlot()/
+// DuplicateSlot() elsewhere in this file. Ui combines both categories'
+// own 1-32 numbering into one 1-64 virtual list for display (see
+// Ui::SdMgmtSlots()) -- these three functions only ever see one real
+// category at a time, same "per-category primitive, UI owns the
+// combined view" split LoadSampleSynthSound() etc. already use.
+int  ListSampleSynthCapturesInCategory(const char* category_folder, int* out_numbers, int max_out);
+bool DeleteSampleSynthCapture(const char* category_folder, int n);
+bool DuplicateSampleSynthCapture(const char* category_folder, int n, int* out_new_n,
+                                  ProgressFn on_progress = nullptr);
 
 // Renders the current in-memory performance (one full shared loop length,
 // every layer's real filter/character-effect/reverb chain applied,
@@ -426,9 +559,10 @@ bool SavePrefs(TempoClock&  tempo,
                float        reverb_damping01,
                int          dexed_midi_channel,
                int          granular_midi_channel,
-               int          ensemble_midi_channel);
+               int          ensemble_midi_channel,
+               int          sample_synth_midi_channel);
 
-// Same v11/v12/v13/v14 backward compatibility as Load() -- see its own comment.
+// Same v11/v12/v13/v14/v15 backward compatibility as Load() -- see its own comment.
 bool LoadPrefs(float*      out_bpm,
                int*        out_bars,
                float*      out_master_volume01,
@@ -448,6 +582,7 @@ bool LoadPrefs(float*      out_bpm,
                float*      out_reverb_damping01,
                int*        out_dexed_midi_channel,
                int*        out_granular_midi_channel,
-               int*        out_ensemble_midi_channel);
+               int*        out_ensemble_midi_channel,
+               int*        out_sample_synth_midi_channel);
 
 } // namespace PerformanceStore
