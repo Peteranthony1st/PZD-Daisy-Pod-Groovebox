@@ -644,6 +644,20 @@ class Ui
         // comment for the semitones<->root_note conversion), no new
         // engine API needed.
         Tune,
+        // Batch-converts raw OP-1 .aif packs (from op1fun or the OP-1
+        // pack builder) sitting in the SampleKit/SampleSound staging
+        // folders into real, playable Kits/Sounds -- a wholly separate
+        // feature from Capture's own Import source above (that one
+        // pulls a single .wav from Grains' shared IMPORT/ folder into
+        // the Capture buffer for manual Trim/Tune; this one goes
+        // straight from a finished OP-1 patch to a finished Kit/Sound,
+        // no Trim/Tune step, since a drum pack's 24 pre-sliced,
+        // pre-mapped pads have no single buffer to trim, and a sampler
+        // pack already carries its own precise pitch). See
+        // TriggerSampleSynthPackImport()'s own doc comment for the
+        // full mechanism. Positioned right before Preset since that's
+        // "where the results show up."
+        Import,
         // Load a pre-made kit -- LOAD-ONLY for now, see
         // sample_synth_kit_numbers_'s own doc comment in this header.
         Preset,
@@ -655,6 +669,19 @@ class Ui
         // loaded -- see OnButton1Short()), this page is LOAD-ONLY, same
         // shape as Preset.
         User,
+        // The original 21-category Sounds list + "Starter Kits" Kit
+        // category this engine shipped with before the licensed sample
+        // packs they reference were stripped out for redistribution --
+        // kept here, off by default, so the person who built this
+        // firmware can still reach their own personal packs without
+        // them being part of what anyone else who clones the repo
+        // gets. Encoder CLICK on this one page toggles Enabled/
+        // Disabled (an intentional, documented exception to this
+        // screen's usual "click == TogglePauseAll()" rule -- see
+        // HandleEncoder()'s own comment); Button1 still does the
+        // Kits/Sounds toggle, same as the real Preset page, once
+        // enabled. LOAD-ONLY, same as Preset.
+        LegacyPreset,
         kCount
     };
 
@@ -883,8 +910,10 @@ class Ui
         SampleSynthCapture, // no continuous knobs outside Import mode -- see that page's own comment
         SampleSynthTrim,    // start/end, same shape as GranularTrim
         SampleSynthTune,    // root note only
+        SampleSynthImport, // no continuous knobs -- Button1/Button2 only
         SampleSynthPreset, // browses a list directly, no pickup used
         SampleSynthUser,   // ditto -- browses the favorites list
+        SampleSynthLegacyPreset, // browses a list directly, no pickup used
         kCount
     };
     KnobContext CurrentKnobContext() const;
@@ -1166,6 +1195,14 @@ class Ui
     // as TriggerExport() (never overwrites anything).
     void TriggerExportMicroDexed();
     static void OnSaveLoadProgress(float progress01); // PerformanceStore::ProgressFn
+    // Rescales a sub-progress (e.g. "how far through THIS file's own
+    // slots") into the overall bar's own 0..1 range, via the matching
+    // g_progress_file_base01/_span01 globals TriggerSampleSynthPackImport()
+    // sets before each file -- same "static state read by a plain
+    // ProgressFn" shape OnSaveLoadProgress() itself already is, just
+    // with one extra rescale step so a multi-file sweep's bar keeps
+    // moving smoothly within each file, not just between them.
+    static void OnSampleSynthImportFileProgress(float sub01); // PerformanceStore::ProgressFn
 
     // Instant copy of whichever loop layer granular_capture_source_
     // currently names (independent of Home's own cursor_layer_) into
@@ -1858,13 +1895,11 @@ class Ui
     int  sample_synth_kit_count_       = 0;
     bool sample_synth_kits_dirty_      = true; // re-scan on first entry
     int  sample_synth_kit_cursor_      = 0;
-    // Kits mode's own category level -- same shape as Sounds' own
-    // sample_synth_sound_category_ (see its own comment just below),
-    // just range-based instead of folder-based since kits are numbered
-    // slots, not real SD subfolders -- see kSampleSynthKitCategoryFirst/
-    // Last/Labels in ui.cpp. -1 = still at category-select.
-    int  sample_synth_kit_category_        = -1;
-    int  sample_synth_kit_category_cursor_ = 0;
+    // No category level for Kits -- SAMP/KITxxx.DAT's own flat
+    // numbering is browsed directly (unlike Sounds, see
+    // sample_synth_sound_category_'s own comment just below, Kits
+    // never had enough real categories to need one even before the
+    // licensed-pack categories were removed).
     int  sample_synth_loaded_kit_slot_ = -1;
     char sample_synth_loaded_kit_name_[PerformanceStore::kMaxSampleSynthKitNameLen + 1] = {};
     char sample_synth_kit_status_[24]  = {};
@@ -1881,20 +1916,30 @@ class Ui
     // are left exactly as they are (unlike a kit load, which restores
     // its own saved settings), since this is "quickly audition a
     // sound," not "recall a whole configuration."
-    static constexpr int kMaxSampleSynthSoundsListed = 32;
+    // 64, not 32 -- large enough to hold the "Captured" category's own
+    // combined CAPTURED1+CAPTURED2 listing (up to 32 each, see
+    // sample_synth_sound_category_'s own comment below) as well as the
+    // plain "Sounds" category's own 32-item cap.
+    static constexpr int kMaxSampleSynthSoundsListed = 64;
     bool sample_synth_preset_mode_sounds_ = false;
     bool sample_synth_sounds_dirty_       = true; // re-scan on first entry into Sounds mode
     char sample_synth_sound_names_[kMaxSampleSynthSoundsListed]
                                    [PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
     int  sample_synth_sound_count_      = 0;
+    // Only meaningful when sample_synth_sound_category_==1 (Captured) --
+    // how many of sample_synth_sound_names_'s first entries came from
+    // CAPTURED1 (the rest, up to sample_synth_sound_count_, are
+    // CAPTURED2) -- see LoadSampleSynthFileIntoEngine()'s own call site
+    // in TriggerLoadSampleSynthSound() for why this split needs tracking
+    // (the two live in separate real folders on the card).
+    int  sample_synth_sound_captured1_count_ = 0;
     char sample_synth_loaded_sound_name_[PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
-    // Which kSampleSynthCategoryFolders entry sample_synth_loaded_sound_name_
-    // came from -- -1 when nothing's loaded (or a Kit is loaded instead
-    // of an individual Sound). Only tracked so the User/favorites page
-    // (see SampleSynthParamPage::User) knows what to bookmark; nothing
-    // else needs it, Sounds mode's own load path already knows its
-    // category from sample_synth_sound_category_ at load time.
-    int  sample_synth_loaded_sound_category_ = -1;
+    // The real SD folder sample_synth_loaded_sound_name_ came from
+    // ("SOUNDS", "CAPTURED1", or "CAPTURED2") -- empty when nothing's
+    // loaded (or a Kit is loaded instead of an individual Sound). Only
+    // tracked so the User/favorites page (see SampleSynthParamPage::
+    // User) knows what to bookmark.
+    char sample_synth_loaded_sound_category_[12] = {};
     void TriggerLoadSampleSynthSound();
     // Shared by TriggerLoadSampleSynthSound()/TriggerLoadSampleSynthFavorite()
     // -- see its own doc comment in ui.cpp for why.
@@ -1918,22 +1963,23 @@ class Ui
     void TriggerAddSampleSynthFavorite();
     void TriggerLoadSampleSynthFavorite();
 
-    // Sounds now has enough entries (OP-1 pack, piano patches, pad
-    // patches, plus any future multi-sample .snd manifests) that one
-    // flat scroll stopped being usable -- a category level sits in
-    // front of it instead. -1 = still at category-select (encoder
-    // scrolls sample_synth_sound_category_cursor_ through the fixed
-    // category list below); 0..kSampleSynthSoundCategoryCount-1 =
-    // drilled into that category's own SAMPLES/<folder>/ file list
-    // (encoder now scrolls sample_synth_kit_cursor_ as before, just
-    // scoped to that subfolder). Encoder CLICK toggles between the two
-    // levels -- same "click drills into a sub-list" convention Dexed's
-    // own Advanced page and the Performances/Grains "Files" chooser
-    // already use elsewhere in this file. Resets to -1 whenever Button1
-    // (re)enters Sounds mode, same "start over at the top" reasoning
-    // sample_synth_kit_cursor_'s own reset already follows. The fixed
-    // category count/folder/label tables themselves live in ui.cpp
-    // (kSampleSynthCategoryFolders/Labels) -- not needed here.
+    // Sounds has exactly 2 fixed categories -- "Sounds" (0, plain
+    // imported/dropped-in files in SAMPLES/SOUNDS/) and "Captured" (1,
+    // Trim's own "Hold=Save" output in SAMPLES/CAPTURED1/2, see
+    // TriggerSaveSampleSynthCapture()'s own comment -- kept as its own
+    // category rather than merged in, since Capture/Trim is a distinct
+    // workflow from importing a pack and the user asked for them to
+    // stay visibly separate). -1 = still at category-select (encoder
+    // scrolls sample_synth_sound_category_cursor_ between the two);
+    // 0 or 1 = drilled into that category's own file list (encoder now
+    // scrolls sample_synth_kit_cursor_ as before). Encoder CLICK
+    // toggles between the two levels -- same "click drills into a
+    // sub-list" convention Dexed's own Advanced page and the
+    // Performances/Grains "Files" chooser already use elsewhere in
+    // this file. Resets to -1 whenever Button1 (re)enters Sounds mode,
+    // same "start over at the top" reasoning sample_synth_kit_cursor_'s
+    // own reset already follows. Kits have no equivalent -- see
+    // sample_synth_kit_count_'s own comment above.
     int sample_synth_sound_category_        = -1;
     int sample_synth_sound_category_cursor_ = 0;
 
@@ -2029,4 +2075,48 @@ class Ui
     // handler, not per-page within the group.
     void OnEnterSampleSynthCaptureGroup();
     void TriggerSaveSampleSynthCapture();
+
+    // --- SampleSynth pack import (SampleSynthParamPage::Import) ---------
+    // See that enum entry's own comment for how this differs from
+    // Capture's unrelated Import source. target_ cycles Kit/Sound/All
+    // via Button1; Button2 held 800ms runs TriggerSampleSynthPackImport().
+    enum class SampleSynthImportTarget
+    {
+        Kit,
+        Sound,
+        All,
+        kCount
+    };
+    SampleSynthImportTarget sample_synth_import_target_ = SampleSynthImportTarget::All;
+    // Longer than every other status line in this file (24) -- this one
+    // reports two counts at once ("Kits: 3 ok, 1 skip / Sounds: 2 ok").
+    char sample_synth_pack_import_status_[48] = {};
+    void TriggerSampleSynthPackImport();
+
+    // --- Legacy presets (SampleSynthParamPage::LegacyPreset) ------------
+    // See that enum entry's own comment. Off by default (sample_synth_
+    // legacy_enabled_), toggled by encoder CLICK on this one page (see
+    // HandleEncoder()'s own comment for why this page is an intentional
+    // exception to this screen's usual click == TogglePauseAll() rule).
+    // Mirrors the real Preset page's own Kits/Sounds browsing shape
+    // (same kMaxSampleSynthSoundsListed/kMaxSampleSynthKits-sized
+    // buffers, same 2-level category->file-list structure) but entirely
+    // separate state, so switching between the two pages never
+    // disturbs whichever one the user had drilled into.
+    bool sample_synth_legacy_enabled_       = false;
+    bool sample_synth_legacy_mode_sounds_   = false;
+    int  sample_synth_legacy_category_        = -1; // -1 = at category-select
+    int  sample_synth_legacy_category_cursor_ = 0;
+    int  sample_synth_legacy_cursor_          = 0; // scrolls whichever list is active
+    bool sample_synth_legacy_dirty_           = true;
+    char sample_synth_legacy_sound_names_[kMaxSampleSynthSoundsListed]
+                                          [PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
+    int  sample_synth_legacy_sound_count_ = 0;
+    int  sample_synth_legacy_kit_numbers_[PerformanceStore::kMaxSampleSynthKits] = {};
+    char sample_synth_legacy_kit_names_[PerformanceStore::kMaxSampleSynthKits]
+                                        [PerformanceStore::kMaxSampleSynthKitNameLen + 1] = {};
+    int  sample_synth_legacy_kit_count_ = 0;
+    char sample_synth_legacy_loaded_name_[PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
+    char sample_synth_legacy_status_[24] = {};
+    void TriggerLoadSampleSynthLegacy();
 };

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cctype>
 #include <cstddef>
+#include <cstdlib>
 #include <math.h>
 #include "per/sdmmc.h"
 #include "sys/fatfs.h"
@@ -51,6 +52,22 @@ void ClearError()
 // to keep progress updates responsive, large enough to not be dominated
 // by per-call SD overhead.
 constexpr UINT kChunkSamples = 4096;
+
+// ImportAif()/ImportWav()'s own raw_buf chunk size -- deliberately
+// separate from kChunkSamples above (which stays small for Export's own
+// real-time-adjacent scratch buffers). Confirmed on real hardware: each
+// f_read() chunk boundary corrupts several samples right at the start of
+// the freshly-read buffer -- verified as a genuine hardware/SD-read
+// artifact, not a decode or resampler logic bug (a faithful pure-
+// software simulation of the exact same chunked-read structure, with no
+// real SD/DMA involved, produces zero such defects; an independent
+// reference decode of the same source file also shows nothing remotely
+// close). Sized to cover a full real op-1 import (its own ~12-second
+// recording ceiling, ~529,200 frames @44100Hz) in a single f_read(),
+// which removes the chunk boundary itself rather than chasing the exact
+// mechanism inside FatFs/the SD driver. Still a while loop below for any
+// file that somehow exceeds this, just no longer the common case.
+constexpr UINT kAudioDecodeChunkSamples = 600000;
 
 // Save()/Load()/SaveGranularPreset()/LoadGranularPreset() used to stream
 // their own raw audio to/from the SD card in chunks too, under their own
@@ -2006,6 +2023,72 @@ int ListSampleSynthFiles(char out_names[][kMaxSampleSynthWavNameLen + 1], int ma
     return count;
 }
 
+bool ParseNoteNameFromFilename(const char* filename, uint8_t* out_note)
+{
+    if(!filename || !out_note)
+        return false;
+    size_t len = strlen(filename);
+    size_t dot = len;
+    for(size_t i = len; i > 0; i--)
+    {
+        if(filename[i - 1] == '.')
+        {
+            dot = i - 1;
+            break;
+        }
+    }
+    if(dot == 0)
+        return false;
+    // Walk back from the extension over the trailing token (letters/
+    // digits/#) to find where it starts -- bounded by a space or the
+    // start of the string, same "last word" convention a human reading
+    // the filename out loud would use.
+    size_t start = dot;
+    while(start > 0 && filename[start - 1] != ' ')
+        start--;
+    size_t tok_len = dot - start;
+    if(tok_len < 2 || tok_len > 4)
+        return false;
+
+    char c = (char)toupper((unsigned char)filename[start]);
+    if(c < 'A' || c > 'G')
+        return false;
+    static const int kNoteIndex[7] = {9, 11, 0, 2, 4, 5, 7}; // A,B,C,D,E,F,G
+    int               note_index   = kNoteIndex[c - 'A'];
+    size_t            p            = start + 1;
+    if(p < dot && (filename[p] == '#' || filename[p] == 'b' || filename[p] == 'B'))
+    {
+        note_index += (filename[p] == '#') ? 1 : -1;
+        p++;
+    }
+    if(p >= dot)
+        return false; // no octave digits left -- not a note token after all
+    bool   neg = false;
+    size_t digits_start = p;
+    if(filename[p] == '-')
+    {
+        neg = true;
+        p++;
+        digits_start = p;
+    }
+    int octave = 0;
+    for(; p < dot; p++)
+    {
+        if(!isdigit((unsigned char)filename[p]))
+            return false;
+        octave = octave * 10 + (filename[p] - '0');
+    }
+    if(p == digits_start)
+        return false;
+    if(neg)
+        octave = -octave;
+    int midi = (octave + 1) * 12 + note_index;
+    if(midi < 0 || midi > 127)
+        return false;
+    *out_note = (uint8_t)midi;
+    return true;
+}
+
 void SampleSynthKitFilename(int slot, char* out, size_t out_size)
 {
     snprintf(out, out_size, "SAMP/KIT%03d.DAT", slot);
@@ -2022,7 +2105,14 @@ struct SampleSynthKitFileHeader
 // a clean reject of version 1 files, same "first-ever format change,
 // no real content exists yet to preserve" reasoning GranularPresetData's
 // own original kGranularPresetFileVersion comment documents.
-constexpr uint32_t kSampleSynthKitFileVersion = 2;
+// 3: added SampleSynthPresetData::mono_choke, appended at the struct's
+// own end -- real kits already exist by this point (KIT001-011), so
+// this one DOES need the version-tolerant read, same shape as
+// kDexedPresetFileVersion's own v2->v3 bump (see kSampleSynthKitDataV2Size).
+constexpr uint32_t kSampleSynthKitFileVersion   = 3;
+constexpr uint32_t kSampleSynthKitFileVersionV2 = 2; // previous version, still loadable
+constexpr size_t   kSampleSynthKitDataV2Size
+    = offsetof(SampleSynth::SampleSynthPresetData, mono_choke);
 } // namespace
 
 bool SaveSampleSynthKit(int slot, const char* name,
@@ -2099,8 +2189,12 @@ bool SaveSampleSynthKit(int slot, const char* name,
 // (unless peek_only) leaves the file open positioned right after the
 // name for the caller to keep reading params/slots. Returns the open
 // FIL* on success (caller must f_close() it), nullptr on failure
-// (error already set).
-FIL* OpenSampleSynthKitAndReadName(int slot, char* out_name, size_t out_name_size)
+// (error already set). out_version is optional -- LoadSampleSynthKit()
+// needs it to know how much of SampleSynthPresetData a v2 file
+// actually has on disk; PeekSampleSynthKitName() never reads params at
+// all, so it just passes nullptr.
+FIL* OpenSampleSynthKitAndReadName(int slot, char* out_name, size_t out_name_size,
+                                     uint32_t* out_version = nullptr)
 {
     char fname[24];
     SampleSynthKitFilename(slot, fname, sizeof(fname));
@@ -2119,7 +2213,10 @@ FIL* OpenSampleSynthKitAndReadName(int slot, char* out_name, size_t out_name_siz
     UINT br;
     fr      = f_read(&file, &hdr, sizeof(hdr), &br);
     bool ok = fr == FR_OK && br == sizeof(hdr);
-    if(ok && (memcmp(hdr.magic, "SMPK", 4) != 0 || hdr.version != kSampleSynthKitFileVersion))
+    if(ok
+       && (memcmp(hdr.magic, "SMPK", 4) != 0
+           || (hdr.version != kSampleSynthKitFileVersion
+               && hdr.version != kSampleSynthKitFileVersionV2)))
     {
         ok = false;
         SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
@@ -2128,6 +2225,8 @@ FIL* OpenSampleSynthKitAndReadName(int slot, char* out_name, size_t out_name_siz
     {
         SetError("hdr", fr);
     }
+    if(ok && out_version)
+        *out_version = hdr.version;
 
     static char name_buf[kMaxSampleSynthKitNameLen + 1];
     memset(name_buf, 0, sizeof(name_buf));
@@ -2164,13 +2263,25 @@ bool LoadSampleSynthKit(int slot, char* out_name, size_t out_name_size,
     for(int i = 0; i < kMaxSampleSynthSlots; i++)
         slot_data[i] = SampleSynthKitSlot{};
 
-    FIL* file = OpenSampleSynthKitAndReadName(slot, out_name, out_name_size);
+    uint32_t version = kSampleSynthKitFileVersion;
+    FIL*     file    = OpenSampleSynthKitAndReadName(slot, out_name, out_name_size, &version);
     if(!file)
         return false;
 
     UINT br;
-    FRESULT fr = f_read(file, &data, sizeof(data), &br);
-    bool    ok = fr == FR_OK && br == sizeof(data);
+    // Common to v2 and v3 -- read unconditionally. data was just
+    // default-constructed above, so a v2 file leaves mono_choke at its
+    // own default (false), same shape as kDexedPresetFileVersion's own
+    // v2/v3 split.
+    FRESULT fr = f_read(file, &data, kSampleSynthKitDataV2Size, &br);
+    bool    ok = fr == FR_OK && br == (UINT)kSampleSynthKitDataV2Size;
+    if(ok && version == kSampleSynthKitFileVersion)
+    {
+        // v3 only -- the trailing mono_choke field.
+        UINT tail_br;
+        fr = f_read(file, &data.mono_choke, sizeof(data) - kSampleSynthKitDataV2Size, &tail_br);
+        ok = fr == FR_OK && tail_br == (UINT)(sizeof(data) - kSampleSynthKitDataV2Size);
+    }
     if(ok)
     {
         fr = f_read(file, slot_data, sizeof(slot_data), &br);
@@ -2593,6 +2704,896 @@ bool DuplicateSampleSynthCapture(const char* category_folder, int n, int* out_ne
     return true;
 }
 
+int ListAifFiles(const char* folder, char out_names[][kMaxSampleSynthWavNameLen + 1], int max_out)
+{
+    if(!card_ready || !folder)
+        return 0;
+    static DIR dir; // see the DTCMRAM/DMA comment on Save() above
+    if(f_opendir(&dir, folder) != FR_OK)
+        return 0; // no such folder yet -- not an error, just nothing to list
+
+    int            count = 0;
+    static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
+    while(count < max_out)
+    {
+        if(f_readdir(&dir, &fno) != FR_OK || fno.fname[0] == 0)
+            break; // error or end of directory
+        if(fno.fattrib & AM_DIR)
+            continue; // skips the Done/ subfolder too, same as any other
+        if(fno.fname[0] == '.' && fno.fname[1] == '_')
+            continue; // macOS AppleDouble sidecar file, see ListImportWavFiles()'s own comment
+        size_t len = strlen(fno.fname);
+        if(len < 4)
+            continue; // too short for a ".aif" extension
+        char ext[5];
+        for(int i = 0; i < 4; i++)
+            ext[i] = (char)tolower((unsigned char)fno.fname[len - 4 + i]);
+        ext[4] = '\0';
+        if(strcmp(ext, ".aif") != 0)
+            continue;
+        if(len > kMaxSampleSynthWavNameLen)
+            continue; // skip, don't truncate -- see ListImportWavFiles()'s own comment
+        snprintf(out_names[count], kMaxSampleSynthWavNameLen + 1, "%s", fno.fname);
+        count++;
+    }
+    f_closedir(&dir);
+    return count;
+}
+
+namespace
+{
+// AIFF's own sample-rate field is an 80-bit IEEE extended float (the
+// one genuinely unusual part of the container) -- sign is always
+// positive for a real sample rate, so only magnitude matters. Every
+// real op1fun file checked decodes to exactly 44100 this way (verified
+// against the known bit pattern by hand before trusting this in code).
+// Returns 0 for anything outside a sane audio-rate exponent range
+// rather than risking a bogus huge/negative value downstream.
+uint32_t DecodeIeeeExtended(const uint8_t* b)
+{
+    int      exponent = ((b[0] & 0x7f) << 8) | b[1];
+    uint64_t mantissa  = 0;
+    for(int i = 0; i < 8; i++)
+        mantissa = (mantissa << 8) | b[2 + i];
+    if(exponent == 0 && mantissa == 0)
+        return 0;
+    exponent -= 16383;
+    if(exponent < 0 || exponent > 32)
+        return 0; // not a sane audio sample rate
+    int shift = 63 - exponent;
+    return shift >= 0 && shift < 64 ? (uint32_t)(mantissa >> shift) : 0;
+}
+
+// Raw op-1 JSON chunk contents (if any) plus the AIFF-level facts the
+// importers need -- filled by ReadOp1AifInfo() below in one pass over
+// the file's own chunks (COMM, APPL, SSND), independent of
+// ImportAif()'s own separate pass that actually decodes the audio
+// (kept as two small, simple passes rather than one combined one --
+// same "simple over clever" reasoning most of this file already
+// follows, and the file is only ever this size once per import, not a
+// hot path).
+struct Op1AifInfo
+{
+    bool     have_comm = false;
+    uint16_t channels   = 0;
+    uint32_t frames     = 0;
+    uint16_t bits       = 0;
+    uint32_t sample_rate = 0;
+    bool     have_op1    = false;
+    char     type[16]    = {}; // "drum", "sampler", or whatever else op1fun might emit
+    // Drum: 24 start/end fractions (value/4294967295.0 * frames = real
+    // frame offset -- see this file's own commit history for the full
+    // write-up of this schema). Sampler: base_freq in Hz.
+    uint32_t start[24] = {};
+    uint32_t end[24]   = {};
+    float    base_freq = 0.f;
+};
+
+// Hand-rolled, targeted JSON field reader -- NOT a general parser, same
+// "read exactly the handful of known keys this project actually needs"
+// style ImportWav()'s own RIFF chunk walker already follows. json is
+// NUL-terminated text (the APPL chunk's own bytes after the "op-1"
+// signature); only the few fields below are ever looked for, anything
+// else in the blob (adsr/lfo/fx/knobs/reverse/playmode/volume/pitch --
+// see this file's own commit history for why those are explicitly
+// out of scope) is simply never read.
+void ParseOp1Json(const char* json, Op1AifInfo* info)
+{
+    const char* p = strstr(json, "\"type\":\"");
+    if(p)
+    {
+        p += 8;
+        size_t i = 0;
+        while(p[i] != '"' && p[i] != '\0' && i < sizeof(info->type) - 1)
+        {
+            info->type[i] = p[i];
+            i++;
+        }
+        info->type[i] = '\0';
+    }
+    const char* bf = strstr(json, "\"base_freq\":");
+    if(bf)
+        info->base_freq = strtof(bf + 12, nullptr);
+
+    auto parse_array = [](const char* key, const char* j, uint32_t* out, int max_n) {
+        const char* a = strstr(j, key);
+        if(!a)
+            return;
+        a = strchr(a, '[');
+        if(!a)
+            return;
+        a++;
+        for(int i = 0; i < max_n; i++)
+        {
+            char* end = nullptr;
+            long  v   = strtol(a, &end, 10);
+            if(end == a)
+                break;
+            out[i] = (uint32_t)v;
+            a       = end;
+            while(*a == ',' || *a == ' ')
+                a++;
+        }
+    };
+    parse_array("\"start\":", json, info->start, 24);
+    parse_array("\"end\":", json, info->end, 24);
+}
+
+bool ReadOp1AifInfo(const char* path, Op1AifInfo* out)
+{
+    *out = Op1AifInfo{};
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, path, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static char form_id[4], aiff_id[4];
+    UINT        br;
+    uint32_t    form_size_unused;
+    fr      = f_read(&file, form_id, 4, &br);
+    bool ok = fr == FR_OK && br == 4 && memcmp(form_id, "FORM", 4) == 0;
+    if(ok)
+    {
+        fr = f_read(&file, &form_size_unused, 4, &br); // big-endian, unused
+        ok = fr == FR_OK && br == 4;
+    }
+    if(ok)
+    {
+        fr = f_read(&file, aiff_id, 4, &br);
+        // Accept AIFC too -- see ImportAif()'s own comment on is_aifc.
+        // This pass never touches SSND's actual PCM bytes, so the
+        // compression type doesn't matter here, only that the chunk
+        // layout past COMM is otherwise identical.
+        ok = fr == FR_OK && br == 4
+             && (memcmp(aiff_id, "AIFF", 4) == 0 || memcmp(aiff_id, "AIFC", 4) == 0);
+    }
+    if(!ok)
+    {
+        SetError("form", fr);
+        f_close(&file);
+        return false;
+    }
+
+    static char     chunk_id[4];
+    static uint8_t  be32[4];
+    bool            have_ssnd = false;
+    static char     json_buf[2048]; // generous -- every real op-1 chunk seen is well under 1.5KB
+    while(ok && !have_ssnd)
+    {
+        fr = f_read(&file, chunk_id, 4, &br);
+        if(fr != FR_OK || br != 4)
+            break;
+        fr = f_read(&file, be32, 4, &br);
+        if(fr != FR_OK || br != 4)
+            break;
+        uint32_t chunk_size = ((uint32_t)be32[0] << 24) | ((uint32_t)be32[1] << 16)
+                               | ((uint32_t)be32[2] << 8) | (uint32_t)be32[3];
+
+        if(memcmp(chunk_id, "COMM", 4) == 0 && chunk_size >= 18)
+        {
+            static uint8_t comm_buf[18];
+            fr = f_read(&file, comm_buf, sizeof(comm_buf), &br);
+            if(fr != FR_OK || br != sizeof(comm_buf))
+            {
+                ok = false;
+                break;
+            }
+            out->channels = (uint16_t)((comm_buf[0] << 8) | comm_buf[1]);
+            out->frames   = ((uint32_t)comm_buf[2] << 24) | ((uint32_t)comm_buf[3] << 16)
+                             | ((uint32_t)comm_buf[4] << 8) | (uint32_t)comm_buf[5];
+            out->bits     = (uint16_t)((comm_buf[6] << 8) | comm_buf[7]);
+            out->sample_rate = DecodeIeeeExtended(comm_buf + 8);
+            out->have_comm   = true;
+            uint32_t remaining = chunk_size - 18 + (chunk_size & 1);
+            if(remaining > 0)
+                f_lseek(&file, f_tell(&file) + remaining);
+        }
+        else if(memcmp(chunk_id, "APPL", 4) == 0 && chunk_size >= 4)
+        {
+            static char sig[4];
+            fr = f_read(&file, sig, 4, &br);
+            if(fr == FR_OK && br == 4 && memcmp(sig, "op-1", 4) == 0)
+            {
+                uint32_t json_len = chunk_size - 4;
+                if(json_len > sizeof(json_buf) - 1)
+                    json_len = sizeof(json_buf) - 1;
+                fr = f_read(&file, json_buf, json_len, &br);
+                if(fr == FR_OK)
+                {
+                    json_buf[br] = '\0';
+                    ParseOp1Json(json_buf, out);
+                    out->have_op1 = true;
+                }
+                uint32_t skipped   = json_len;
+                uint32_t remaining = chunk_size - 4 - skipped + (chunk_size & 1);
+                if(remaining > 0)
+                    f_lseek(&file, f_tell(&file) + remaining);
+            }
+            else
+            {
+                uint32_t remaining = chunk_size - 4 + (chunk_size & 1);
+                f_lseek(&file, f_tell(&file) + remaining);
+            }
+        }
+        else if(memcmp(chunk_id, "SSND", 4) == 0)
+        {
+            have_ssnd = true; // ImportAif() does the real audio read -- this pass just confirms it exists
+            uint32_t skip = chunk_size + (chunk_size & 1);
+            fr             = f_lseek(&file, f_tell(&file) + skip);
+        }
+        else
+        {
+            uint32_t skip = chunk_size + (chunk_size & 1);
+            fr             = f_lseek(&file, f_tell(&file) + skip);
+            if(fr != FR_OK)
+                break;
+        }
+    }
+    f_close(&file);
+    return out->have_comm;
+}
+} // namespace
+
+bool ImportAif(const char* filename, float* out_l, float* out_r, size_t audio_capacity,
+                size_t* out_len, const char* folder)
+{
+    if(!card_ready || !filename || !out_l || !out_r || !out_len || !folder)
+        return false;
+    *out_len = 0;
+
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s", folder, filename);
+
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, path, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static char form_id[4], aiff_id[4];
+    UINT        br;
+    uint32_t    form_size_unused;
+    bool        ok = true;
+    fr = f_read(&file, form_id, 4, &br);
+    ok = fr == FR_OK && br == 4 && memcmp(form_id, "FORM", 4) == 0;
+    if(ok)
+    {
+        fr = f_read(&file, &form_size_unused, 4, &br);
+        ok = fr == FR_OK && br == 4;
+    }
+    // Some real op1fun/OP-1-adjacent exports (confirmed against an
+    // actual downloaded file) are AIFF-C ("AIFC"), not plain AIFF --
+    // same chunk shape overall, but its COMM chunk carries two extra
+    // fields (a 4-byte compression-type ID + a Pascal string) after
+    // the same base 18 bytes, and its SSND PCM can be byte-swapped
+    // ("sowt" = little-endian) instead of AIFF's always-big-endian.
+    // Rejecting "AIFC" outright here (as this did before) is why that
+    // file failed every import attempt with no useful error -- not a
+    // decode bug, a format it never even tried to read.
+    bool is_aifc = false;
+    if(ok)
+    {
+        fr = f_read(&file, aiff_id, 4, &br);
+        ok = fr == FR_OK && br == 4
+             && (memcmp(aiff_id, "AIFF", 4) == 0 || memcmp(aiff_id, "AIFC", 4) == 0);
+        is_aifc = ok && memcmp(aiff_id, "AIFC", 4) == 0;
+    }
+    if(!ok)
+    {
+        SetError("form", fr);
+        f_close(&file);
+        return false;
+    }
+
+    bool     have_comm = false, have_ssnd = false;
+    bool     little_endian = false; // AIFC "sowt" only -- plain AIFF/AIFC "NONE" are big-endian
+    uint16_t channels = 0, bits = 0;
+    uint32_t sample_rate = 0, num_frames = 0, data_start_offset = 0;
+    static char    chunk_id[4];
+    static uint8_t be32[4];
+    while(ok && !(have_comm && have_ssnd))
+    {
+        fr = f_read(&file, chunk_id, 4, &br);
+        if(fr != FR_OK || br != 4)
+            break;
+        fr = f_read(&file, be32, 4, &br);
+        if(fr != FR_OK || br != 4)
+            break;
+        uint32_t chunk_size = ((uint32_t)be32[0] << 24) | ((uint32_t)be32[1] << 16)
+                               | ((uint32_t)be32[2] << 8) | (uint32_t)be32[3];
+
+        if(memcmp(chunk_id, "COMM", 4) == 0 && chunk_size >= 18)
+        {
+            static uint8_t comm_buf[18];
+            fr = f_read(&file, comm_buf, sizeof(comm_buf), &br);
+            if(fr != FR_OK || br != sizeof(comm_buf))
+            {
+                ok = false;
+                break;
+            }
+            channels    = (uint16_t)((comm_buf[0] << 8) | comm_buf[1]);
+            num_frames  = ((uint32_t)comm_buf[2] << 24) | ((uint32_t)comm_buf[3] << 16)
+                          | ((uint32_t)comm_buf[4] << 8) | (uint32_t)comm_buf[5];
+            bits        = (uint16_t)((comm_buf[6] << 8) | comm_buf[7]);
+            sample_rate = DecodeIeeeExtended(comm_buf + 8);
+            have_comm   = true;
+            uint32_t consumed = 18;
+            if(is_aifc && chunk_size >= 22)
+            {
+                static uint8_t compression_id[4];
+                fr = f_read(&file, compression_id, sizeof(compression_id), &br);
+                if(fr != FR_OK || br != sizeof(compression_id))
+                {
+                    ok = false;
+                    break;
+                }
+                consumed += 4;
+                if(memcmp(compression_id, "sowt", 4) == 0)
+                    little_endian = true;
+                else if(memcmp(compression_id, "NONE", 4) != 0)
+                {
+                    // A real compressed codec (ima4/ulaw/alaw/etc) --
+                    // out of scope, same reasoning every other
+                    // unsupported-format case in this function uses.
+                    SetError("format", FR_OK);
+                    f_close(&file);
+                    return false;
+                }
+            }
+            uint32_t remaining = chunk_size - consumed + (chunk_size & 1);
+            if(remaining > 0)
+                f_lseek(&file, f_tell(&file) + remaining);
+        }
+        else if(memcmp(chunk_id, "SSND", 4) == 0)
+        {
+            static uint8_t ssnd_hdr[8]; // offset(4) + blockSize(4), both unused here
+            fr = f_read(&file, ssnd_hdr, sizeof(ssnd_hdr), &br);
+            if(fr != FR_OK || br != sizeof(ssnd_hdr))
+            {
+                ok = false;
+                break;
+            }
+            data_start_offset = (uint32_t)f_tell(&file);
+            have_ssnd         = true;
+            uint32_t skip = chunk_size - 8 + (chunk_size & 1);
+            fr             = f_lseek(&file, f_tell(&file) + skip);
+            if(fr != FR_OK)
+                break;
+        }
+        else
+        {
+            uint32_t skip = chunk_size + (chunk_size & 1);
+            fr             = f_lseek(&file, f_tell(&file) + skip);
+            if(fr != FR_OK)
+                break;
+        }
+    }
+
+    if(!ok || !have_comm || !have_ssnd)
+    {
+        SetError("chunks", fr);
+        f_close(&file);
+        return false;
+    }
+    // Scope confirmed against real op1fun files only -- 16-bit PCM,
+    // mono or stereo (see this function's own doc comment for why
+    // other depths/stereo-in-practice aren't the target case).
+    bool rate_ok = sample_rate >= 8000 && sample_rate <= 192000;
+    if(bits != 16 || (channels != 1 && channels != 2) || !rate_ok)
+    {
+        SetError("format", FR_OK); // not a FatFS error -- an unsupported format
+        f_close(&file);
+        return false;
+    }
+
+    fr = f_lseek(&file, data_start_offset);
+    if(fr != FR_OK)
+    {
+        SetError("seek", fr);
+        f_close(&file);
+        return false;
+    }
+
+    uint32_t bytes_per_sample = 2;
+    uint32_t bytes_per_frame  = (uint32_t)channels * bytes_per_sample;
+    // Same defensive clamp ImportWav() uses -- trust what the file can
+    // actually provide over a possibly-wrong declared frame count.
+    uint32_t bytes_left_in_file = (uint32_t)f_size(&file) - data_start_offset;
+    uint32_t max_frames_in_file = bytes_left_in_file / bytes_per_frame;
+    if(num_frames > max_frames_in_file)
+        num_frames = max_frames_in_file;
+
+    bool   need_resample = sample_rate != 48000;
+    static Resampler44_1to48 resampler; // see the DTCMRAM/DMA comment on Save() above
+    resampler = Resampler44_1to48{};
+    resampler.Init(sample_rate, 48000);
+
+    // Same anti-aliasing prefilter as ImportWav() -- only engaged for a
+    // genuine downsample, which no real op1fun file triggers (they're
+    // all 44100), but kept for the same defensive reasoning.
+    bool kNeedsAntiAlias = sample_rate > 48000;
+    static daisysp::Svf aa_l1, aa_r1, aa_l2, aa_r2;
+    if(kNeedsAntiAlias)
+    {
+        aa_l1 = daisysp::Svf{};
+        aa_r1 = daisysp::Svf{};
+        aa_l2 = daisysp::Svf{};
+        aa_r2 = daisysp::Svf{};
+        aa_l1.Init((float)sample_rate);
+        aa_r1.Init((float)sample_rate);
+        aa_l2.Init((float)sample_rate);
+        aa_r2.Init((float)sample_rate);
+        aa_l1.SetFreq(21000.f);
+        aa_r1.SetFreq(21000.f);
+        aa_l2.SetFreq(21000.f);
+        aa_r2.SetFreq(21000.f);
+        aa_l1.SetRes(0.f);
+        aa_r1.SetRes(0.f);
+        aa_l2.SetRes(0.f);
+        aa_r2.SetRes(0.f);
+    }
+
+    static uint8_t DSY_SDRAM_BSS raw_buf[kAudioDecodeChunkSamples * 2 * 2]; // stereo, 16-bit
+    uint32_t       frames_done = 0;
+    size_t         written     = 0;
+    while(ok && frames_done < num_frames && written < audio_capacity)
+    {
+        UINT frames_this_chunk = (UINT)((num_frames - frames_done) < kAudioDecodeChunkSamples
+                                             ? (num_frames - frames_done)
+                                             : kAudioDecodeChunkSamples);
+        UINT bytes_this_chunk  = frames_this_chunk * bytes_per_frame;
+        fr = f_read(&file, raw_buf, bytes_this_chunk, &br);
+        ok = fr == FR_OK && br == bytes_this_chunk;
+        if(!ok)
+        {
+            SetError("data", fr);
+            break;
+        }
+
+        // Big-endian 16-bit PCM for plain AIFF and AIFC "NONE" -- little-
+        // endian only for AIFC "sowt" (see little_endian's own comment
+        // above for why this isn't a fixed assumption any more).
+        auto decode_sample = [&](UINT off) -> float {
+            int16_t v = little_endian
+                            ? (int16_t)(((uint16_t)raw_buf[off + 1] << 8) | raw_buf[off])
+                            : (int16_t)(((uint16_t)raw_buf[off] << 8) | raw_buf[off + 1]);
+            return (float)v / 32768.f;
+        };
+
+        for(UINT i = 0; i < frames_this_chunk && written < audio_capacity; i++)
+        {
+            float l, r;
+            if(channels == 1)
+            {
+                l = r = decode_sample(i * bytes_per_sample);
+            }
+            else
+            {
+                l = decode_sample(i * bytes_per_frame);
+                r = decode_sample(i * bytes_per_frame + bytes_per_sample);
+            }
+
+            if(!need_resample)
+            {
+                out_l[written] = l;
+                out_r[written] = r;
+                written++;
+            }
+            else
+            {
+                if(kNeedsAntiAlias)
+                {
+                    aa_l1.Process(l);
+                    aa_r1.Process(r);
+                    aa_l2.Process(aa_l1.Low());
+                    aa_r2.Process(aa_r1.Low());
+                    l = aa_l2.Low();
+                    r = aa_r2.Low();
+                }
+                float rl[Resampler44_1to48::kMaxEmit], rr[Resampler44_1to48::kMaxEmit];
+                int   n = resampler.Push(l, r, rl, rr);
+                for(int k = 0; k < n && written < audio_capacity; k++)
+                {
+                    out_l[written] = rl[k];
+                    out_r[written] = rr[k];
+                    written++;
+                }
+            }
+        }
+        frames_done += frames_this_chunk;
+    }
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK && ok)
+        SetError("close", close_res);
+    if(ok)
+    {
+        // Same downward-only peak normalization ImportWav() already
+        // does, but to a LOWER target than ImportWav()'s own 0.9 --
+        // real op-1 exports confirmed landing near 0.95+ pre-normalize
+        // (hotter than typical legacy/hand-placed Sound content, which
+        // real examples show sitting well under 0.9 on their own,
+        // e.g. ~0.72). SampleSynth's output chain has an always-active
+        // tanhf() soft limiter (sample_synth.cpp's own Process()) that
+        // compresses more aggressively the louder its input is -- confirmed
+        // on real hardware as a continuous, pitch-dependent crackle on
+        // every op-1 import regardless of its own content (sharp bass
+        // AND smooth pad content both affected equally), consistent
+        // with simply sitting closer to that nonlinearity than legacy
+        // content ever does, not a decode/interpolation bug. A lower
+        // target keeps new imports from pushing harder into that curve
+        // than hand-placed Sounds already comfortably sit.
+        constexpr float kTargetPeak = 0.7f;
+        float           peak        = 0.f;
+        for(size_t i = 0; i < written; i++)
+        {
+            float a = fabsf(out_l[i]);
+            if(a > peak)
+                peak = a;
+            a = fabsf(out_r[i]);
+            if(a > peak)
+                peak = a;
+        }
+        if(peak > kTargetPeak)
+        {
+            float scale = kTargetPeak / peak;
+            for(size_t i = 0; i < written; i++)
+            {
+                out_l[i] *= scale;
+                out_r[i] *= scale;
+            }
+        }
+        *out_len = written;
+    }
+    return ok && close_res == FR_OK;
+}
+
+int NextFreeSampleSynthKitSlot()
+{
+    if(!card_ready)
+        return -1;
+    for(int slot = 1; slot <= kMaxSampleSynthKits; slot++)
+    {
+        char    fname[24];
+        FILINFO fno;
+        SampleSynthKitFilename(slot, fname, sizeof(fname));
+        if(f_stat(fname, &fno) != FR_OK)
+            return slot;
+    }
+    return -1;
+}
+
+namespace
+{
+// f_mkdir()+f_rename() -- same two-call idiom SaveSampleSynthCapture()
+// already uses for a folder that might not exist yet.
+bool WriteSliceWav(const char* path, const float* buf_l, const float* buf_r, size_t len)
+{
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, path, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+    const uint32_t data_size = (uint32_t)len * 2 * (uint32_t)sizeof(int16_t);
+    static WavHeader hdr;
+    memcpy(hdr.riff, "RIFF", 4);
+    hdr.riff_size = 36 + data_size;
+    memcpy(hdr.wave, "WAVE", 4);
+    memcpy(hdr.fmt, "fmt ", 4);
+    hdr.fmt_size        = 16;
+    hdr.audio_format    = 1;
+    hdr.num_channels    = 2;
+    hdr.sample_rate     = 48000;
+    hdr.bits_per_sample = 16;
+    hdr.block_align     = (uint16_t)(hdr.num_channels * (hdr.bits_per_sample / 8));
+    hdr.byte_rate       = hdr.sample_rate * hdr.block_align;
+    memcpy(hdr.data, "data", 4);
+    hdr.data_size = data_size;
+
+    UINT bw;
+    fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(hdr);
+    if(!ok)
+        SetError("hdr", fr);
+
+    constexpr size_t kWriteChunkFrames = 2048;
+    static int16_t   pcm_chunk[kWriteChunkFrames * 2] DSY_SDRAM_BSS;
+    size_t           written_frames = 0;
+    while(ok && written_frames < len)
+    {
+        size_t n = len - written_frames;
+        if(n > kWriteChunkFrames)
+            n = kWriteChunkFrames;
+        for(size_t i = 0; i < n; i++)
+        {
+            float l = Clampf(buf_l[written_frames + i], -1.f, 1.f);
+            float r = Clampf(buf_r[written_frames + i], -1.f, 1.f);
+            pcm_chunk[2 * i]     = (int16_t)(l * 32767.f);
+            pcm_chunk[2 * i + 1] = (int16_t)(r * 32767.f);
+        }
+        UINT bytes = (UINT)(n * 2 * sizeof(int16_t));
+        fr         = f_write(&file, pcm_chunk, bytes, &bw);
+        ok         = fr == FR_OK && bw == bytes;
+        if(!ok)
+            SetError("data", fr);
+        written_frames += n;
+    }
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+} // namespace
+
+bool ImportAifDrumPack(const char* filename, const char* folder, float* scratch_l,
+                        float* scratch_r, size_t scratch_capacity, char* out_status,
+                        size_t out_status_size, ProgressFn progress_cb)
+{
+    if(!filename || !folder || !scratch_l || !scratch_r || !out_status)
+        return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s", folder, filename);
+
+    Op1AifInfo info;
+    if(!ReadOp1AifInfo(path, &info) || !info.have_op1 || strcmp(info.type, "drum") != 0)
+    {
+        snprintf(out_status, out_status_size, "Not a drum pack");
+        return false;
+    }
+
+    int new_slot = NextFreeSampleSynthKitSlot();
+    if(new_slot < 0)
+    {
+        snprintf(out_status, out_status_size, "Kits full");
+        return false;
+    }
+
+    size_t total_len = 0;
+    if(!ImportAif(filename, scratch_l, scratch_r, scratch_capacity, &total_len, folder)
+       || total_len == 0)
+    {
+        snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
+        return false;
+    }
+
+    // Base key span -- 24 consecutive chromatic keys, centered on the
+    // keyboard (C2..B3), same "pick any reasonable consecutive range"
+    // reasoning as every other fixed-mapping choice in this project;
+    // there's no physical OP-1 pad layout to match since this plays
+    // back through SampleSynth's own voices, not real hardware pads.
+    constexpr uint8_t kBaseKey = 36; // C2
+    // The real op-1 encoding: start/end are NOT a fraction of this
+    // file's own length (confirmed wrong against real hardware-written
+    // files -- that assumption only looked plausible because both
+    // pzd-test-pack drum files happen to sit close to the OP-1's own
+    // 12-second drum-sample ceiling). Cross-checked against libop1
+    // (padenot/libop1, a real, working op-1 AIFF encoder/decoder)'s own
+    // frame_to_op1_time(): op1_time = (0x7FFFFFFE / (44100*2*12)) *
+    // frame * 2, i.e. a frame index in a FIXED 44100 Hz reference,
+    // scaled by a constant independent of any particular file's
+    // duration. Re-deriving frame positions this way for patch.aif's
+    // real 3-slice data lands the last slice's end within ~250 frames
+    // (~5.7ms) of the file's own real total length -- i.e. the 3 real
+    // slices span the entire recording back-to-back, which is what a
+    // break chopped into 3 parts should do. The old formula instead
+    // packed all 3 into the first ~49% of the file and silently
+    // dropped the rest -- the real cause of "cut short"/"sounds bad"/
+    // "gaps", not a resampling or source-file quality issue.
+    constexpr double kOp1NativeRateHz   = 44100.0;
+    constexpr double kOp1BytesIn12Secs  = kOp1NativeRateHz * 2.0 * 12.0;
+    constexpr int    kOp1DrumkitEnd     = 0x7FFFFFFE;
+    // Integer-truncated on purpose -- libop1's own encoder computes this
+    // as an int/int division, so real exported files already bake in
+    // that truncation; redoing it as an exact float ratio here would
+    // decode against a value real files were never actually encoded
+    // with.
+    constexpr int kOp1TimeMultiplier = kOp1DrumkitEnd / (int)kOp1BytesIn12Secs; // 2028
+    auto op1_time_to_buffer_frame = [&](uint32_t t) -> size_t {
+        double native_frame = (double)t / (double)(kOp1TimeMultiplier * 2);
+        double buf_frame     = native_frame * (48000.0 / kOp1NativeRateHz);
+        return (size_t)buf_frame;
+    };
+
+    SampleSynth::SampleSynthPresetData params; // engine defaults -- no OP-1 ADSR/FX import, see this file's own commit history
+    // Every pad here is a sequential slice of ONE continuous recording
+    // (confirmed against real op1fun break packs), not an independent
+    // sound -- see SampleSynthPresetData::mono_choke's own comment for
+    // why that makes them mutually exclusive by default. The user can
+    // still turn this off per kit afterward (SampleSynth's own Mix
+    // page).
+    params.mono_choke = true;
+    SampleSynthKitSlot slots[kMaxSampleSynthSlots];
+    int real_slices = 0;
+    for(int i = 0; i < kMaxSampleSynthSlots; i++)
+    {
+        // First statement in the loop, before any continue below --
+        // see this function's own progress_cb doc comment for why
+        // every slot (real or skipped) gets a turn to move the bar.
+        if(progress_cb)
+            progress_cb((float)(i + 1) / (float)kMaxSampleSynthSlots);
+        // A slot is padding -- not a real slice -- when its (start,end)
+        // pair exactly repeats the immediately preceding one (confirmed
+        // against real files: the first occurrence of a repeated pair
+        // is still real, every one after it is filler).
+        bool is_padding
+            = i > 0 && info.start[i] == info.start[i - 1] && info.end[i] == info.end[i - 1];
+        if(is_padding || info.end[i] <= info.start[i])
+            continue;
+        size_t slice_start = op1_time_to_buffer_frame(info.start[i]);
+        size_t slice_end   = op1_time_to_buffer_frame(info.end[i]);
+        if(slice_end > total_len)
+            slice_end = total_len;
+        if(slice_end <= slice_start)
+            continue;
+        size_t slice_len = slice_end - slice_start;
+
+        char slice_name[24];
+        snprintf(slice_name, sizeof(slice_name), "K%03d_%02d.wav", new_slot, i);
+        char slice_path[48];
+        snprintf(slice_path, sizeof(slice_path), "%s/%s", kSampleSynthFolder, slice_name);
+        if(!WriteSliceWav(slice_path, scratch_l + slice_start, scratch_r + slice_start,
+                            slice_len))
+            continue; // one bad slice doesn't fail the whole kit
+
+        snprintf(slots[real_slices].filename, sizeof(slots[real_slices].filename), "%s",
+                  slice_name);
+        slots[real_slices].chromatic = false;
+        slots[real_slices].low_note  = (uint8_t)(kBaseKey + real_slices);
+        slots[real_slices].high_note = (uint8_t)(kBaseKey + real_slices);
+        slots[real_slices].root_note = (uint8_t)(kBaseKey + real_slices);
+        slots[real_slices].volume01  = 0.8f;
+        real_slices++;
+    }
+    for(int i = real_slices; i < kMaxSampleSynthSlots; i++)
+        slots[i] = SampleSynthKitSlot{};
+
+    if(real_slices == 0)
+    {
+        snprintf(out_status, out_status_size, "No real slices");
+        return false;
+    }
+
+    char kit_name[kMaxSampleSynthKitNameLen + 1];
+    snprintf(kit_name, sizeof(kit_name), "%s", filename);
+    size_t nlen = strlen(kit_name);
+    if(nlen > 4 && strcmp(kit_name + nlen - 4, ".aif") == 0)
+        kit_name[nlen - 4] = '\0';
+
+    if(!SaveSampleSynthKit(new_slot, kit_name, params, slots))
+    {
+        snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
+        return false;
+    }
+    snprintf(out_status, out_status_size, "Kit %d (%d pads)", new_slot, real_slices);
+    return true;
+}
+
+bool ImportAifSamplerPack(const char* filename, const char* folder, float* scratch_l,
+                           float* scratch_r, size_t scratch_capacity, char* out_status,
+                           size_t out_status_size)
+{
+    if(!filename || !folder || !scratch_l || !scratch_r || !out_status)
+        return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s", folder, filename);
+
+    Op1AifInfo info;
+    bool has_info = ReadOp1AifInfo(path, &info);
+    if(has_info && info.have_op1 && strcmp(info.type, "drum") == 0)
+    {
+        snprintf(out_status, out_status_size, "Drum pack, not a Sound");
+        return false;
+    }
+    if(has_info && info.have_op1 && strcmp(info.type, "sampler") != 0)
+    {
+        snprintf(out_status, out_status_size, "Unsupported type");
+        return false;
+    }
+
+    size_t total_len = 0;
+    if(!ImportAif(filename, scratch_l, scratch_r, scratch_capacity, &total_len, folder)
+       || total_len == 0)
+    {
+        snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
+        return false;
+    }
+
+    uint8_t root_note = 60; // C4 default
+    if(has_info && info.have_op1 && info.base_freq > 0.f)
+    {
+        float note_f = 69.f + 12.f * log2f(info.base_freq / 440.f);
+        int   note_i = (int)(note_f + 0.5f);
+        if(note_i >= 0 && note_i <= 127)
+            root_note = (uint8_t)note_i;
+    }
+    else
+    {
+        // No op-1 chunk at all -- a plain recording someone included in
+        // the pack. Honor a note name already in the source filename
+        // (e.g. "SKOGSFIOL C4.aif") before falling back to C4.
+        ParseNoteNameFromFilename(filename, &root_note);
+    }
+
+    char base_name[kMaxSampleSynthWavNameLen + 1];
+    snprintf(base_name, sizeof(base_name), "%s", filename);
+    size_t nlen = strlen(base_name);
+    if(nlen > 4 && strcmp(base_name + nlen - 4, ".aif") == 0)
+        base_name[nlen - 4] = '\0';
+    // Bake the real note into the output filename, same convention
+    // ParseNoteNameFromFilename() already reads back at load time (see
+    // Ui::LoadSampleSynthFileIntoEngine()'s own plain-.wav branch) --
+    // no new runtime loading code needed for this to play at the right
+    // pitch later.
+    static const char* const kNoteNames[12]
+        = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    int octave    = root_note / 12 - 1;
+    int note_idx  = root_note % 12;
+    char out_name[kMaxSampleSynthWavNameLen + 1];
+    snprintf(out_name, sizeof(out_name), "%s %s%d.wav", base_name, kNoteNames[note_idx], octave);
+
+    FRESULT mkdir_res = f_mkdir(kSampleSynthFolder);
+    (void)mkdir_res; // harmless if it already exists, same as every other f_mkdir() call here
+    char dest_dir[48];
+    snprintf(dest_dir, sizeof(dest_dir), "%s/%s", kSampleSynthFolder, kSampleSynthSoundsFolder);
+    f_mkdir(dest_dir);
+    char dest_path[80];
+    snprintf(dest_path, sizeof(dest_path), "%s/%s", dest_dir, out_name);
+
+    if(!WriteSliceWav(dest_path, scratch_l, scratch_r, total_len))
+    {
+        snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
+        return false;
+    }
+    snprintf(out_status, out_status_size, "%s", out_name);
+    return true;
+}
+
+bool MoveToImportDoneFolder(const char* folder, const char* filename)
+{
+    if(!card_ready || !folder || !filename)
+        return false;
+    char done_dir[48];
+    snprintf(done_dir, sizeof(done_dir), "%s/Done", folder);
+    f_mkdir(done_dir); // harmless if it already exists
+    char src[80], dst[80];
+    snprintf(src, sizeof(src), "%s/%s", folder, filename);
+    snprintf(dst, sizeof(dst), "%s/%s", done_dir, filename);
+    return f_rename(src, dst) == FR_OK;
+}
+
 bool ImportWav(const char* filename, float* out_l, float* out_r, size_t audio_capacity,
                size_t* out_len, ProgressFn on_progress, const char* folder)
 {
@@ -2824,7 +3825,7 @@ bool ImportWav(const char* filename, float* out_l, float* out_r, size_t audio_ca
     // own storage in main.cpp for why (freeing room there); this is
     // also a real SD card DMA target already, same as every other
     // SDRAM-placed DMA-target buffer in this project.
-    static uint8_t DSY_SDRAM_BSS raw_buf[kChunkSamples * 2 * 4];
+    static uint8_t DSY_SDRAM_BSS raw_buf[kAudioDecodeChunkSamples * 2 * 4];
     uint32_t       bytes_per_sample = (uint32_t)bits_per_sample / 8;
     uint32_t       bytes_per_frame  = (uint32_t)num_channels * bytes_per_sample;
     uint32_t       total_frames     = data_size / bytes_per_frame;
@@ -2833,9 +3834,9 @@ bool ImportWav(const char* filename, float* out_l, float* out_r, size_t audio_ca
 
     while(ok && frames_done < total_frames && written < audio_capacity)
     {
-        UINT frames_this_chunk = (UINT)((total_frames - frames_done) < kChunkSamples
+        UINT frames_this_chunk = (UINT)((total_frames - frames_done) < kAudioDecodeChunkSamples
                                              ? (total_frames - frames_done)
-                                             : kChunkSamples);
+                                             : kAudioDecodeChunkSamples);
         UINT bytes_this_chunk  = frames_this_chunk * bytes_per_frame;
         fr = f_read(&file, raw_buf, bytes_this_chunk, &br);
         ok = fr == FR_OK && br == bytes_this_chunk;

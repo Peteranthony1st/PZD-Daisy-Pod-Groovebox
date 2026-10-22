@@ -372,6 +372,20 @@ constexpr int         kMaxSampleSynthWavNameLen = kMaxImportWavNameLen;
 int ListSampleSynthFiles(char out_names[][kMaxSampleSynthWavNameLen + 1], int max_out,
                           const char* subfolder = nullptr);
 
+// Several sample-pack files state their own recorded pitch right in the
+// filename (e.g. "SKOGSFIOL C4.wav", "DRAGSPEL A2.wav") -- scans for a
+// trailing "<NoteLetter>[#/b]<octave>" token (the last space-or-dot-
+// delimited word before the extension) and converts it to a MIDI note
+// number using the same C4==60 (middle C) convention the pack's own
+// naming already implies. Returns true and writes *out_note on a match;
+// returns false (leaving *out_note untouched) for filenames with no
+// such token, so the caller can fall back to a plain default instead of
+// silently mis-pitching a sample that never claimed a note in the first
+// place. Shared by Ui::LoadSampleSynthFileIntoEngine() (reading a
+// filename at load time) and ImportAifSamplerPack() (reading the
+// *source* filename when a .aif carries no op-1 chunk of its own).
+bool ParseNoteNameFromFilename(const char* filename, uint8_t* out_note);
+
 // SampleSynth's own "kit" -- a small manifest (which WAV file maps to
 // which slot, chromatic/fixed-pitch, note range, volume) plus the
 // engine's own knob settings. Mirrors Dexed/Grains' own "preset !=
@@ -481,6 +495,88 @@ int  ListSampleSynthCapturesInCategory(const char* category_folder, int* out_num
 bool DeleteSampleSynthCapture(const char* category_folder, int n);
 bool DuplicateSampleSynthCapture(const char* category_folder, int n, int* out_new_n,
                                   ProgressFn on_progress = nullptr);
+
+// --- OP-1 .aif pack import ---------------------------------------------
+// Staging folders for raw downloaded OP-1 packs (op1fun or the OP-1
+// pack builder) -- SD root, separate from kSampleSynthFolder itself,
+// user-managed drop-off points. Capped at kMaxSampleSynthImportPackFiles
+// (32) like every other real-folder listing in this project.
+constexpr const char* kSampleKitImportFolder    = "SampleKit";
+constexpr const char* kSampleSoundImportFolder  = "SampleSound";
+constexpr int         kMaxSampleSynthImportPackFiles = 32;
+// The single destination category every imported Sound lands in --
+// replaces the old 21 licensed-pack category folders (nothing to
+// bundle for licensing reasons, see this header's own git history).
+// Imported Kits need no equivalent -- SAMP/KITxxx.DAT was never
+// category-scoped to begin with.
+constexpr const char* kSampleSynthSoundsFolder = "SOUNDS";
+
+// Lists .aif files directly under `folder` (one of the two staging
+// folders above, SD root -- NOT under kSampleSynthFolder), up to
+// kMaxSampleSynthImportPackFiles. Same skip rules (AppleDouble
+// sidecars, name-too-long) as ListImportWavFiles()'s own.
+int ListAifFiles(const char* folder, char out_names[][kMaxSampleSynthWavNameLen + 1],
+                  int max_out);
+
+// Decodes one AIFF file (FORM/COMM/SSND, 16-bit PCM, big-endian, mono
+// or stereo) -- same contract as ImportWav() (resamples through the
+// same Catmull-Rom path when the real rate isn't 48000), just for the
+// different container OP-1 exports use.
+bool ImportAif(const char* filename, float* out_l, float* out_r, size_t audio_capacity,
+                size_t* out_len, const char* folder);
+
+// Same "scan then pick the first free one" idiom as
+// NextFreeGranularPresetSlot()/NextFreeDexedPresetSlot() -- Kits were
+// the one preset-ish format in this file that never got one (nothing
+// needed it before pack import).
+int NextFreeSampleSynthKitSlot();
+
+// Decodes filename (expected inside `folder`, one of the staging
+// folders above) as an OP-1 "op-1" APPL-chunk drum patch: slices its
+// one audio stream at the real splice points (see this file's own
+// commit history for the full op-1 JSON schema write-up), writes each
+// real slice out as its own small .wav into kSampleSynthFolder, and
+// saves a brand new Kit via the existing, unchanged
+// SaveSampleSynthKit() -- this produces exactly what a hand-built Kit
+// already looks like, no new persisted format. scratch_l/r (and their
+// shared scratch_capacity) are the caller's own large decode buffer --
+// the whole pack's own audio stream is decoded into them once via
+// ImportAif() before being sliced, same "reuse the existing SDRAM
+// arena, don't allocate a second one" convention
+// Ui::TriggerLoadSampleSynthKit() already follows for the exact same
+// arena (the caller passes sample_synth_arena_l_/r_ straight through,
+// safe since no Kit can be loading mid-import). Returns false
+// (out_status explains why: wrong type, corrupt file, Kit range full)
+// without writing anything partial.
+// progress_cb (optional) is called after each of the up to
+// kMaxSampleSynthSlots pad slots is processed (real slice written or
+// padding skipped) -- the up-to-24 separate SD writes this does are
+// the real cost of importing one drum pack, so this is what makes the
+// Import page's own progress bar actually move smoothly within a
+// single file instead of sitting still for however long that file
+// takes, then jumping straight to the next file's own share.
+bool ImportAifDrumPack(const char* filename, const char* folder, float* scratch_l,
+                        float* scratch_r, size_t scratch_capacity, char* out_status,
+                        size_t out_status_size, ProgressFn progress_cb = nullptr);
+
+// Decodes filename as an OP-1 "sampler" patch -- or, if it carries no
+// op-1 chunk at all, a plain recording -- into one new Sound: a plain
+// .wav written into kSampleSynthFolder/kSampleSynthSoundsFolder, named
+// with its real root note baked in (same convention
+// ParseNoteNameFromFilename() already reads) so it loads through the
+// exact same plain-.wav path every other Sound already does -- no new
+// runtime loading code needed. Root note comes from the patch's own
+// base_freq when present, otherwise from a note name already in the
+// source filename, otherwise defaults to C4 (60). scratch_l/r are the
+// same shared decode buffer ImportAifDrumPack() uses.
+bool ImportAifSamplerPack(const char* filename, const char* folder, float* scratch_l,
+                           float* scratch_r, size_t scratch_capacity, char* out_status,
+                           size_t out_status_size);
+
+// Moves a successfully-imported source file into <folder>/Done/ so a
+// later Import never reprocesses it -- the move itself is the only
+// "already imported" state kept, no separate tracking file.
+bool MoveToImportDoneFolder(const char* folder, const char* filename);
 
 // Renders the current in-memory performance (one full shared loop length,
 // every layer's real filter/character-effect/reverb chain applied,

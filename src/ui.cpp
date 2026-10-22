@@ -19,100 +19,15 @@ inline float Clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Several sample-pack files state their own recorded pitch right in the
-// filename (e.g. "SKOGSFIOL C4.wav", "DRAGSPEL A2.wav") -- scans for a
-// trailing "<NoteLetter>[#/b]<octave>" token (the last space-or-dot-
-// delimited word before the extension) and converts it to a MIDI note
-// number using the same C4==60 (middle C) convention the pack's own
-// naming already implies. Returns true and writes *out_note on a match;
-// returns false (leaving *out_note untouched) for filenames with no
-// such token, so the caller can fall back to a plain default instead of
-// silently mis-pitching a sample that never claimed a note in the first
-// place.
-bool ParseNoteNameFromFilename(const char* filename, uint8_t* out_note)
-{
-    if(!filename || !out_note)
-        return false;
-    size_t len = strlen(filename);
-    size_t dot = len;
-    for(size_t i = len; i > 0; i--)
-    {
-        if(filename[i - 1] == '.')
-        {
-            dot = i - 1;
-            break;
-        }
-    }
-    if(dot == 0)
-        return false;
-    // Walk back from the extension over the trailing token (letters/
-    // digits/#) to find where it starts -- bounded by a space or the
-    // start of the string, same "last word" convention a human reading
-    // the filename out loud would use.
-    size_t start = dot;
-    while(start > 0 && filename[start - 1] != ' ')
-        start--;
-    size_t tok_len = dot - start;
-    if(tok_len < 2 || tok_len > 4)
-        return false;
-
-    char c = (char)toupper((unsigned char)filename[start]);
-    if(c < 'A' || c > 'G')
-        return false;
-    static const int kNoteIndex[7] = {9, 11, 0, 2, 4, 5, 7}; // A,B,C,D,E,F,G
-    int               note_index   = kNoteIndex[c - 'A'];
-    size_t            p            = start + 1;
-    if(p < dot && (filename[p] == '#' || filename[p] == 'b' || filename[p] == 'B'))
-    {
-        note_index += (filename[p] == '#') ? 1 : -1;
-        p++;
-    }
-    if(p >= dot)
-        return false; // no octave digits left -- not a note token after all
-    bool   neg = false;
-    size_t digits_start = p;
-    if(filename[p] == '-')
-    {
-        neg = true;
-        p++;
-        digits_start = p;
-    }
-    int octave = 0;
-    for(; p < dot; p++)
-    {
-        if(!isdigit((unsigned char)filename[p]))
-            return false;
-        octave = octave * 10 + (filename[p] - '0');
-    }
-    if(p == digits_start)
-        return false;
-    if(neg)
-        octave = -octave;
-    int midi = (octave + 1) * 12 + note_index;
-    if(midi < 0 || midi > 127)
-        return false;
-    *out_note = (uint8_t)midi;
-    return true;
-}
-
-// Sounds mode's fixed category list -- see Ui::sample_synth_sound_category_'s
-// own comment. Folder names are real SD subfolders under SAMPLES/ (e.g.
-// "PIANO" -> "SAMPLES/PIANO"); labels are what the Preset page actually
-// draws. Same array, same order, indexed by sample_synth_sound_category_/
-// sample_synth_sound_category_cursor_. A free constant (not a Ui member)
-// since it's used here at file scope, outside any Ui method.
-// Each category stays at or under 32 entries -- same per-folder browse
-// limit Dexed's own SysEx import already uses (DX7 bulk-dump banks are
-// 32 voices, see dexed_sysex.h), so a few packs here got split into
-// numbered sub-categories ("Moog 1/2/3" etc.) instead of listing
-// 75-136 items in one long scroll.
-// CAPTURED1/CAPTURED2 -- where TriggerSaveSampleSynthCapture() writes a
-// trimmed Capture/Trim selection (see that function's own comment) --
-// two of them for the same reason Moog/Mellotron etc. got split: 32
-// items is the per-category cap, so a second category is simply more
-// save slots (64 total) rather than one category silently going over.
-constexpr int kSampleSynthSoundCategoryCount = 21;
-constexpr const char* kSampleSynthCategoryFolders[kSampleSynthSoundCategoryCount]
+// SampleSynthParamPage::LegacyPreset's own fixed category list -- the
+// original 21 categories this engine shipped with before the licensed
+// sample packs they reference were stripped out of this repo for
+// redistribution (see that enum entry's own doc comment in ui.h).
+// Deliberately kept as a totally separate table from anything the real
+// Preset page uses, so removing/changing one can never silently affect
+// the other. Folder names are real SD subfolders under SAMPLES/.
+constexpr int kLegacySoundCategoryCount = 21;
+constexpr const char* kLegacySoundCategoryFolders[kLegacySoundCategoryCount]
     = {"OP1", "PIANO", "PADS", "DIGITONE", "LOL3",
        "MEMSTILL1", "MEMSTILL2", "MEMSTILL3",
        "MOOG1", "MOOG2", "MOOG3",
@@ -120,7 +35,7 @@ constexpr const char* kSampleSynthCategoryFolders[kSampleSynthSoundCategoryCount
        "MELLOTRON1", "MELLOTRON2", "MELLOTRON3", "MELLOTRON4", "MELLOTRON5",
        "CAPTURED1", "CAPTURED2",
        "OTHER"};
-constexpr const char* kSampleSynthCategoryLabels[kSampleSynthSoundCategoryCount]
+constexpr const char* kLegacySoundCategoryLabels[kLegacySoundCategoryCount]
     = {"OP-1", "Piano", "Pads", "Digitone", "LoL 3",
        "Mem Still 1", "Mem Still 2", "Mem Still 3",
        "Moog 1", "Moog 2", "Moog 3",
@@ -129,21 +44,12 @@ constexpr const char* kSampleSynthCategoryLabels[kSampleSynthSoundCategoryCount]
        "Captured 1", "Captured 2",
        "Other"};
 
-// Kits mode's own category list -- unlike Sounds (real SD subfolders),
-// kits are just numbered SAMP/KITxxx.DAT files in one flat folder, so
-// a "category" here is a contiguous range of kit numbers instead of a
-// folder -- the exact same shape Dexed's own DexedImportFolder already
-// uses (a named range over its own numbered preset slots). Only the
-// original starter kits are modeled here, well under the 32-item rule
-// on their own, so there's only one category; wherever kit-category
-// state resets, it resolves straight to this one instead of making the
-// user drill into a menu with a single entry (see the
-// kSampleSynthKitCategoryCount==1 checks at each reset site).
-constexpr int kSampleSynthKitCategoryCount = 1;
-constexpr int kSampleSynthKitCategoryFirst[kSampleSynthKitCategoryCount] = {1};
-constexpr int kSampleSynthKitCategoryLast[kSampleSynthKitCategoryCount]  = {11};
-constexpr const char* kSampleSynthKitCategoryLabels[kSampleSynthKitCategoryCount]
-    = {"Starter Kits"};
+// LegacyPreset's own Kit category -- the original "Starter Kits" range
+// over SAMP/KITxxx.DAT's own numbering, same shape as before.
+constexpr int kLegacyKitCategoryCount = 1;
+constexpr int kLegacyKitCategoryFirst[kLegacyKitCategoryCount] = {1};
+constexpr int kLegacyKitCategoryLast[kLegacyKitCategoryCount]  = {11};
+constexpr const char* kLegacyKitCategoryLabels[kLegacyKitCategoryCount] = {"Starter Kits"};
 
 // How long "Nothing to undo" squats on Layer:Status's waveform before an
 // idle user gets it back -- see undo_status_set_ms_'s own comment in ui.h.
@@ -155,6 +61,14 @@ constexpr uint32_t kUndoStatusTimeoutMs = 1500;
 // Safe as a single global: there is exactly one Ui instance and Save()/
 // Load() are only ever called synchronously from the main loop.
 OneBitGraphicsDisplay* g_progress_disp = nullptr;
+
+// Same "static state read by a plain ProgressFn" shape as
+// g_progress_disp above -- set by TriggerSampleSynthPackImport() right
+// before each file so Ui::OnSampleSynthImportFileProgress() can
+// rescale that one file's own 0..1 sub-progress into its real slice of
+// the overall multi-file bar.
+float g_progress_file_base01 = 0.f;
+float g_progress_file_span01 = 1.f;
 
 const char* StateGlyph(LayerState s)
 {
@@ -534,6 +448,9 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             else if(new_page == SampleSynthParamPage::User
                     && sample_synth_param_page_ != SampleSynthParamPage::User)
                 sample_synth_favorites_dirty_ = true; // re-load favorites from the card on entry
+            else if(new_page == SampleSynthParamPage::LegacyPreset
+                    && sample_synth_param_page_ != SampleSynthParamPage::LegacyPreset)
+                sample_synth_legacy_category_ = -1; // always start at category-select
             else
             {
                 // Entering the Capture/Trim/Tune group from any OTHER
@@ -678,6 +595,23 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             // the Advanced page); long-press above still goes all the
             // way to Home, same as every other screen.
             screen_ = Screen::Dexed;
+        }
+        else if(!encoder_long_fired_ && screen_ == Screen::SampleSynth
+                && sample_synth_param_page_ == SampleSynthParamPage::LegacyPreset)
+        {
+            // An intentional, deliberate exception to the generic
+            // Granular/Dexed/Ensemble/SampleSynth click == TogglePauseAll()
+            // rule just below -- this one page's encoder click is its
+            // own Enabled/Disabled toggle instead (see that enum
+            // entry's own doc comment in ui.h for why this content is
+            // off by default). Button1 still does the real Kits/Sounds
+            // toggle once enabled, same as the real Preset page.
+            sample_synth_legacy_enabled_ = !sample_synth_legacy_enabled_;
+            if(sample_synth_legacy_enabled_)
+            {
+                sample_synth_legacy_category_ = -1;
+                sample_synth_legacy_dirty_    = true;
+            }
         }
         else if(!encoder_long_fired_
                 && (screen_ == Screen::Granular || screen_ == Screen::Dexed
@@ -1186,6 +1120,26 @@ void Ui::HandleButton2(const UiControlEvents& events)
         }
     }
     else if(screen_ == Screen::SampleSynth
+            && sample_synth_param_page_ == SampleSynthParamPage::Import)
+    {
+        // Hold-to-confirm, same 800ms threshold/button2_long_fired_
+        // guard as every other hold-to-confirm batch action in this
+        // project -- this one can take a few real seconds (one AIFF
+        // decode per file), same class of action as Dexed's own SysEx
+        // bulk import.
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_)
+        {
+            button2_long_fired_ = true;
+            TriggerSampleSynthPackImport();
+        }
+        if(events.btn2_released)
+        {
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f)
+                TriggerSampleSynthPackImport();
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::SampleSynth
             && sample_synth_param_page_ == SampleSynthParamPage::Preset)
     {
         // LOAD-ONLY (see this page's own doc comment) -- no Save/
@@ -1193,14 +1147,13 @@ void Ui::HandleButton2(const UiControlEvents& events)
         // tap from Idle jumps straight to the numbered list. Button1
         // (Idle, card present) picks WHICH list -- Kits or Sounds, see
         // sample_synth_preset_mode_sounds_'s own doc comment. Sounds
-        // mode has a category level in front of its file list (see
-        // sample_synth_sound_category_'s own comment in ui.h) -- while
-        // sitting at that level there's nothing to hold-load yet
+        // mode has a 2-entry category level in front of its file list
+        // (see sample_synth_sound_category_'s own comment in ui.h) --
+        // while sitting at that level there's nothing to hold-load yet
         // (active_count=0 below), only something to drill into, which
-        // Button2's own short-press branch handles further down.
+        // this function's own short-press branch handles further down.
         bool at_category_select = sample_synth_preset_mode_sounds_
-                                       ? sample_synth_sound_category_ < 0
-                                       : sample_synth_kit_category_ < 0;
+                                       && sample_synth_sound_category_ < 0;
         int  active_count    = at_category_select ? 0
                                  : (sample_synth_preset_mode_sounds_ ? sample_synth_sound_count_
                                                                         : sample_synth_kit_count_);
@@ -1232,17 +1185,9 @@ void Ui::HandleButton2(const UiControlEvents& events)
                 // category (drill into its own file list) -- same
                 // button, same label, as the Idle->BrowsingLoad tap
                 // below, just one level deeper.
-                if(sample_synth_preset_mode_sounds_)
-                {
-                    sample_synth_sound_category_ = sample_synth_sound_category_cursor_;
-                    sample_synth_sounds_dirty_   = true; // re-scan this category's own folder
-                }
-                else
-                {
-                    sample_synth_kit_category_ = sample_synth_kit_category_cursor_;
-                    sample_synth_kits_dirty_   = true; // re-scan+filter to this range
-                }
-                sample_synth_kit_cursor_ = 0;
+                sample_synth_sound_category_ = sample_synth_sound_category_cursor_;
+                sample_synth_sounds_dirty_   = true; // re-scan this category
+                sample_synth_kit_cursor_     = 0;
             }
             else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
             {
@@ -1254,7 +1199,6 @@ void Ui::HandleButton2(const UiControlEvents& events)
                     load_browsing_files_     = true; // no "Files vs New" chooser -- straight to the list
                     sample_synth_kit_status_[0] = '\0'; // clear any stale result
                     sample_synth_sound_category_ = -1; // always start at category-select
-                    sample_synth_kit_category_   = -1; // ditto for Kits mode's own category level
                 }
             }
             button2_long_fired_ = false;
@@ -1290,6 +1234,55 @@ void Ui::HandleButton2(const UiControlEvents& events)
                     save_load_mode_              = SaveLoadMode::BrowsingLoad;
                     load_browsing_files_         = true;
                     sample_synth_favorite_status_[0] = '\0'; // clear any stale result
+                }
+            }
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::SampleSynth
+            && sample_synth_param_page_ == SampleSynthParamPage::LegacyPreset
+            && sample_synth_legacy_enabled_)
+    {
+        // Same LOAD-ONLY Idle/BrowsingLoad/category-select shape as the
+        // real Preset page -- see that page's own Button2 handling.
+        bool at_category_select = sample_synth_legacy_category_ < 0;
+        int  active_count       = at_category_select
+                                        ? 0
+                                        : (sample_synth_legacy_mode_sounds_
+                                               ? sample_synth_legacy_sound_count_
+                                               : sample_synth_legacy_kit_count_);
+        bool can_confirm_load
+            = save_load_mode_ == SaveLoadMode::BrowsingLoad && active_count > 0;
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_load)
+        {
+            button2_long_fired_ = true;
+            TriggerLoadSampleSynthLegacy();
+            save_load_mode_ = SaveLoadMode::Idle;
+        }
+        if(events.btn2_released)
+        {
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm_load)
+            {
+                TriggerLoadSampleSynthLegacy();
+                save_load_mode_ = SaveLoadMode::Idle;
+            }
+            else if(!button2_long_fired_ && at_category_select
+                    && save_load_mode_ == SaveLoadMode::BrowsingLoad)
+            {
+                sample_synth_legacy_category_ = sample_synth_legacy_category_cursor_;
+                sample_synth_legacy_dirty_    = true;
+                sample_synth_legacy_cursor_   = 0;
+            }
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
+            {
+                if(!PerformanceStore::IsCardPresent())
+                    PerformanceStore::Remount();
+                else
+                {
+                    save_load_mode_               = SaveLoadMode::BrowsingLoad;
+                    load_browsing_files_          = true;
+                    sample_synth_legacy_status_[0] = '\0';
+                    sample_synth_legacy_category_  = -1;
                 }
             }
             button2_long_fired_ = false;
@@ -1833,6 +1826,13 @@ void Ui::OnButton1Short()
                 int m = ((int)sample_synth_->GetFilterMode() + 1) % n;
                 sample_synth_->SetFilterMode((FilterMode)m);
             }
+            else if(sample_synth_param_page_ == SampleSynthParamPage::Mix && sample_synth_)
+            {
+                // Per-kit, not global -- see SampleSynthPresetData::
+                // mono_choke's own comment. Lives on Mix since that
+                // page's own Button1/Button2 were both unused.
+                sample_synth_->SetMonoChoke(!sample_synth_->GetMonoChoke());
+            }
             else if(sample_synth_param_page_ == SampleSynthParamPage::Env)
                 sample_synth_adsr_target_sr_ = false; // knobs -> Attack+Decay
             else if(sample_synth_param_page_ == SampleSynthParamPage::FX)
@@ -1861,20 +1861,23 @@ void Ui::OnButton1Short()
                 sample_synth_tune_chromatic_ = !sample_synth_tune_chromatic_;
                 ApplySampleSynthTrim(); // push the new chromatic/root_note into slot 0 right away
             }
+            else if(sample_synth_param_page_ == SampleSynthParamPage::Import)
+            {
+                int n = (int)SampleSynthImportTarget::kCount;
+                int p = (((int)sample_synth_import_target_ + 1) % n + n) % n;
+                sample_synth_import_target_        = (SampleSynthImportTarget)p;
+                sample_synth_pack_import_status_[0] = '\0'; // stale result from the other target
+            }
             else if(sample_synth_param_page_ == SampleSynthParamPage::Preset)
             {
                 if(save_load_mode_ != SaveLoadMode::Idle)
                 {
                     save_load_mode_ = SaveLoadMode::Idle; // Back, same as Global:File
-                    // Collapses straight past the category level too --
-                    // this is the blunt "give up entirely" (Button2's
-                    // own short-press at category-select is the
-                    // fine-grained "drill in" the other direction) --
-                    // see sample_synth_sound_category_'s own comment in
-                    // ui.h for why landing back at category-select is
-                    // right.
+                    // Collapses straight past Sounds' own category level
+                    // too -- this is the blunt "give up entirely"
+                    // (Button2's own short-press at category-select is
+                    // the fine-grained "drill in" the other direction).
                     sample_synth_sound_category_ = -1;
-                    sample_synth_kit_category_   = -1;
                 }
                 else if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
@@ -1882,12 +1885,13 @@ void Ui::OnButton1Short()
                 {
                     // Idle + card present: toggle between browsing whole
                     // Kits and browsing individual Sounds (raw files in
-                    // SAMPLES/) -- see sample_synth_preset_mode_sounds_'s
-                    // own doc comment.
+                    // SAMPLES/SOUNDS/, or Trim's own Captured category --
+                    // see sample_synth_sound_category_'s own comment) --
+                    // see sample_synth_preset_mode_sounds_'s own doc
+                    // comment.
                     sample_synth_preset_mode_sounds_ = !sample_synth_preset_mode_sounds_;
                     sample_synth_kit_cursor_         = 0;
-                    sample_synth_sound_category_     = -1;
-                    sample_synth_kit_category_       = -1;
+                    sample_synth_sound_category_     = -1; // always start at category-select
                 }
                 // Button2 is the only way into BrowsingLoad itself
                 // (reveals whichever list is active), no "Save" to
@@ -1902,6 +1906,28 @@ void Ui::OnButton1Short()
                     save_load_mode_ = SaveLoadMode::Idle;
                 else
                     TriggerAddSampleSynthFavorite();
+            }
+            else if(sample_synth_param_page_ == SampleSynthParamPage::LegacyPreset)
+            {
+                // Enabled/Disabled itself toggles via encoder CLICK, not
+                // here (see HandleEncoder()'s own comment) -- while
+                // disabled this button does nothing at all.
+                if(!sample_synth_legacy_enabled_)
+                { /* no-op */
+                }
+                else if(save_load_mode_ != SaveLoadMode::Idle)
+                {
+                    save_load_mode_ = SaveLoadMode::Idle; // Back, same as the real Preset page
+                    sample_synth_legacy_category_ = -1;
+                }
+                else if(!PerformanceStore::IsCardPresent())
+                    PerformanceStore::Remount();
+                else
+                {
+                    sample_synth_legacy_mode_sounds_ = !sample_synth_legacy_mode_sounds_;
+                    sample_synth_legacy_cursor_       = 0;
+                    sample_synth_legacy_category_     = -1;
+                }
             }
             break;
     }
@@ -2120,8 +2146,11 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case SampleSynthParamPage::Capture: return KnobContext::SampleSynthCapture;
                 case SampleSynthParamPage::Trim: return KnobContext::SampleSynthTrim;
                 case SampleSynthParamPage::Tune: return KnobContext::SampleSynthTune;
+                case SampleSynthParamPage::Import: return KnobContext::SampleSynthImport;
                 case SampleSynthParamPage::Preset: return KnobContext::SampleSynthPreset;
                 case SampleSynthParamPage::User: return KnobContext::SampleSynthUser;
+                case SampleSynthParamPage::LegacyPreset:
+                    return KnobContext::SampleSynthLegacyPreset;
                 default: return KnobContext::SampleSynthFilter;
             }
         case Screen::Granular:
@@ -2516,8 +2545,10 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             k1_pickup_raw_[i] = (float)(semis + 24) / 48.f;
             break;
         }
+        case KnobContext::SampleSynthImport: break; // no continuous knobs -- Button1/Button2 only
         case KnobContext::SampleSynthPreset: break; // browses a list directly, no pickup used
         case KnobContext::SampleSynthUser: break;   // ditto -- browses the favorites list
+        case KnobContext::SampleSynthLegacyPreset: break; // ditto -- browses a list directly
         case KnobContext::GranularGrainSizeFill:
             if(granular_)
             {
@@ -3630,31 +3661,25 @@ void Ui::ApplyKnobs()
                         ApplySampleSynthTrim();
                     }
                     break;
+                case SampleSynthParamPage::Import: break; // no continuous knobs
                 case SampleSynthParamPage::Preset:
                 {
                     // Direct "browse a list" idiom, no pickup -- same
                     // shape as Dexed/Grains' own Import file lists.
                     // Whichever of Kits/Sounds is active, see
                     // sample_synth_preset_mode_sounds_'s own comment.
-                    // Both have their own category level in front of
-                    // the file list (sample_synth_sound_category_/
-                    // sample_synth_kit_category_ < 0) -- this same knob
-                    // browses that category list there instead, see
-                    // their own comments in ui.h.
+                    // Sounds has its own 2-entry category level in
+                    // front of the file list (sample_synth_sound_
+                    // category_ < 0) -- this same knob browses that
+                    // 2-entry list there instead. Kits never has one
+                    // (see sample_synth_kit_count_'s own comment).
                     if(sample_synth_preset_mode_sounds_ && sample_synth_sound_category_ < 0)
                     {
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * kSampleSynthSoundCategoryCount);
-                        if(idx >= kSampleSynthSoundCategoryCount)
-                            idx = kSampleSynthSoundCategoryCount - 1;
+                        constexpr int kSoundCategoryCount = 2; // "Sounds", "Captured"
+                        int idx = (int)(Clampf(k1, 0.f, 1.f) * kSoundCategoryCount);
+                        if(idx >= kSoundCategoryCount)
+                            idx = kSoundCategoryCount - 1;
                         sample_synth_sound_category_cursor_ = idx;
-                        break;
-                    }
-                    if(!sample_synth_preset_mode_sounds_ && sample_synth_kit_category_ < 0)
-                    {
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * kSampleSynthKitCategoryCount);
-                        if(idx >= kSampleSynthKitCategoryCount)
-                            idx = kSampleSynthKitCategoryCount - 1;
-                        sample_synth_kit_category_cursor_ = idx;
                         break;
                     }
                     int total = sample_synth_preset_mode_sounds_ ? sample_synth_sound_count_
@@ -3683,6 +3708,37 @@ void Ui::ApplyKnobs()
                         if(idx != sample_synth_favorite_cursor_)
                             sample_synth_favorite_status_[0] = '\0';
                         sample_synth_favorite_cursor_ = idx;
+                    }
+                    break;
+                }
+                case SampleSynthParamPage::LegacyPreset:
+                {
+                    if(!sample_synth_legacy_enabled_)
+                        break;
+                    // Same category-select-then-flat-list shape as the
+                    // real Preset page's own ApplyKnobs() case.
+                    if(sample_synth_legacy_category_ < 0)
+                    {
+                        int cat_count = sample_synth_legacy_mode_sounds_
+                                             ? kLegacySoundCategoryCount
+                                             : kLegacyKitCategoryCount;
+                        int idx = (int)(Clampf(k1, 0.f, 1.f) * cat_count);
+                        if(idx >= cat_count)
+                            idx = cat_count - 1;
+                        sample_synth_legacy_category_cursor_ = idx;
+                        break;
+                    }
+                    int total = sample_synth_legacy_mode_sounds_
+                                     ? sample_synth_legacy_sound_count_
+                                     : sample_synth_legacy_kit_count_;
+                    if(total > 0)
+                    {
+                        int idx = (int)(Clampf(k1, 0.f, 1.f) * total);
+                        if(idx >= total)
+                            idx = total - 1;
+                        if(idx != sample_synth_legacy_cursor_)
+                            sample_synth_legacy_status_[0] = '\0';
+                        sample_synth_legacy_cursor_ = idx;
                     }
                     break;
                 }
@@ -4971,14 +5027,33 @@ void Ui::DrawSdMgmtScreen()
     if(!sd_mgmt_in_folder_)
     {
         // Same ">"-highlighted-list convention as ChoosingSave's own
-        // Overwrite/Save New options.
-        for(int i = 0; i < (int)SdMgmtFolder::kCount; i++)
+        // Overwrite/Save New options. TomThumb, not the big 8px font --
+        // 4 real folders now (was 2 when this first used the big font
+        // at a fixed 10px step), and the big font's own line height
+        // left the last entry crowding the footer divider. Evenly
+        // spread across the whole body area, below the header divider
+        // (y=9), above the footer one (kFooterDividerY), instead of a
+        // fixed step, so it stays even regardless of how many folders
+        // this ever grows to.
+        //
+        // TomThumbDrawText's y is a BASELINE, not a row top -- glyphs
+        // draw UPWARD from it, same convention DrawControlRow() uses
+        // (baseline = row_y + kTomThumbRowHeight - 1). Passing a row's
+        // top straight in as the baseline (as this first did) draws
+        // ~5px too high, into the row above -- which is how the first
+        // entry ended up overlapping the header.
+        int           n            = (int)SdMgmtFolder::kCount;
+        constexpr int kBodyTop     = 11; // just below the header divider at y=9
+        constexpr int kBodyBottom  = kFooterDividerY - 2; // last row stays clear of the footer divider
+        int step = (kBodyBottom - kBodyTop - kTomThumbRowHeight + 1) / (n > 1 ? n - 1 : 1);
+        for(int i = 0; i < n; i++)
         {
             char line[20];
             snprintf(line, sizeof(line), "%c %s", i == (int)sd_mgmt_folder_ ? '>' : ' ',
                       SdMgmtFolderName((SdMgmtFolder)i));
-            disp_->SetCursor(0, 14 + i * 10);
-            WriteUpper(line);
+            int row_top  = kBodyTop + i * step;
+            int baseline = row_top + kTomThumbRowHeight - 1;
+            TomThumbDrawText(disp_, 0, baseline, line, true);
         }
     }
     else
@@ -6823,8 +6898,10 @@ void Ui::DrawSampleSynthScreen()
         case SampleSynthParamPage::Capture: page_name = "Capture"; break;
         case SampleSynthParamPage::Trim: page_name = "Trim"; break;
         case SampleSynthParamPage::Tune: page_name = "Tune"; break;
+        case SampleSynthParamPage::Import: page_name = "Import"; break;
         case SampleSynthParamPage::Preset: page_name = "Preset"; break;
         case SampleSynthParamPage::User: page_name = "User"; break;
+        case SampleSynthParamPage::LegacyPreset: page_name = "Legacy"; break;
         default: break;
     }
     char title[24];
@@ -6896,11 +6973,20 @@ void Ui::DrawSampleSynthScreen()
                       (int)(sample_synth_->GetOutputLevel01() * 100.f + 0.5f));
             snprintf(pan_val, sizeof(pan_val), "%d%%",
                       (int)(sample_synth_->GetPan01() * 100.f + 0.5f));
-            DrawOscilloscope(12, kFooterDividerY - 2, sample_synth_scope_buf_,
+            // Per-kit, Button1-toggled -- see SampleSynthPresetData::
+            // mono_choke's own comment. Same "status line above a
+            // pushed-down oscilloscope" layout Filter's own Mode line
+            // already uses.
+            char mono_line[20];
+            snprintf(mono_line, sizeof(mono_line), "Mono: %s",
+                      sample_synth_->GetMonoChoke() ? "On" : "Off");
+            TomThumbDrawText(disp_, 0, 15, mono_line, true);
+            DrawOscilloscope(18, kFooterDividerY - 2, sample_synth_scope_buf_,
                                sample_synth_scope_capacity_);
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, pan_val,
                              "Pan");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Toggle mono", "", "",
+                             "");
             break;
         }
         case SampleSynthParamPage::FX:
@@ -7109,6 +7195,46 @@ void Ui::DrawSampleSynthScreen()
                              "");
             break;
         }
+        case SampleSynthParamPage::Import:
+        {
+            // Wholly separate from Capture's own Import source -- see
+            // SampleSynthParamPage::Import's own doc comment in ui.h.
+            if(pod_->button2.Pressed())
+            {
+                float held = pod_->button2.TimeHeldMs();
+                int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
+                TomThumbDrawText(disp_, 0, 15, "Hold: Import...", true);
+                disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
+                if(w > 0)
+                    disp_->DrawRect(1, 21, w, 23, true, true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+                break;
+            }
+
+            const char* target_name = "All";
+            if(sample_synth_import_target_ == SampleSynthImportTarget::Kit)
+                target_name = "Kits";
+            else if(sample_synth_import_target_ == SampleSynthImportTarget::Sound)
+                target_name = "Sounds";
+            char target_line[24];
+            snprintf(target_line, sizeof(target_line), "Target: %s", target_name);
+            TomThumbDrawText(disp_, 0, 15, target_line, true);
+
+            disp_->SetCursor(0, 24);
+            WriteUpper("From SampleKit/Sound");
+
+            if(sample_synth_pack_import_status_[0] != '\0')
+            {
+                disp_->SetCursor(0, 36);
+                WriteUpper(sample_synth_pack_import_status_);
+            }
+
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Cycle target", "", "",
+                             "Hold=Import");
+            break;
+        }
         case SampleSynthParamPage::Preset:
         {
             // LOAD-ONLY (see this page's own doc comment) -- no Save/
@@ -7123,40 +7249,23 @@ void Ui::DrawSampleSynthScreen()
                 DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
                 break;
             }
-            // At category-select level (nothing drilled into yet -- see
-            // sample_synth_sound_category_/sample_synth_kit_category_'s
-            // own comments in ui.h), there's nothing on the card to
-            // scan: both category lists are fixed in-memory lists.
+            // Kits have no category level (see sample_synth_kit_count_'s
+            // own comment) -- always the flat numbered list. Sounds has
+            // a 2-entry category level in front of it ("Sounds" plain
+            // imports, "Captured" = Trim's own output -- see
+            // sample_synth_sound_category_'s own comment in ui.h).
             bool at_category_select = sample_synth_preset_mode_sounds_
-                                           ? sample_synth_sound_category_ < 0
-                                           : sample_synth_kit_category_ < 0;
+                                           && sample_synth_sound_category_ < 0;
 
-            if(!at_category_select && !sample_synth_preset_mode_sounds_
-                && sample_synth_kits_dirty_)
+            if(!sample_synth_preset_mode_sounds_ && sample_synth_kits_dirty_)
             {
-                // Kits mode's category is a NUMBER RANGE, not a real SD
-                // subfolder (see kSampleSynthKitCategoryFirst/Last's own
-                // comment) -- scan every kit on the card, then keep only
-                // the ones whose number falls in the selected category.
-                int all_numbers[PerformanceStore::kMaxSampleSynthKits];
-                int all_count = PerformanceStore::ListSampleSynthKits(
-                    all_numbers, PerformanceStore::kMaxSampleSynthKits);
-                int lo = kSampleSynthKitCategoryFirst[sample_synth_kit_category_];
-                int hi = kSampleSynthKitCategoryLast[sample_synth_kit_category_];
-                int count = 0;
-                for(int i = 0; i < all_count && count < PerformanceStore::kMaxSampleSynthKits;
-                    i++)
-                {
-                    if(all_numbers[i] < lo || all_numbers[i] > hi)
-                        continue;
-                    sample_synth_kit_numbers_[count] = all_numbers[i];
+                sample_synth_kit_count_ = PerformanceStore::ListSampleSynthKits(
+                    sample_synth_kit_numbers_, PerformanceStore::kMaxSampleSynthKits);
+                for(int i = 0; i < sample_synth_kit_count_; i++)
                     if(!PerformanceStore::PeekSampleSynthKitName(
-                           all_numbers[i], sample_synth_kit_names_[count],
-                           sizeof(sample_synth_kit_names_[count])))
-                        sample_synth_kit_names_[count][0] = '\0';
-                    count++;
-                }
-                sample_synth_kit_count_ = count;
+                           sample_synth_kit_numbers_[i], sample_synth_kit_names_[i],
+                           sizeof(sample_synth_kit_names_[i])))
+                        sample_synth_kit_names_[i][0] = '\0';
                 if(sample_synth_kit_cursor_ >= sample_synth_kit_count_)
                     sample_synth_kit_cursor_ = 0;
                 sample_synth_kits_dirty_ = false;
@@ -7164,24 +7273,54 @@ void Ui::DrawSampleSynthScreen()
             else if(!at_category_select && sample_synth_preset_mode_sounds_
                     && sample_synth_sounds_dirty_)
             {
-                sample_synth_sound_count_ = PerformanceStore::ListSampleSynthFiles(
-                    sample_synth_sound_names_, kMaxSampleSynthSoundsListed,
-                    kSampleSynthCategoryFolders[sample_synth_sound_category_]);
+                if(sample_synth_sound_category_ == 0)
+                {
+                    sample_synth_sound_count_ = PerformanceStore::ListSampleSynthFiles(
+                        sample_synth_sound_names_, kMaxSampleSynthSoundsListed,
+                        PerformanceStore::kSampleSynthSoundsFolder);
+                    sample_synth_sound_captured1_count_ = 0;
+                }
+                else
+                {
+                    // "Captured" -- combine CAPTURED1 then CAPTURED2's
+                    // own real CAPnnn.wav numbering into one flat list,
+                    // same filename convention
+                    // PerformanceStore::SaveSampleSynthCapture() already
+                    // writes (no new performance_store function needed
+                    // -- just synthesize the name from the number).
+                    int numbers[33];
+                    int n1 = PerformanceStore::ListSampleSynthCapturesInCategory(
+                        "CAPTURED1", numbers, 33);
+                    int count = 0;
+                    for(int i = 0; i < n1 && count < kMaxSampleSynthSoundsListed; i++)
+                    {
+                        snprintf(sample_synth_sound_names_[count],
+                                  sizeof(sample_synth_sound_names_[count]), "CAP%03d.wav",
+                                  numbers[i]);
+                        count++;
+                    }
+                    sample_synth_sound_captured1_count_ = count;
+                    int n2 = PerformanceStore::ListSampleSynthCapturesInCategory(
+                        "CAPTURED2", numbers, 33);
+                    for(int i = 0; i < n2 && count < kMaxSampleSynthSoundsListed; i++)
+                    {
+                        snprintf(sample_synth_sound_names_[count],
+                                  sizeof(sample_synth_sound_names_[count]), "CAP%03d.wav",
+                                  numbers[i]);
+                        count++;
+                    }
+                    sample_synth_sound_count_ = count;
+                }
                 if(sample_synth_kit_cursor_ >= sample_synth_sound_count_)
                     sample_synth_kit_cursor_ = 0;
                 sample_synth_sounds_dirty_ = false;
             }
 
             int  total = at_category_select
-                              ? (sample_synth_preset_mode_sounds_
-                                     ? kSampleSynthSoundCategoryCount
-                                     : kSampleSynthKitCategoryCount)
+                              ? 0
                               : (sample_synth_preset_mode_sounds_ ? sample_synth_sound_count_
-                                                                     : sample_synth_kit_count_);
+                                                                      : sample_synth_kit_count_);
             bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
-            // Nothing to load yet at category-select -- that's just
-            // picking which file list to drill into next (encoder
-            // click), not a loadable item itself.
             bool can_hold_load = browsing_load && total > 0 && !at_category_select;
 
             if(pod_->button2.Pressed() && can_hold_load)
@@ -7199,17 +7338,11 @@ void Ui::DrawSampleSynthScreen()
             }
 
             // Mode indicator -- Button1 (Idle only) toggles Kits/Sounds;
-            // once drilled past category-select, show which category
-            // too (e.g. "Sounds:Piano" or "Kits:Labor of Love").
+            // once drilled past category-select, show which category too.
             char mode_line[20];
-            if(!at_category_select)
-            {
-                const char* cat_label = sample_synth_preset_mode_sounds_
-                                             ? kSampleSynthCategoryLabels[sample_synth_sound_category_]
-                                             : kSampleSynthKitCategoryLabels[sample_synth_kit_category_];
-                snprintf(mode_line, sizeof(mode_line), "%s:%s",
-                          sample_synth_preset_mode_sounds_ ? "Sounds" : "Kits", cat_label);
-            }
+            if(sample_synth_preset_mode_sounds_ && !at_category_select)
+                snprintf(mode_line, sizeof(mode_line), "Sounds:%s",
+                          sample_synth_sound_category_ == 0 ? "Sounds" : "Captured");
             else
                 snprintf(mode_line, sizeof(mode_line), "%s",
                           sample_synth_preset_mode_sounds_ ? "Sounds" : "Kits");
@@ -7220,11 +7353,8 @@ void Ui::DrawSampleSynthScreen()
                 char line2[24];
                 if(at_category_select)
                 {
-                    const char* cat_label
-                        = sample_synth_preset_mode_sounds_
-                              ? kSampleSynthCategoryLabels[sample_synth_sound_category_cursor_]
-                              : kSampleSynthKitCategoryLabels[sample_synth_kit_category_cursor_];
-                    snprintf(line2, sizeof(line2), "%s", cat_label);
+                    snprintf(line2, sizeof(line2), "%s",
+                              sample_synth_sound_category_cursor_ == 0 ? "Sounds" : "Captured");
                 }
                 else if(total > 0)
                 {
@@ -7270,8 +7400,9 @@ void Ui::DrawSampleSynthScreen()
                              "",
                              save_load_mode_ == SaveLoadMode::Idle
                                  ? "Open"
-                                 : (at_category_select ? "Open"
-                                                         : (can_hold_load ? "Hold=Load" : "")));
+                                 : (at_category_select
+                                        ? "Open"
+                                        : (can_hold_load ? "Hold=Load" : "")));
             break;
         }
         case SampleSynthParamPage::User:
@@ -7350,6 +7481,162 @@ void Ui::DrawSampleSynthScreen()
                              save_load_mode_ == SaveLoadMode::Idle
                                  ? "Open"
                                  : (can_hold_load ? "Hold=Load" : ""));
+            break;
+        }
+        case SampleSynthParamPage::LegacyPreset:
+        {
+            // Off by default -- see this page's own doc comment in
+            // ui.h for why, and HandleEncoder()'s own comment for why
+            // encoder CLICK (not Button1, which still does Kits/Sounds
+            // once enabled) is this one page's own Enabled/Disabled
+            // toggle.
+            if(!sample_synth_legacy_enabled_)
+            {
+                TomThumbDrawText(disp_, 0, 15, "Disabled", true);
+                disp_->SetCursor(0, 24);
+                WriteUpper("Click encoder to enable");
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+                break;
+            }
+            if(!PerformanceStore::IsCardPresent())
+            {
+                disp_->SetCursor(0, 20);
+                WriteUpper("No card");
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
+                break;
+            }
+            bool at_category_select = sample_synth_legacy_category_ < 0;
+
+            if(!at_category_select && sample_synth_legacy_dirty_)
+            {
+                if(!sample_synth_legacy_mode_sounds_)
+                {
+                    int all_numbers[PerformanceStore::kMaxSampleSynthKits];
+                    int all_count = PerformanceStore::ListSampleSynthKits(
+                        all_numbers, PerformanceStore::kMaxSampleSynthKits);
+                    int lo = kLegacyKitCategoryFirst[sample_synth_legacy_category_];
+                    int hi = kLegacyKitCategoryLast[sample_synth_legacy_category_];
+                    int count = 0;
+                    for(int i = 0; i < all_count && count < PerformanceStore::kMaxSampleSynthKits;
+                        i++)
+                    {
+                        if(all_numbers[i] < lo || all_numbers[i] > hi)
+                            continue;
+                        sample_synth_legacy_kit_numbers_[count] = all_numbers[i];
+                        if(!PerformanceStore::PeekSampleSynthKitName(
+                               all_numbers[i], sample_synth_legacy_kit_names_[count],
+                               sizeof(sample_synth_legacy_kit_names_[count])))
+                            sample_synth_legacy_kit_names_[count][0] = '\0';
+                        count++;
+                    }
+                    sample_synth_legacy_kit_count_ = count;
+                }
+                else
+                {
+                    sample_synth_legacy_sound_count_ = PerformanceStore::ListSampleSynthFiles(
+                        sample_synth_legacy_sound_names_, kMaxSampleSynthSoundsListed,
+                        kLegacySoundCategoryFolders[sample_synth_legacy_category_]);
+                }
+                if(sample_synth_legacy_cursor_
+                   >= (sample_synth_legacy_mode_sounds_ ? sample_synth_legacy_sound_count_
+                                                            : sample_synth_legacy_kit_count_))
+                    sample_synth_legacy_cursor_ = 0;
+                sample_synth_legacy_dirty_ = false;
+            }
+
+            int  total = at_category_select
+                              ? 0
+                              : (sample_synth_legacy_mode_sounds_
+                                     ? sample_synth_legacy_sound_count_
+                                     : sample_synth_legacy_kit_count_);
+            bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
+            bool can_hold_load = browsing_load && total > 0 && !at_category_select;
+
+            if(pod_->button2.Pressed() && can_hold_load)
+            {
+                float held = pod_->button2.TimeHeldMs();
+                int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
+                disp_->SetCursor(0, 20);
+                WriteUpper("Hold: Load...");
+                disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
+                if(w > 0)
+                    disp_->DrawRect(1, 31, w, 33, true, true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+                break;
+            }
+
+            char mode_line[20];
+            if(!at_category_select)
+            {
+                const char* cat_label = sample_synth_legacy_mode_sounds_
+                                             ? kLegacySoundCategoryLabels[sample_synth_legacy_category_]
+                                             : kLegacyKitCategoryLabels[sample_synth_legacy_category_];
+                snprintf(mode_line, sizeof(mode_line), "%s:%s",
+                          sample_synth_legacy_mode_sounds_ ? "Sounds" : "Kits", cat_label);
+            }
+            else
+                snprintf(mode_line, sizeof(mode_line), "%s",
+                          sample_synth_legacy_mode_sounds_ ? "Sounds" : "Kits");
+            TomThumbDrawText(disp_, 0, 15, mode_line, true);
+
+            if(browsing_load)
+            {
+                char line2[24];
+                if(at_category_select)
+                {
+                    const char* cat_label
+                        = sample_synth_legacy_mode_sounds_
+                              ? kLegacySoundCategoryLabels[sample_synth_legacy_category_cursor_]
+                              : kLegacyKitCategoryLabels[sample_synth_legacy_category_cursor_];
+                    snprintf(line2, sizeof(line2), "%s", cat_label);
+                }
+                else if(total > 0)
+                {
+                    if(sample_synth_legacy_mode_sounds_)
+                        snprintf(line2, sizeof(line2), "%s",
+                                  sample_synth_legacy_sound_names_[sample_synth_legacy_cursor_]);
+                    else
+                    {
+                        const char* nm = sample_synth_legacy_kit_names_[sample_synth_legacy_cursor_];
+                        snprintf(line2, sizeof(line2), "%d:%s",
+                                  sample_synth_legacy_kit_numbers_[sample_synth_legacy_cursor_],
+                                  nm[0] != '\0' ? nm : "(unnamed)");
+                    }
+                }
+                else
+                    snprintf(line2, sizeof(line2), "(none on card)");
+                disp_->SetCursor(0, 20);
+                WriteUpper(line2);
+            }
+            else
+            {
+                char line1[24];
+                if(sample_synth_legacy_loaded_name_[0] == '\0')
+                    snprintf(line1, sizeof(line1), "Now: (none)");
+                else
+                    snprintf(line1, sizeof(line1), "Now: %s", sample_synth_legacy_loaded_name_);
+                disp_->SetCursor(0, 20);
+                WriteUpper(line1);
+                if(sample_synth_legacy_status_[0] != '\0')
+                {
+                    disp_->SetCursor(0, 32);
+                    WriteUpper(sample_synth_legacy_status_);
+                }
+            }
+
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, browsing_load ? "Scroll" : "",
+                             "", "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             save_load_mode_ == SaveLoadMode::Idle ? "Kits/Sounds" : "Back", "",
+                             "",
+                             save_load_mode_ == SaveLoadMode::Idle
+                                 ? "Open"
+                                 : (at_category_select
+                                        ? "Open"
+                                        : (can_hold_load ? "Hold=Load" : "")));
             break;
         }
         default: break;
@@ -8287,9 +8574,7 @@ void Ui::TriggerSdMgmtDelete()
             // until the next load.
             char expected_name[16];
             snprintf(expected_name, sizeof(expected_name), "CAP%03d.wav", real_n);
-            bool was_loaded = sample_synth_loaded_sound_category_ >= 0
-                              && strcmp(kSampleSynthCategoryFolders[sample_synth_loaded_sound_category_],
-                                        cat) == 0
+            bool was_loaded = strcmp(sample_synth_loaded_sound_category_, cat) == 0
                               && strcmp(sample_synth_loaded_sound_name_, expected_name) == 0;
             ok = PerformanceStore::DeleteSampleSynthCapture(cat, real_n);
             if(ok && was_loaded)
@@ -8618,9 +8903,10 @@ void Ui::TriggerSaveSampleSynthCapture()
     ComputeSampleSynthTrimRange(&start, &end);
 
     char filename[PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
-    // CAPTURED1 first, then CAPTURED2 -- same 32-item-per-category cap
-    // as every other Sounds category, just two of them for 64 total
-    // (see kSampleSynthCategoryFolders' own comment for why).
+    // CAPTURED1 first, then CAPTURED2 -- same 32-item cap as every real
+    // folder in this project, just two of them for 64 total (see
+    // SampleSynthParamPage::Preset's own "Captured" category, which
+    // browses both combined).
     const char* category = nullptr;
     for(const char* cat : {"CAPTURED1", "CAPTURED2"})
     {
@@ -8643,6 +8929,105 @@ void Ui::TriggerSaveSampleSynthCapture()
         snprintf(sample_synth_capture_status_, sizeof(sample_synth_capture_status_),
                   "Captured full");
     }
+}
+
+void Ui::TriggerSampleSynthPackImport()
+{
+    // Wholly separate from SampleSynthParamPage::Capture's own -2
+    // Import source -- see that page's own doc comment in ui.h. This
+    // sweeps a whole staging folder at once, no Trim/Tune step: a drum
+    // pack lands straight as a new Kit, a sampler pack straight as a
+    // new Sound, both via PerformanceStore's own importer functions.
+    int kits_ok = 0, kits_skip = 0, sounds_ok = 0, sounds_skip = 0;
+    g_progress_disp = disp_; // same "WORKING..." overlay every other multi-step SD operation uses
+    // Draw the overlay immediately -- the first real file can take a
+    // real amount of wall-clock time (AIFF decode + resample + up to
+    // 24 slice-file writes), and otherwise the first thing ever drawn
+    // was whatever OnSaveLoadProgress()'s own per-file call happened
+    // to land on, which for a short batch could be the very last one.
+    OnSaveLoadProgress(0.f);
+
+    if(sample_synth_import_target_ == SampleSynthImportTarget::Kit
+       || sample_synth_import_target_ == SampleSynthImportTarget::All)
+    {
+        char names[PerformanceStore::kMaxSampleSynthImportPackFiles]
+                  [PerformanceStore::kMaxSampleSynthWavNameLen + 1];
+        int count = PerformanceStore::ListAifFiles(
+            PerformanceStore::kSampleKitImportFolder, names,
+            PerformanceStore::kMaxSampleSynthImportPackFiles);
+        g_audio_suspended = true;
+        for(int i = 0; i < count; i++)
+        {
+            // This file's own share of the overall bar -- see
+            // Ui::OnSampleSynthImportFileProgress()'s own doc comment.
+            // ImportAifDrumPack() reports its own 0..1 progress through
+            // up to kMaxSampleSynthSlots separate SD writes, rescaled
+            // into [i/count, (i+1)/count] here so the bar keeps moving
+            // smoothly within this one file instead of sitting still
+            // for however long it takes, then jumping to the next.
+            g_progress_file_base01 = (float)i / (float)(count > 0 ? count : 1);
+            g_progress_file_span01 = 1.f / (float)(count > 0 ? count : 1);
+            char status[48];
+            bool ok = PerformanceStore::ImportAifDrumPack(
+                names[i], PerformanceStore::kSampleKitImportFolder, sample_synth_arena_l_,
+                sample_synth_arena_r_, sample_synth_arena_capacity_, status, sizeof(status),
+                &Ui::OnSampleSynthImportFileProgress);
+            if(ok)
+            {
+                kits_ok++;
+                PerformanceStore::MoveToImportDoneFolder(PerformanceStore::kSampleKitImportFolder,
+                                                            names[i]);
+            }
+            else
+                kits_skip++;
+            OnSaveLoadProgress((float)(i + 1) / (float)(count > 0 ? count : 1));
+        }
+        g_audio_suspended = false;
+        if(kits_ok > 0)
+            sample_synth_kits_dirty_ = true;
+    }
+
+    if(sample_synth_import_target_ == SampleSynthImportTarget::Sound
+       || sample_synth_import_target_ == SampleSynthImportTarget::All)
+    {
+        char names[PerformanceStore::kMaxSampleSynthImportPackFiles]
+                  [PerformanceStore::kMaxSampleSynthWavNameLen + 1];
+        int count = PerformanceStore::ListAifFiles(
+            PerformanceStore::kSampleSoundImportFolder, names,
+            PerformanceStore::kMaxSampleSynthImportPackFiles);
+        g_audio_suspended = true;
+        for(int i = 0; i < count; i++)
+        {
+            char status[48];
+            bool ok = PerformanceStore::ImportAifSamplerPack(
+                names[i], PerformanceStore::kSampleSoundImportFolder, sample_synth_arena_l_,
+                sample_synth_arena_r_, sample_synth_arena_capacity_, status, sizeof(status));
+            if(ok)
+            {
+                sounds_ok++;
+                PerformanceStore::MoveToImportDoneFolder(
+                    PerformanceStore::kSampleSoundImportFolder, names[i]);
+            }
+            else
+                sounds_skip++;
+            OnSaveLoadProgress((float)(i + 1) / (float)(count > 0 ? count : 1));
+        }
+        g_audio_suspended = false;
+        if(sounds_ok > 0)
+            sample_synth_sounds_dirty_ = true;
+    }
+
+    g_progress_disp = nullptr;
+
+    if(sample_synth_import_target_ == SampleSynthImportTarget::Kit)
+        snprintf(sample_synth_pack_import_status_, sizeof(sample_synth_pack_import_status_),
+                  "Kits: %d ok, %d skip", kits_ok, kits_skip);
+    else if(sample_synth_import_target_ == SampleSynthImportTarget::Sound)
+        snprintf(sample_synth_pack_import_status_, sizeof(sample_synth_pack_import_status_),
+                  "Sounds: %d ok, %d skip", sounds_ok, sounds_skip);
+    else
+        snprintf(sample_synth_pack_import_status_, sizeof(sample_synth_pack_import_status_),
+                  "Kits %d/%d Snds %d/%d", kits_ok, kits_skip, sounds_ok, sounds_skip);
 }
 
 void Ui::TriggerLoadSampleSynthKit()
@@ -8716,7 +9101,7 @@ void Ui::TriggerLoadSampleSynthKit()
         }
         sample_synth_loaded_kit_slot_        = slot;
         sample_synth_loaded_sound_name_[0]   = '\0'; // a kit replaced whatever single sound was loaded
-        sample_synth_loaded_sound_category_  = -1;
+        sample_synth_loaded_sound_category_[0] = '\0';
         snprintf(sample_synth_loaded_kit_name_, sizeof(sample_synth_loaded_kit_name_), "%s",
                   kit_name);
         snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "Loaded (%d)",
@@ -8725,6 +9110,87 @@ void Ui::TriggerLoadSampleSynthKit()
     else
     {
         snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "Fail:%s",
+                  PerformanceStore::GetLastError());
+    }
+    g_audio_suspended = false;
+}
+
+void Ui::TriggerLoadSampleSynthLegacy()
+{
+    if(!sample_synth_ || sample_synth_legacy_category_ < 0 || sample_synth_legacy_cursor_ < 0)
+        return;
+
+    if(sample_synth_legacy_mode_sounds_)
+    {
+        if(sample_synth_legacy_cursor_ >= sample_synth_legacy_sound_count_)
+            return;
+        LoadSampleSynthFileIntoEngine(
+            kLegacySoundCategoryFolders[sample_synth_legacy_category_],
+            sample_synth_legacy_sound_names_[sample_synth_legacy_cursor_]);
+        snprintf(sample_synth_legacy_loaded_name_, sizeof(sample_synth_legacy_loaded_name_), "%s",
+                  sample_synth_legacy_sound_names_[sample_synth_legacy_cursor_]);
+        snprintf(sample_synth_legacy_status_, sizeof(sample_synth_legacy_status_), "Loaded");
+        return;
+    }
+
+    // Kit load -- same bump-allocate-into-the-shared-arena shape as
+    // TriggerLoadSampleSynthKit()'s own, just reading from this page's
+    // own separate sample_synth_legacy_* state.
+    if(sample_synth_legacy_cursor_ >= sample_synth_legacy_kit_count_)
+        return;
+    int slot = sample_synth_legacy_kit_numbers_[sample_synth_legacy_cursor_];
+
+    char                                  kit_name[PerformanceStore::kMaxSampleSynthKitNameLen + 1];
+    SampleSynth::SampleSynthPresetData    params;
+    PerformanceStore::SampleSynthKitSlot  slots[PerformanceStore::kMaxSampleSynthSlots];
+
+    g_audio_suspended = true;
+    bool ok = PerformanceStore::LoadSampleSynthKit(slot, kit_name, sizeof(kit_name), &params,
+                                                     slots);
+    if(ok)
+    {
+        sample_synth_->ResetAllVoices();
+        sample_synth_->ApplyPreset(params);
+        size_t cursor       = 0;
+        int    loaded_count = 0;
+        for(int i = 0; i < PerformanceStore::kMaxSampleSynthSlots; i++)
+        {
+            if(slots[i].filename[0] == '\0')
+            {
+                sample_synth_->ClearSlot(i);
+                continue;
+            }
+            if(cursor >= sample_synth_arena_capacity_)
+            {
+                sample_synth_->ClearSlot(i);
+                continue;
+            }
+            size_t len = 0;
+            bool   file_ok
+                = PerformanceStore::ImportWav(slots[i].filename, sample_synth_arena_l_ + cursor,
+                                                sample_synth_arena_r_ + cursor,
+                                                sample_synth_arena_capacity_ - cursor, &len,
+                                                nullptr, PerformanceStore::kSampleSynthFolder);
+            if(!file_ok || len == 0)
+            {
+                sample_synth_->ClearSlot(i);
+                continue;
+            }
+            sample_synth_->LoadSlot(i, sample_synth_arena_l_ + cursor,
+                                      sample_synth_arena_r_ + cursor, (int32_t)len,
+                                      slots[i].chromatic, slots[i].root_note, slots[i].low_note,
+                                      slots[i].high_note, slots[i].volume01);
+            cursor += len;
+            loaded_count++;
+        }
+        snprintf(sample_synth_legacy_loaded_name_, sizeof(sample_synth_legacy_loaded_name_), "%s",
+                  kit_name);
+        snprintf(sample_synth_legacy_status_, sizeof(sample_synth_legacy_status_), "Loaded (%d)",
+                  loaded_count);
+    }
+    else
+    {
+        snprintf(sample_synth_legacy_status_, sizeof(sample_synth_legacy_status_), "Fail:%s",
                   PerformanceStore::GetLastError());
     }
     g_audio_suspended = false;
@@ -8757,14 +9223,6 @@ void Ui::LoadSampleSynthFileIntoEngine(const char* category_folder, const char* 
 {
     if(!sample_synth_ || !category_folder || !filename || filename[0] == '\0')
         return;
-
-    int category_index = -1;
-    for(int i = 0; i < kSampleSynthSoundCategoryCount; i++)
-        if(strcmp(kSampleSynthCategoryFolders[i], category_folder) == 0)
-        {
-            category_index = i;
-            break;
-        }
 
     // Current ADSR/filter/output/pan/send settings are deliberately
     // left untouched -- see sample_synth_preset_mode_sounds_'s own doc
@@ -8831,7 +9289,8 @@ void Ui::LoadSampleSynthFileIntoEngine(const char* category_folder, const char* 
             sample_synth_loaded_kit_name_[0] = '\0';
             snprintf(sample_synth_loaded_sound_name_, sizeof(sample_synth_loaded_sound_name_),
                       "%s", filename);
-            sample_synth_loaded_sound_category_ = category_index;
+            snprintf(sample_synth_loaded_sound_category_,
+                      sizeof(sample_synth_loaded_sound_category_), "%s", category_folder);
             snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "Loaded (%d)",
                       loaded_count);
         }
@@ -8860,7 +9319,7 @@ void Ui::LoadSampleSynthFileIntoEngine(const char* category_folder, const char* 
         // ParseNoteNameFromFilename()'s own comment. Falls back to C4
         // only for files that never claimed a pitch in the first place.
         uint8_t root_note = 60;
-        ParseNoteNameFromFilename(filename, &root_note);
+        PerformanceStore::ParseNoteNameFromFilename(filename, &root_note);
         sample_synth_->LoadSlot(0, sample_synth_arena_l_, sample_synth_arena_r_, (int32_t)len,
                                   /*chromatic=*/true, root_note, /*low_note=*/0,
                                   /*high_note=*/127, /*volume01=*/0.8f);
@@ -8868,7 +9327,8 @@ void Ui::LoadSampleSynthFileIntoEngine(const char* category_folder, const char* 
         sample_synth_loaded_kit_name_[0] = '\0';
         snprintf(sample_synth_loaded_sound_name_, sizeof(sample_synth_loaded_sound_name_), "%s",
                   filename);
-        sample_synth_loaded_sound_category_ = category_index;
+        snprintf(sample_synth_loaded_sound_category_,
+                  sizeof(sample_synth_loaded_sound_category_), "%s", category_folder);
         snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "Loaded");
     }
     else
@@ -8884,7 +9344,18 @@ void Ui::TriggerLoadSampleSynthSound()
     if(sample_synth_kit_cursor_ < 0 || sample_synth_kit_cursor_ >= sample_synth_sound_count_
        || sample_synth_sound_category_ < 0)
         return;
-    LoadSampleSynthFileIntoEngine(kSampleSynthCategoryFolders[sample_synth_sound_category_],
+    // Category 0 ("Sounds") is one real folder; category 1 ("Captured")
+    // is two combined (CAPTURED1 then CAPTURED2) -- see
+    // sample_synth_sound_captured1_count_'s own comment in ui.h for the
+    // split point.
+    const char* category_folder;
+    if(sample_synth_sound_category_ == 0)
+        category_folder = PerformanceStore::kSampleSynthSoundsFolder;
+    else
+        category_folder = sample_synth_kit_cursor_ < sample_synth_sound_captured1_count_
+                               ? "CAPTURED1"
+                               : "CAPTURED2";
+    LoadSampleSynthFileIntoEngine(category_folder,
                                     sample_synth_sound_names_[sample_synth_kit_cursor_]);
 }
 
@@ -8900,13 +9371,13 @@ void Ui::TriggerLoadSampleSynthFavorite()
 
 void Ui::TriggerAddSampleSynthFavorite()
 {
-    if(sample_synth_loaded_sound_name_[0] == '\0' || sample_synth_loaded_sound_category_ < 0)
+    if(sample_synth_loaded_sound_name_[0] == '\0' || sample_synth_loaded_sound_category_[0] == '\0')
     {
         snprintf(sample_synth_favorite_status_, sizeof(sample_synth_favorite_status_),
                   "Nothing loaded");
         return;
     }
-    const char* category_folder = kSampleSynthCategoryFolders[sample_synth_loaded_sound_category_];
+    const char* category_folder = sample_synth_loaded_sound_category_;
 
     g_audio_suspended = true;
     static PerformanceStore::SampleSynthFavorite favs[PerformanceStore::kMaxSampleSynthFavorites];
@@ -9552,7 +10023,14 @@ void Ui::OnSaveLoadProgress(float progress01)
     // benefit -- a few redraws a second is plenty for a progress bar.
     static uint32_t call_count = 0;
     call_count++;
-    if(call_count % 8 != 0 && progress01 < 0.999f)
+    // Always draw the first and last frame of any sequence -- only
+    // throttle the ones in between. Without the >0.001f half of this,
+    // a short batch (e.g. a 2-3 file Import sweep) could hit every
+    // multiple of 8 only after the whole thing's already done, so the
+    // very first frame the user ever saw was 100% -- the overlay
+    // looked like it "didn't come up straight away" when really it
+    // just never got a turn to draw at all until the end.
+    if(call_count % 8 != 0 && progress01 > 0.001f && progress01 < 0.999f)
         return;
 
     OneBitGraphicsDisplay* d = g_progress_disp;
@@ -9569,4 +10047,9 @@ void Ui::OnSaveLoadProgress(float progress01)
     if(w > 0)
         d->DrawRect(1, 33, w, 39, true, true);
     d->Update();
+}
+
+void Ui::OnSampleSynthImportFileProgress(float sub01)
+{
+    OnSaveLoadProgress(g_progress_file_base01 + sub01 * g_progress_file_span01);
 }

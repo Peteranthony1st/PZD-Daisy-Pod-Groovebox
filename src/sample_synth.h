@@ -152,6 +152,10 @@ class SampleSynth
     void  SetDelaySend01(float v01) { delay_send01_ = v01; }
     float GetDelaySend01() const { return delay_send01_; }
 
+    // See SampleSynthPresetData::mono_choke's own comment.
+    void SetMonoChoke(bool v) { mono_choke_ = v; }
+    bool GetMonoChoke() const { return mono_choke_; }
+
     // Same PRE-limiter tap convention as DexedSynth::IsLimiting()/
     // GetPreLimiterLevel01() -- see those for the full reasoning (a
     // post-tanhf()/post-output_level_/post-pan check could never
@@ -185,6 +189,20 @@ class SampleSynth
         float   pan01           = 0.5f;
         float   reverb_send01   = 0.f;
         float   delay_send01    = 0.f;
+        // Appended, not inserted -- see PerformanceStore's own
+        // kSampleSynthKitDataV2Size comment for why field order here
+        // matters for old-kit-file compatibility. One-shot (non-
+        // chromatic) voices only: a new pad choke every other one-shot
+        // voice instead of layering over it. Off by default (matches
+        // every kit saved before this existed, and a real drum kit's
+        // independent kick/snare/hihat pads should keep overlapping
+        // freely) -- PerformanceStore::ImportAifDrumPack() turns it on
+        // for its own fresh imports specifically, since every pad
+        // there is a sequential slice of one continuous recording
+        // (confirmed against real op1fun break packs), not an
+        // independent sound, so two of them ringing at once is never
+        // musically intended.
+        bool mono_choke = false;
     };
     void                   ApplyPreset(const SampleSynthPresetData& p);
     SampleSynthPresetData  CapturePreset() const;
@@ -223,6 +241,20 @@ class SampleSynth
     // wrapping at the ends would fabricate a real discontinuity).
     void RenderVoice(Voice& v, float& out_l, float& out_r);
 
+    // The actual fade duration for a one-shot of this length -- never
+    // more than half the slice itself. kOneShotTailFadeSamples applied
+    // as a flat, unscaled duration was a real, confirmed-on-hardware
+    // bug: a splice shorter than that window (op-1 break slices range
+    // from tens of ms to multiple seconds) had `remaining < window`
+    // true from its very FIRST sample, so the whole hit played back
+    // already attenuated from the start -- for short enough slices,
+    // near silent the whole way through, not just faded at the tail.
+    static float OneShotFadeWindow(int32_t slot_len)
+    {
+        float half = (float)slot_len * 0.5f;
+        return kOneShotTailFadeSamples < half ? kOneShotTailFadeSamples : half;
+    }
+
     float sample_rate_ = 48000.f;
 
     // Pitch bend + mod wheel (vibrato) -- see SetPitchBend14bit()/
@@ -235,6 +267,17 @@ class SampleSynth
     static constexpr float kPitchBendSemitones  = 2.f; // same range Dexed's own default uses
     static constexpr float kVibratoHz           = 5.f;
     static constexpr float kVibratoMaxSemitones = 0.5f; // depth at full mod wheel
+    // ~40ms @ 48kHz (bumped from ~20ms -- still audibly clicking there,
+    // confirmed on hardware, so duration was still the limiting factor
+    // rather than the fade mechanism itself). Shared by Process() (a
+    // one-shot's own natural end) and NoteOn() (choking an overlapping
+    // one-shot when mono_choke_ is on) -- both need the same forced
+    // fade so neither path ever stops a one-shot with a hard, click-
+    // producing discontinuity. Real op-1 break slices are cut wherever
+    // the next hit begins, not at a zero-crossing, so without this the
+    // buffer's own last sample is often far from silent.
+    static constexpr float kOneShotTailFadeSamples = 1920.f;
+    bool  mono_choke_        = false; // see SampleSynthPresetData::mono_choke
     float pitch_bend01_      = 0.f; // -1..1, 0 = center
     float pitch_bend_rate_   = 1.f; // 2^(bend_semitones/12), cached by the setter
     float mod_wheel01_       = 0.f;

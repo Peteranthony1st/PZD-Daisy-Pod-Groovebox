@@ -120,6 +120,28 @@ void SampleSynth::NoteOn(uint8_t note, uint8_t velocity)
     // its sample at native pitch regardless of which key triggered it.
     v.read_inc = s.chromatic ? powf(2.f, ((float)note - (float)s.root_note) / 12.f) : 1.f;
     v.adsr.Retrigger(false);
+    if(!s.chromatic && mono_choke_)
+    {
+        // See SampleSynthPresetData::mono_choke's own comment -- a new
+        // pad on a break-style kit replaces whatever other one-shot
+        // was still ringing, instead of layering over it. Fast-forward
+        // into the SAME tail-fade window Process() already applies at
+        // a one-shot's natural end (rather than freeing the slot here
+        // outright) so the choked voice fades out instead of cutting
+        // off with a click.
+        for(int i = 0; i < kMaxVoices; i++)
+        {
+            if(i == vi)
+                continue;
+            Voice& other = voices_[i];
+            if(other.slot < 0 || slots_[other.slot].chromatic)
+                continue;
+            int32_t other_len  = slots_[other.slot].len;
+            float   fade_start = (float)other_len - OneShotFadeWindow(other_len);
+            if(other.read_pos < fade_start)
+                other.read_pos = fade_start;
+        }
+    }
     __enable_irq();
 }
 
@@ -129,13 +151,22 @@ void SampleSynth::NoteOff(uint8_t note)
     {
         if(voices_[i].held_note == (int)note)
         {
-            // ForceRelease() (not just clearing held_note) is the real
-            // fix for a confirmed-on-hardware stuck note found in
-            // EnsembleSynth -- this engine shares the identical risk
-            // (same gate-sampled daisysp::Adsr pattern). See
-            // Adsr::ForceRelease()'s own doc comment for the full
-            // mechanism.
-            voices_[i].adsr.ForceRelease();
+            // One-shot/drum slots (non-chromatic) ignore note-off
+            // entirely -- see Process()'s own comment on why. Calling
+            // ForceRelease() here anyway would fight the gate it forces
+            // true every sample right after.
+            bool one_shot
+                = voices_[i].slot >= 0 && !slots_[voices_[i].slot].chromatic;
+            if(!one_shot)
+            {
+                // ForceRelease() (not just clearing held_note) is the real
+                // fix for a confirmed-on-hardware stuck note found in
+                // EnsembleSynth -- this engine shares the identical risk
+                // (same gate-sampled daisysp::Adsr pattern). See
+                // Adsr::ForceRelease()'s own doc comment for the full
+                // mechanism.
+                voices_[i].adsr.ForceRelease();
+            }
             voices_[i].held_note = -1; // release tail keeps rendering via adsr
         }
     }
@@ -147,6 +178,12 @@ void SampleSynth::AllNotesOff()
     {
         voices_[i].adsr.ForceRelease();
         voices_[i].held_note = -1;
+        // One-shot voices ignore the ForceRelease above (their gate is
+        // forced true in Process(), see its own comment) -- a real
+        // panic/kit-switch needs to silence them directly too, or
+        // they'd keep playing through it.
+        if(voices_[i].slot >= 0 && !slots_[voices_[i].slot].chromatic)
+            voices_[i].slot = -1;
     }
 }
 
@@ -188,25 +225,42 @@ void SampleSynth::RenderVoice(Voice& v, float& out_l, float& out_r)
         return;
     }
 
-    int   idx0 = (int)v.read_pos;
-    float frac = v.read_pos - (float)idx0;
-    if(idx0 < 0)
+    int   idx1 = (int)v.read_pos;
+    float frac = v.read_pos - (float)idx1;
+    if(idx1 < 0)
     {
-        idx0 = 0;
+        idx1 = 0;
         frac = 0.f;
     }
-    else if(idx0 >= s.len)
+    else if(idx1 >= s.len)
     {
-        idx0 = s.len - 1;
+        idx1 = s.len - 1;
         frac = 0.f;
     }
-    // Clamp, don't wrap, at the buffer's ends -- same reasoning
-    // GranularEngine::RenderGrain() documents: a one-shot sample is
-    // not a seamless loop, so interpolating from the last sample back
-    // to the first would fabricate a real discontinuity/click.
-    int idx1 = idx0 + 1 < s.len ? idx0 + 1 : idx0;
-    out_l = (s.buf_l[idx0] * (1.f - frac) + s.buf_l[idx1] * frac) * s.volume01;
-    out_r = (s.buf_r[idx0] * (1.f - frac) + s.buf_r[idx1] * frac) * s.volume01;
+    // Catmull-Rom cubic, not 2-point linear -- same upgrade, same
+    // reasoning, as Resampler44_1to48::Push()'s own doc comment:
+    // linear interpolation of a pitch-shifted read is a known source
+    // of audible imaging, and it gets WORSE the further read_inc
+    // departs from 1.0 -- confirmed on real hardware as a "crackle"
+    // whose rate visibly tracked pitch (slower on low notes, faster on
+    // high ones), not a fixed click, which is exactly this artifact's
+    // signature rather than e.g. a decode/clipping bug. Clamp (don't
+    // wrap) at both ends, same "one-shot sample isn't a seamless loop"
+    // reasoning this function already applied to the old 2-point read.
+    int idx0 = idx1 > 0 ? idx1 - 1 : 0;
+    int idx2 = idx1 + 1 < s.len ? idx1 + 1 : idx1;
+    int idx3 = idx2 + 1 < s.len ? idx2 + 1 : idx2;
+    auto catmull_rom = [](float p0, float p1, float p2, float p3, float t) {
+        float t2 = t * t;
+        float t3 = t2 * t;
+        return 0.5f
+               * (2.f * p1 + (p2 - p0) * t + (2.f * p0 - 5.f * p1 + 4.f * p2 - p3) * t2
+                  + (3.f * p1 - p0 - 3.f * p2 + p3) * t3);
+    };
+    out_l = catmull_rom(s.buf_l[idx0], s.buf_l[idx1], s.buf_l[idx2], s.buf_l[idx3], frac)
+            * s.volume01;
+    out_r = catmull_rom(s.buf_r[idx0], s.buf_r[idx1], s.buf_r[idx2], s.buf_r[idx3], frac)
+            * s.volume01;
 
     // Global pitch bend/vibrato multiplier, recomputed once per sample
     // in Process() -- see SetPitchBend14bit()/SetModWheel01()'s own
@@ -285,6 +339,7 @@ void SampleSynth::ApplyPreset(const SampleSynthPresetData& p)
     SetPan01(p.pan01);
     SetReverbSend01(p.reverb_send01);
     SetDelaySend01(p.delay_send01);
+    SetMonoChoke(p.mono_choke);
 }
 
 SampleSynth::SampleSynthPresetData SampleSynth::CapturePreset() const
@@ -301,6 +356,7 @@ SampleSynth::SampleSynthPresetData SampleSynth::CapturePreset() const
     p.pan01           = pan01_;
     p.reverb_send01   = reverb_send01_;
     p.delay_send01    = delay_send01_;
+    p.mono_choke      = mono_choke_;
     return p;
 }
 
@@ -358,17 +414,62 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
             Voice& v = voices_[vi];
             if(v.slot < 0)
                 continue;
-            bool gate = v.held_note >= 0;
-            float env = v.adsr.Process(gate);
-            if(!gate && !v.adsr.IsRunning())
+            const SampleSlot& vs = slots_[v.slot];
+            // Non-chromatic (drum/one-shot) slots ignore note-off's hold
+            // duration entirely, same "drum pad plays its sample at
+            // native pitch regardless of which key triggered it" design
+            // NoteOn() already applies to pitch -- extended here to
+            // duration. Without this, a brief MIDI tap (completely
+            // normal for programming a drum hit) still releases this
+            // voice via the default ~18ms release time almost the
+            // instant it starts, truncating anything longer than a
+            // very short one-shot to a near-silent snippet -- confirmed
+            // as the real cause of imported drum-break slices sounding
+            // "cut short"/full of gaps, not a slicing bug. gate forces
+            // true here so NoteOff() (which skips ForceRelease() for
+            // these slots, see its own comment) can't end them early;
+            // they instead free themselves below once read_pos reaches
+            // the sample's own natural end.
+            bool  one_shot = !vs.chromatic;
+            bool  gate     = one_shot ? true : v.held_note >= 0;
+            float env      = v.adsr.Process(gate);
+            if(!one_shot && !gate && !v.adsr.IsRunning())
             {
                 v.slot = -1; // fully idle -- stop paying for this voice at all
                 continue;
             }
+            // One-shots now play all the way to the buffer's own last
+            // sample instead of being cut off by note-off's release
+            // (see above) -- but a real op-1 drum-break slice is cut
+            // wherever the NEXT hit begins, not at a zero-crossing, so
+            // its last sample is often far from silent. Stopping dead
+            // there (confirmed on real hardware as an audible click at
+            // the end of every closely-packed hit, e.g. a 22-slice
+            // break) needs the same short forced fade a sampler would
+            // apply at a one-shot's tail regardless of source content.
+            // Shared with NoteOn()'s own mono_choke_ handling -- see
+            // OneShotFadeWindow()'s own doc comment for why this can't
+            // just be the fixed kOneShotTailFadeSamples duration.
+            float tail_fade = 1.f;
+            if(one_shot)
+            {
+                float window    = OneShotFadeWindow(vs.len);
+                float remaining = (float)vs.len - v.read_pos;
+                if(remaining < window)
+                    tail_fade = remaining > 0.f ? remaining / window : 0.f;
+            }
             float vl, vr;
             RenderVoice(v, vl, vr);
-            mix_l += vl * env;
-            mix_r += vr * env;
+            mix_l += vl * env * tail_fade;
+            mix_r += vr * env * tail_fade;
+            if(one_shot && v.read_pos >= (float)vs.len - 1.f)
+            {
+                // Sample has fully played out (this was its last real
+                // sample) -- free the voice now, independent of
+                // whatever the key is still doing.
+                v.slot       = -1;
+                v.held_note = -1;
+            }
         }
 
         // Capture/Trim's "Play" preview -- see PlayPreview()'s own
