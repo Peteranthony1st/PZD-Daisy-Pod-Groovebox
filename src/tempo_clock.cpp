@@ -19,7 +19,7 @@ void TempoClock::Init(float sample_rate)
     bars_                 = 4;
     locked_               = false;
     metronome_enabled_    = true;
-    metronome_vol_        = 0.5f;
+    metronome_vol_        = 0.30f;
     phase_samples_        = 0.0;
     beat_in_bar_          = 0;
     bar_in_loop_          = 0;

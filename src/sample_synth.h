@@ -43,9 +43,12 @@ class SampleSynth
     // [low_note,high_note] around root_note, same 2^((note-root)/12)
     // formula GranularEngine::NoteOn() already uses.
     void ClearSlot(int index);
+    // pitch_offset_semis defaults to 0 (today's exact behavior for
+    // every existing caller) -- see SetSlotPitchOffsetSemis()'s own
+    // comment for what a non-zero value does.
     void LoadSlot(int index, const float* buf_l, const float* buf_r, int32_t len,
                    bool chromatic, uint8_t root_note, uint8_t low_note, uint8_t high_note,
-                   float volume01);
+                   float volume01, int8_t pitch_offset_semis = 0);
     bool  SlotHasSample(int index) const { return index >= 0 && index < kMaxSampleSlots && slots_[index].len > 0; }
 
     // Capture/Trim's own "Play" button (Ui::SampleSynthParamPage::Trim)
@@ -156,6 +159,29 @@ class SampleSynth
     void SetMonoChoke(bool v) { mono_choke_ = v; }
     bool GetMonoChoke() const { return mono_choke_; }
 
+    // SMPVO's own Tune page -- Mono/Poly for CHROMATIC content, a
+    // deliberately different mechanism from mono_choke_ above (that
+    // one's specifically for one-shot/drum pads choking each other,
+    // with a fade-out window; this is classic monophonic-synth "last
+    // note wins," where the displaced note just gets a normal release
+    // via its own existing gate/ADSR, since chromatic content already
+    // responds to NoteOff -- see NoteOn()'s own comment). Off (Poly)
+    // by default.
+    void SetChromaticMono(bool v) { chromatic_mono_ = v; }
+    bool GetChromaticMono() const { return chromatic_mono_; }
+
+    // Setup page's own Tune knob -- a live poke, no reload needed (the
+    // buffer pointer/len are untouched, only this one field is read at
+    // NoteOn() time, see that function's own comment). Deliberately a
+    // flat additive offset applied to BOTH chromatic and one-shot
+    // slots the same way: for a one-shot (drum) slot, which otherwise
+    // always plays at native pitch regardless of which key triggered
+    // it, this is the only way to transpose it at all; for a chromatic
+    // Sound it's equivalent to shifting root_note, just without
+    // needing to cache/restore the original root_note to compute a
+    // relative shift each time the knob moves.
+    void SetSlotPitchOffsetSemis(int index, int8_t semis);
+
     // Same PRE-limiter tap convention as DexedSynth::IsLimiting()/
     // GetPreLimiterLevel01() -- see those for the full reasoning (a
     // post-tanhf()/post-output_level_/post-pan check could never
@@ -185,7 +211,7 @@ class SampleSynth
         int32_t filter_mode     = (int32_t)FilterMode::Off;
         float   filter_cutoff01 = 1.f;
         float   filter_res01    = 0.f;
-        float   output_level01  = 0.8f;
+        float   output_level01  = 0.70f;
         float   pan01           = 0.5f;
         float   reverb_send01   = 0.f;
         float   delay_send01    = 0.f;
@@ -218,6 +244,9 @@ class SampleSynth
         uint8_t      low_note  = 0;
         uint8_t      high_note = 127;
         float        volume01  = 0.8f;
+        // See SetSlotPitchOffsetSemis()'s own comment -- only read for
+        // one-shot (chromatic==false) slots, at NoteOn() time.
+        int8_t       pitch_offset_semis = 0;
     };
     SampleSlot slots_[kMaxSampleSlots];
 
@@ -278,6 +307,7 @@ class SampleSynth
     // buffer's own last sample is often far from silent.
     static constexpr float kOneShotTailFadeSamples = 1920.f;
     bool  mono_choke_        = false; // see SampleSynthPresetData::mono_choke
+    bool  chromatic_mono_    = false; // see SetChromaticMono()'s own comment
     float pitch_bend01_      = 0.f; // -1..1, 0 = center
     float pitch_bend_rate_   = 1.f; // 2^(bend_semitones/12), cached by the setter
     float mod_wheel01_       = 0.f;
@@ -293,7 +323,7 @@ class SampleSynth
     static constexpr float kMinAdsrSeconds = 0.005f;
     static constexpr float kMaxAdsrSeconds = 3.f;
 
-    float output_level01_ = 0.8f;
+    float output_level01_ = 0.70f;
     float output_level_   = 1.f; // powf(output_level01_,2.5f)*1.4f, cached by the setter
     float pan01_          = 0.5f;
     float pan_l_gain_     = 0.5f;

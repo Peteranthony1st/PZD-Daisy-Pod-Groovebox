@@ -167,7 +167,7 @@ class TempoClock
     bool   locked_      = false;
 
     bool   metronome_enabled_ = true;
-    float  metronome_vol_     = 0.5f;
+    float  metronome_vol_     = 0.30f;
 
     // Free-running phase, in samples, since the last beat.
     double phase_samples_ = 0.0;

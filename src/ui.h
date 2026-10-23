@@ -239,8 +239,14 @@ class Ui
     // Same real-CPU-saving on/off gate, for the new Ensemble engine (see
     // main.cpp's AudioCallback()).
     bool IsEnsembleEnabled() const { return ensemble_enabled_; }
-    // Same real-CPU-saving on/off gate, for the new SampleSynth engine.
-    bool IsSampleSynthEnabled() const { return sample_synth_enabled_; }
+    // Same real-CPU-saving on/off gate, for the shared SampleSynth
+    // engine -- true (and Process() runs) whenever EITHER SMPVO or
+    // SMPDR is enabled (see sample_synth_voice_enabled_'s own comment
+    // for the mutual-exclusion interlock between the two).
+    bool IsSampleSynthEnabled() const
+    {
+        return sample_synth_voice_enabled_ || sample_synth_drum_enabled_;
+    }
     // Global:Looper, Button1 tap -- a REAL stop, not TogglePauseAll()'s
     // own phase-locked pause: main.cpp's AudioCallback() skips every
     // LooperLayer::Process() call entirely while this is false, so
@@ -371,8 +377,14 @@ class Ui
         // same Button1-tap convention as Granular/Dexed above.
         Ensemble,
         // Entry point into Screen::SampleSynth, plus the on/off toggle --
-        // same treatment as Granular/Dexed/Ensemble above.
-        SampleSynth,
+        // same treatment as Granular/Dexed/Ensemble above. Split into
+        // two entries (Voice/Drum, see Ui::SampleSynthMode's own
+        // comment) sharing that one Screen/engine underneath --
+        // enabling one forces the other's own enabled flag off (see
+        // sample_synth_voice_enabled_'s own comment), so at most one
+        // is ever actually processing audio.
+        SampleSynthVoice,
+        SampleSynthDrum,
         // On/off toggle only, same treatment as Granular/Dexed above --
         // but for the whole 4-layer loop system, and a REAL stop (see
         // IsLooperEnabled()'s doc comment), not TogglePauseAll()'s own
@@ -386,17 +398,32 @@ class Ui
         Mixer,
         kCount
     };
+    // Declared in this exact order because DrawSdMgmtScreen()'s own grid
+    // maps (int)SdMgmtFolder straight to a row-major cell index (4
+    // columns x 2 rows) -- reordering these moves which box each one
+    // draws in. Never persisted anywhere (sd_mgmt_folder_ always boots
+    // back to Performances), so reordering is otherwise free.
     enum class SdMgmtFolder
     {
-        Performances,
-        GranularPresets,
+        Performances,     // row0 col0
+        GranularPresets,  // row0 col1
+        // User-saved Dexed presets only, same "factory bank is built
+        // into firmware, nothing to delete there" split GranularPresets
+        // (whose own PRES001-009 starter presets ARE real deletable
+        // files, unlike Dexed's) already documents below -- reuses
+        // RefreshDexedPresetSlots()/dexed_preset_user_slots_
+        // DexedParamPage::Preset already maintains. Note this excludes
+        // any preset inside a named SysEx-import folder, same as that
+        // page's own User group -- see dexed_preset_user_slots_'s own
+        // comment.
+        DexedPresets,     // row0 col2
         // User-saved Ensemble presets only -- the factory bank isn't
         // real files (nothing to delete), same "factory + user, only
         // user is manageable here" split GranularPresets/Dexed's own
         // presets use, reusing the same RefreshEnsemblePresetSlots()/
         // ensemble_preset_user_slots_ EnsembleParamPage::Preset already
         // maintains.
-        EnsemblePresets,
+        EnsemblePresets,  // row0 col3
         // SampleSynth's own Captures (SampleSynthParamPage::Trim's B2
         // hold-to-save, see TriggerSaveSampleSynthCapture()) -- NOT
         // Kits, NOT ordinary Sounds, just the CAPTURED1/CAPTURED2
@@ -404,7 +431,21 @@ class Ui
         // (1-32 = CAPTURED1, 33-64 = CAPTURED2+32) even though the real
         // files underneath are two separate 1-32 numbered folders --
         // see sd_mgmt_captures_numbers_'s own comment.
-        SampleSynthCaptures,
+        SampleSynthCaptures,       // row1 col0
+        // SampleSynth's own Drum Kits (SAMPLES/DRUM KITS/) -- every Kit
+        // today only ever gets created via Pack Import, but once saved
+        // it's the persisted thing a user loads and keeps, same
+        // "manageable saved result, not raw import-staging material"
+        // status as a Dexed preset created via SysEx import.
+        SampleSynthKits,           // row1 col1
+        // SampleSynth's own SMPVO User presets (SAMPLES/VOICE PRESETS/)
+        // -- deliberately its own box, not combined with Drum User the
+        // way Captures combines CAPTURED1/CAPTURED2, since these two
+        // are a different engine *mode* each, not two halves of one
+        // thing.
+        SampleSynthVoiceUserPresets, // row1 col2
+        // SampleSynth's own SMPDR User presets (SAMPLES/DRUM PRESETS/).
+        SampleSynthDrumUserPresets,  // row1 col3
         kCount
     };
 
@@ -607,6 +648,31 @@ class Ui
         // DexedParamPage::FX's own Reverb/Delay toggle uses.
         Env,
         Mix, // Output Level + Pan
+        // Mono/Choke toggle (Button1, moved here from Mix -- see
+        // SampleSynthPresetData::mono_choke's own comment) plus two
+        // controls for an already-loaded Kit/Sound that Capture/Trim/
+        // Tune can't reach (that group only ever operates on a fresh
+        // capture's slot 0, by design -- see Tune's own comment above).
+        // K1 = Tune: -24..+24 semitones, live/instant, applied to
+        // EVERY currently active slot via SetSlotPitchOffsetSemis() --
+        // a flat additive shift that works the same for a chromatic
+        // Sound (no need to cache/restore its original root_note) and
+        // a Kit's one-shot pads (which otherwise always play at native
+        // pitch regardless of key -- see that setter's own comment).
+        // K2 = Slices: shows a
+        // *pending* count only (0-16, pre-loaded to 16 if nothing's
+        // configured yet, else whatever's already applied) -- Button2
+        // held confirms it, re-chopping whatever's currently loaded
+        // into that many equal-length one-shot pieces on consecutive
+        // keys from C2 (0 = off, revert to the kit's real per-slice
+        // layout). Both Tune and Slices are pure live/session state,
+        // same as Mono/Choke/Pan/Level -- there's no user-facing Save
+        // for a Kit at all (see Preset's own doc comment below), so
+        // nothing persists them, and a fresh load always starts at
+        // off/0. Available on every Kit, not just real OP-1 break
+        // imports (no reliable way to tell them apart), and
+        // deliberately independent of Mono/Choke (user's own call).
+        Setup,
         // Reverb send / Delay send, Button1/Button2 toggle -- same shape
         // as DexedParamPage::FX.
         FX,
@@ -661,13 +727,15 @@ class Ui
         // Load a pre-made kit -- LOAD-ONLY for now, see
         // sample_synth_kit_numbers_'s own doc comment in this header.
         Preset,
-        // Favorited individual Sounds (not Kits, not .snd multi-samples
-        // -- see sample_synth_favorites_'s own comment) -- a flat,
-        // category-free list so a sound you like from deep inside a
-        // category doesn't mean re-browsing it every time. Bookmarked
-        // from this page itself (Button1 bookmarks whatever's currently
-        // loaded -- see OnButton1Short()), this page is LOAD-ONLY, same
-        // shape as Preset.
+        // Real Save/Load presets, one list per face -- SMPVO's own
+        // references a Sound (see PerformanceStore::
+        // SampleSynthVoiceUserPreset's own comment), SMPDR's own
+        // references a Kit (SampleSynthDrumUserPreset) -- each bundled
+        // with a full settings snapshot (Filter/Env/Mix/FX, Tune/
+        // Mono-Poly, and for Drum, Setup's own Break Divide too).
+        // Replaced the old bookmark-only Favorite (reference, no
+        // settings) for exactly that reason. Same Save/Load shape
+        // every other engine's own Preset page already has.
         User,
         kCount
     };
@@ -891,6 +959,7 @@ class Ui
         SampleSynthEnvAD,
         SampleSynthEnvSR,
         SampleSynthMix,
+        SampleSynthSetup, // K1 = Tune, K2 = Slices (pending) -- see that page's own comment
         SampleSynthFxReverb,
         SampleSynthFxDelay,
         SampleSynthMidi, // K1 only -- which MIDI channel this engine listens on
@@ -899,7 +968,7 @@ class Ui
         SampleSynthTune,    // root note only
         SampleSynthImport, // no continuous knobs -- Button1/Button2 only
         SampleSynthPreset, // browses a list directly, no pickup used
-        SampleSynthUser,   // ditto -- browses the favorites list
+        SampleSynthUser,   // ditto -- browses whichever face's own User-preset list
         kCount
     };
     KnobContext CurrentKnobContext() const;
@@ -951,6 +1020,10 @@ class Ui
     void DrawFileScreen();
     void DrawSdMgmtScreen();
     static const char* SdMgmtFolderName(SdMgmtFolder f);
+    // Short form for the folder-picker grid's own tiny boxes (TomThumb,
+    // ~32px wide) -- SdMgmtFolderName()'s full names stay for the
+    // "now browsing X:" header once drilled into one.
+    static const char* SdMgmtFolderShortLabel(SdMgmtFolder f);
     void DrawExportScreen();
     void DrawSpeedScreen();
     void DrawGranularScreen();
@@ -1133,15 +1206,28 @@ class Ui
 
     // --- SD MGMT (Global:SdMgmt page) ------------------------------------
     // Returns whichever of file_slots_/granular_preset_user_slots_/
-    // ensemble_preset_user_slots_/sd_mgmt_captures_numbers_ applies to
-    // sd_mgmt_folder_ (refreshing it first if that folder's own dirty
-    // flag is set) and writes its count to *out_count.
+    // dexed_preset_user_slots_/ensemble_preset_user_slots_/
+    // sd_mgmt_captures_numbers_/sample_synth_kit_numbers_/
+    // sample_synth_voice_user_numbers_/sample_synth_drum_user_numbers_
+    // applies to sd_mgmt_folder_ (refreshing it first if that folder's
+    // own dirty flag is set) and writes its count to *out_count.
     const int* SdMgmtSlots(int* out_count);
     // Rebuilds sd_mgmt_captures_numbers_ -- see that field's own
     // comment. Called from SdMgmtSlots() when sd_mgmt_captures_dirty_
     // is set, same "refresh on demand, not every frame" convention as
     // RefreshGranularPresetSlots() etc.
     void RefreshSdMgmtCaptures();
+    // These 3 share their dirty flag/arrays with
+    // SampleSynthParamPage::Preset/User's own inline refresh (ui.cpp's
+    // DrawSampleSynthScreen()) -- same "whichever call runs first wins,
+    // both consumers trust the same flag" convention sd_mgmt_captures_
+    // itself doesn't need since it has no second consumer. Replicated
+    // here (not just the bare List* call) so the dirty flag's contract
+    // -- including the Kit name cache and each page's own cursor clamp
+    // -- stays identical no matter which page actually triggers it.
+    void RefreshSampleSynthKitSlots();
+    void RefreshSampleSynthVoiceUserSlots();
+    void RefreshSampleSynthDrumUserSlots();
     // Button1 hold (800ms) while browsing a folder's files: duplicates
     // the browsed file via PerformanceStore::Duplicate*() -- same
     // "WORKING..." full-screen progress overlay as Save/Load for
@@ -1422,7 +1508,7 @@ class Ui
     // curve ApplyKnobs() uses (see Ui::Init()), not hardcoded here, so
     // it stays consistent if that curve ever changes.
     float master_volume_   = 1.f;
-    float master_volume01_ = 0.5f; // raw 0..1 last set by the knob, for save/restore
+    float master_volume01_ = 0.70f; // raw 0..1 last set by the knob, for save/restore
     // On by default -- overridden by a saved startup default if one
     // exists (see ApplyStartupDefaults()/PerformanceStore::LoadPrefs()),
     // same as every other field here.
@@ -1478,6 +1564,25 @@ class Ui
     // SampleSynthParamPage::Env's own Button1/Button2 toggle (AD vs SR) --
     // same explicit-set convention as the FX toggles above.
     bool sample_synth_adsr_target_sr_  = false;
+    // SampleSynthParamPage::Setup's own K1 (Tune) -- live, applied to
+    // every active slot via SampleSynth::SetSlotPitchOffsetSemis() the
+    // moment the knob moves (see that setter's own comment); tracked
+    // here only so the page can display it and so a fresh Kit/Sound
+    // load can reset it to 0 via OnSampleSynthContentLoaded() -- same
+    // "settings don't leak from whatever was loaded before" reasoning
+    // SampleSynth::mono_choke_'s own live engine state already follows.
+    int8_t sample_synth_setup_tune_semis_ = 0;
+    // Same page's own K2 (Slices) -- a *pending* value only, not yet
+    // applied (Button2 held confirms it -- see
+    // ApplySampleSynthBreakDivide()'s own doc comment). Reset by
+    // OnSampleSynthContentLoaded() on every fresh load, to 16 if
+    // nothing's configured yet, else whatever the currently-loaded
+    // kit's own applied count already is.
+    int sample_synth_setup_pending_slices_ = 16;
+    // The count actually applied right now (0 = off) -- separate from
+    // the pending value above so re-entering the page shows "what's
+    // really active," not last session's unconfirmed knob position.
+    int sample_synth_setup_applied_slices_ = 0;
     float bypass_reverb_send01_ = 0.f; // see GetBypassReverbSend01()
     float bypass_mix_volume01_  = 0.8f; // see GetBypassMixVolume01()
     float bypass_mix_volume_    = 1.f;  // curved, set properly in the ctor below
@@ -1512,8 +1617,46 @@ class Ui
     bool dexed_enabled_    = false;
     // Same false default as Dexed's own -- see IsEnsembleEnabled().
     bool ensemble_enabled_ = false;
-    // Same false default as Dexed/Granular/Ensemble's own.
-    bool sample_synth_enabled_ = false;
+    // Same false default as Dexed/Granular/Ensemble's own. Split into
+    // two mutually-exclusive flags -- enabling one (Global:SMPVO/
+    // Global:SMPDR's own Button1 toggle) forces the other false, so
+    // the shared engine/arena/capture buffer is never claimed by both
+    // "faces" at once. See IsSampleSynthEnabled() (true if either is
+    // on) and SampleSynthMode's own comment.
+    bool sample_synth_voice_enabled_ = false;
+    bool sample_synth_drum_enabled_  = false;
+    // Which "face" of the shared SampleSynth engine Screen::SampleSynth
+    // currently shows -- NOT the same thing as which one is enabled
+    // (you can browse either screen's pages while both are disabled);
+    // this just decides which page set/title prefix is active and
+    // which Preset/Import only ever lists (Sounds for Voice, Kits for
+    // Drum). Set on entry via Global:SMPVO/Global:SMPDR's own encoder-
+    // click (same entry-point idiom as Granular/Dexed/Ensemble), which
+    // also triggers SwitchSampleSynthMode()'s own auto-restore.
+    enum class SampleSynthMode
+    {
+        Voice,
+        Drum
+    };
+    SampleSynthMode sample_synth_mode_ = SampleSynthMode::Voice;
+    // Whether a given SampleSynthParamPage belongs to the current (or
+    // a given) face -- Setup is Drum-only, Capture/Trim/Tune are
+    // Voice-only, everything else (Filter/Env/Mix/FX/MIDI/Import/
+    // Preset/User) is shared. Used by the page-rotate skip-loop in
+    // HandleEncoder() so rotating never lands you on a page that
+    // doesn't belong to the face you're actually on.
+    static bool IsSampleSynthPageValidForMode(SampleSynthParamPage page, SampleSynthMode mode);
+    // Called whenever Global:SMPVO/Global:SMPDR's own entry click
+    // actually changes which face is showing (not on a same-face re-
+    // click). Snapshots+restores Filter/Env/Mix/FX/Tune/Mono-Poly for
+    // whichever face is being left/entered (see sample_synth_cap_bank_/
+    // _imp_bank_'s own comment for Voice's own Cap/Imp split), and
+    // re-loads whatever Kit/Sound belongs to the face being entered --
+    // from SD for a Kit/Imported Sound (brief delay, since both share
+    // the one Kit-loading arena), instantly from RAM for a still-
+    // resident captured WAV (its own separate buffer, never touched
+    // by Drum mode at all).
+    void SwitchSampleSynthMode(SampleSynthMode target);
 
     uint32_t draw_counter_ = 0; // throttles the (slow, blocking-I2C) OLED redraw
 
@@ -1890,6 +2033,53 @@ class Ui
     char sample_synth_loaded_kit_name_[PerformanceStore::kMaxSampleSynthKitNameLen + 1] = {};
     char sample_synth_kit_status_[24]  = {};
     void TriggerLoadSampleSynthKit();
+    // Shared by TriggerLoadSampleSynthKit() (resolves slot from the
+    // browse cursor first) and SwitchSampleSynthMode() (already has a
+    // raw remembered slot number, no cursor/list involved) -- the real
+    // load logic, parameterized by slot directly.
+    bool LoadSampleSynthKitBySlot(int slot);
+    // The ORIGINAL per-pad manifest and combined arena span from the
+    // most recent Kit load -- cached (not just a local in
+    // TriggerLoadSampleSynthKit()) because Setup's own Button2 confirm
+    // can run much later, and always recomputes fresh from these, not
+    // from whatever the arena currently holds, so repeatedly changing
+    // Slices never compounds/drifts. Empty (real_pad_count_==0) while a
+    // single Sound is loaded instead of a Kit -- Setup's Slices/Button2
+    // is a no-op in that case, nothing to re-divide.
+    PerformanceStore::SampleSynthKitSlot
+            sample_synth_kit_real_slots_[PerformanceStore::kMaxSampleSynthSlots];
+    // Compacted (indices [0, real_pad_count_), load order, no gaps --
+    // matches the arena's own back-to-back layout) rather than a raw
+    // copy of the file's own possibly-sparse slot array.
+    int32_t sample_synth_kit_real_pad_len_[PerformanceStore::kMaxSampleSynthSlots] = {};
+    int     sample_synth_kit_real_pad_count_ = 0;
+    size_t  sample_synth_kit_real_total_len_ = 0;
+    // Setup page's own Break Divide -- see SampleSynthParamPage::Setup's
+    // own doc comment. Called by Setup's own Button2-held confirm
+    // (TriggerSampleSynthBreakDivideConfirm() below) to apply
+    // sample_synth_setup_pending_slices_ instantly, no reload needed --
+    // same "already in RAM, just recompute the pointers" reasoning
+    // this whole feature is built on, see DESIGN.md. Always recomputes
+    // from sample_synth_kit_real_slots_/_real_pad_count_/
+    // _real_total_len_ above, never from the arena's current state, so
+    // repeated changes never compound. divide_count==0 reverts to the
+    // kit's real, originally-loaded per-pad mapping; tune_semis
+    // applies to every active slot either way. A no-op while a single
+    // Sound is loaded (real_pad_count_==0).
+    void ApplySampleSynthBreakDivide(int divide_count, int8_t tune_semis);
+    // Setup's own Button2-held confirm -- applies
+    // sample_synth_setup_pending_slices_ (with the current
+    // sample_synth_setup_tune_semis_) and updates _applied_slices_ to
+    // match.
+    void TriggerSampleSynthBreakDivideConfirm();
+    // Resets sample_synth_setup_tune_semis_/_applied_slices_ to 0/0
+    // (there's nothing to restore them FROM -- see
+    // SampleSynthParamPage::Setup's own doc comment for why this is
+    // pure live/session state, never saved with a kit), and seeds
+    // _pending_slices_ to 16 -- see sample_synth_setup_pending_slices_'s
+    // own comment. Called at the end of every Kit/Sound load, same
+    // spirit as OnNewSampleSynthCapture().
+    void OnSampleSynthContentLoaded(int applied_slices, int8_t tune_semis);
 
     // --- Play an individual sound directly, no kit needed -- a direct
     // request after kits alone felt too all-or-nothing: Button1 (Idle,
@@ -1907,7 +2097,12 @@ class Ui
     // sample_synth_sound_category_'s own comment below) as well as the
     // plain "Sounds" category's own 32-item cap.
     static constexpr int kMaxSampleSynthSoundsListed = 64;
-    bool sample_synth_preset_mode_sounds_ = false;
+    // Follows sample_synth_mode_ directly now (true for Voice, false
+    // for Drum) -- no longer a user-facing toggle (SMPVO only ever has
+    // Sounds to browse, SMPDR only ever has Kits), see
+    // SwitchSampleSynthMode() for where this gets kept in sync. The
+    // default here matches sample_synth_mode_'s own default (Voice).
+    bool sample_synth_preset_mode_sounds_ = true;
     bool sample_synth_sounds_dirty_       = true; // re-scan on first entry into Sounds mode
     char sample_synth_sound_names_[kMaxSampleSynthSoundsListed]
                                    [PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
@@ -1923,31 +2118,49 @@ class Ui
     // The real SD folder sample_synth_loaded_sound_name_ came from
     // ("SOUNDS", "CAPTURED1", or "CAPTURED2") -- empty when nothing's
     // loaded (or a Kit is loaded instead of an individual Sound). Only
-    // tracked so the User/favorites page (see SampleSynthParamPage::
-    // User) knows what to bookmark.
+    // tracked for display/status only now -- sample_synth_voice_sound_
+    // name_/_category_ (its own comment) is the one Save/mode-switch
+    // actually read, since this one gets stomped by a Drum-side Kit load.
     char sample_synth_loaded_sound_category_[12] = {};
     void TriggerLoadSampleSynthSound();
-    // Shared by TriggerLoadSampleSynthSound()/TriggerLoadSampleSynthFavorite()
+    // Shared by TriggerLoadSampleSynthSound()/
+    // TriggerLoadSampleSynthVoiceUserPreset()/SwitchSampleSynthMode()
     // -- see its own doc comment in ui.cpp for why.
     void LoadSampleSynthFileIntoEngine(const char* category_folder, const char* filename);
 
-    // --- Favorited Sounds -- see SampleSynthParamPage::User's own
-    // comment and PerformanceStore::SampleSynthFavorite's own doc
-    // comment for the full reasoning (reference, not a copy; its own
-    // page so you're never stuck re-browsing a 32-item category for a
-    // sound you already know you like). B1 bookmarks whatever's
-    // currently loaded (sample_synth_loaded_sound_name_/_category_
-    // above); B2 is the same Open/Load as every other list; K1 scrolls
-    // -- same convention as Preset's own Kits/Sounds lists, just with
-    // no category level in front of it.
-    bool sample_synth_favorites_dirty_ = true; // re-scan (load from card) on first entry
-    PerformanceStore::SampleSynthFavorite
-         sample_synth_favorites_[PerformanceStore::kMaxSampleSynthFavorites];
-    int  sample_synth_favorite_count_  = 0; // how many of the above are actually filled
-    int  sample_synth_favorite_cursor_ = 0;
-    char sample_synth_favorite_status_[24] = {}; // "Added", "Already a favorite", "Full", etc.
-    void TriggerAddSampleSynthFavorite();
-    void TriggerLoadSampleSynthFavorite();
+    // --- SMPVO's own real User presets -- see
+    // PerformanceStore::SampleSynthVoiceUserPreset's own doc comment
+    // for why this replaced the old bookmark-only Favorite (reference
+    // plus a full settings snapshot now, not just a reference). Same
+    // Save/Load shape every other engine's own Preset page already
+    // has (save_load_mode_/save_as_new_ are the SAME shared fields
+    // Dexed/Ensemble/Grains Preset already use -- see those own
+    // comments): Button1 tap -> ChoosingSave (Knob1 picks Overwrite/
+    // New, Button1 held commits), Button2 tap -> BrowsingLoad (Knob1
+    // scrolls, Button2 held commits Load). K1 scrolls the list, same
+    // convention as Preset's own Kits/Sounds lists.
+    bool sample_synth_voice_user_dirty_ = true; // re-scan (load from card) on first entry
+    int  sample_synth_voice_user_numbers_[PerformanceStore::kMaxSampleSynthVoiceUserPresets] = {};
+    int  sample_synth_voice_user_count_       = 0;
+    int  sample_synth_voice_user_cursor_      = 0;
+    // 0 = nothing loaded from a User slot yet (Overwrite isn't offered
+    // -- same "0 means none" convention dexed_loaded_preset_slot_'s
+    // own factory/user split uses, just without a factory range here).
+    int  sample_synth_voice_user_loaded_slot_ = 0;
+    char sample_synth_voice_user_status_[24]  = {};
+    void TriggerSaveSampleSynthVoiceUserPreset(bool force_new);
+    void TriggerLoadSampleSynthVoiceUserPreset();
+
+    // --- SMPDR's own counterpart, same shape -- see
+    // PerformanceStore::SampleSynthDrumUserPreset's own doc comment.
+    bool sample_synth_drum_user_dirty_ = true;
+    int  sample_synth_drum_user_numbers_[PerformanceStore::kMaxSampleSynthDrumUserPresets] = {};
+    int  sample_synth_drum_user_count_       = 0;
+    int  sample_synth_drum_user_cursor_      = 0;
+    int  sample_synth_drum_user_loaded_slot_ = 0;
+    char sample_synth_drum_user_status_[24]  = {};
+    void TriggerSaveSampleSynthDrumUserPreset(bool force_new);
+    void TriggerLoadSampleSynthDrumUserPreset();
 
     // Sounds has exactly 2 fixed categories -- "Sounds" (0, plain
     // imported/dropped-in files in SAMPLES/SOUNDS/) and "Captured" (1,
@@ -2029,9 +2242,80 @@ class Ui
     // `root_note = 60 - semitones` (see ApplyKnobs()'s own
     // SampleSynthParamPage::Tune case), so 60 here means 0 semitones,
     // i.e. "play back exactly as captured" -- same feel as Grains' own
-    // Tune knob, which is centered on zero the same way.
-    bool    sample_synth_tune_chromatic_  = false;
+    // Tune knob, which is centered on zero the same way. The old
+    // "toggle chromatic on/off" is gone -- captures are always
+    // chromatic now (direct request, once SMPVO/SMPDR split so this
+    // engine's own melodic content never needs to be a fixed-pitch
+    // one-shot).
     uint8_t sample_synth_tune_root_note_  = 60;
+    // K2/B2 on the same Tune page -- Tune/Mono-Poly for whatever's
+    // loaded via Import/Preset/User, independent of the K1/B1 pair
+    // above (which are Capture-specific). Cap and an Imported Sound
+    // are mutually exclusive (loading one still clears the other) but
+    // each needs its own remembered setting that doesn't bleed into
+    // the other -- see sample_synth_voice_source_'s own comment for
+    // how these get applied/snapshotted on every switch.
+    int8_t sample_synth_imp_tune_semis_ = 0;
+    bool   sample_synth_cap_mono_       = false; // Poly by default, confirmed
+    bool   sample_synth_imp_mono_       = false;
+    // Which of Cap/Imp is the CURRENT source of SMPVO's slot 0+ --
+    // None right after a wipe (ClearSampleSynthSlotsForFreshCapture()/
+    // entering Voice mode with nothing loaded yet). Drives which bank
+    // SwitchSampleSynthMode()/a fresh capture/an Import-Preset-User
+    // load snapshots INTO before switching away, and which Tune/Mono-
+    // Poly pair (cap_* vs imp_*) a live knob/button change actually
+    // applies to right now.
+    enum class SampleSynthVoiceSource
+    {
+        None,
+        Captured,
+        Imported
+    };
+    SampleSynthVoiceSource sample_synth_voice_source_ = SampleSynthVoiceSource::None;
+    // Filter/Env/Mix/SR-FX snapshots for whichever of Cap/Imp is NOT
+    // currently active -- see SwitchSampleSynthMode()'s own comment
+    // for when these get captured/applied (a lazy snapshot-on-switch,
+    // not a live mirror on every knob tick, so Filter/Env/Mix/FX's own
+    // ApplyKnobs() cases need no changes at all).
+    SampleSynth::SampleSynthPresetData sample_synth_cap_bank_;
+    SampleSynth::SampleSynthPresetData sample_synth_imp_bank_;
+    // Same idea, one level up: Drum's own Filter/Env/Mix/SR-FX,
+    // snapshotted/restored across a Voice<->Drum mode switch the same
+    // way, so turning on a low-pass Filter while on Drum doesn't bleed
+    // into whatever Voice had set the next time you switch back.
+    SampleSynth::SampleSynthPresetData sample_synth_drum_bank_;
+    // What to reload when switching back into Voice mode with an
+    // Imported Sound as the last-known source (SampleSynthVoiceSource::
+    // Imported) -- separate from sample_synth_loaded_sound_name_/
+    // _category_ (which just reflect whatever's CURRENTLY resident in
+    // the shared arena right now, and get stomped by a Drum-mode Kit
+    // load) so a Drum-side load can never clobber what Voice itself
+    // should come back to.
+    char sample_synth_voice_sound_name_[PerformanceStore::kMaxSampleSynthWavNameLen + 1]     = {};
+    char sample_synth_voice_sound_category_[12] = {};
+    // Same idea for Drum mode's own last-known Kit slot -- separate
+    // from sample_synth_loaded_kit_slot_ for the same reason.
+    int sample_synth_drum_kit_slot_ = -1;
+    // Drum's own Setup state (Break Divide count + Tune), snapshotted
+    // when LEAVING Drum mode and re-applied after the Kit itself
+    // reloads when RETURNING -- otherwise LoadSampleSynthKitBySlot()'s
+    // own OnSampleSynthContentLoaded(0, 0) call resets Setup back to
+    // off/0 on every reload, silently dropping a split the moment you
+    // switch away and back (a real reported bug: "it has the sound but
+    // does not keep the split").
+    int    sample_synth_drum_remembered_slices_     = 0;
+    int8_t sample_synth_drum_remembered_tune_semis_ = 0;
+    // Each face remembers its OWN last-visited page, restored on
+    // switching back in -- Filter by default (power-on/first-ever
+    // visit to that face), but NOT force-reset on every switch after
+    // that (direct correction: "didn't want it to always reset to
+    // Filter, only on startup"). Keeps Voice's own browsing position
+    // independent of wherever Drum happens to be sitting -- without
+    // these, FX (valid on both) would otherwise carry the raw shared
+    // sample_synth_param_page_ straight across, landing Voice on
+    // whatever page Drum was last left on.
+    SampleSynthParamPage sample_synth_voice_last_page_ = SampleSynthParamPage::Filter;
+    SampleSynthParamPage sample_synth_drum_last_page_  = SampleSynthParamPage::Filter;
 
     void TriggerSampleSynthCaptureFromLayer();
     void RefreshSampleSynthImportFiles();
@@ -2054,12 +2338,18 @@ class Ui
     // selected (chromatic_/root_note_), so a Tune change calls this too
     // rather than needing its own apply function.
     void ApplySampleSynthTrim();
-    // Entering the Capture/Trim/Tune group from any other page --
-    // resets every voice and clears slots 1-23 (see
-    // SampleSynthParamPage::Capture's own comment for why this replaces
-    // whatever Sound/Kit was loaded), called once from the page-cycle
-    // handler, not per-page within the group.
+    // Landing on Capture itself (not just passing through on the way
+    // to some other page -- see ClearSampleSynthSlotsForFreshCapture()'s
+    // own comment for why the actual slot wipe moved out of here) --
+    // just resets the status line.
     void OnEnterSampleSynthCaptureGroup();
+    // Resets every voice and clears slots 1-23, replacing whatever
+    // Sound/Kit was loaded -- called right alongside each of the 3
+    // real "slot 0 now holds something new" moments (Direct Record,
+    // From Layer, Import), NOT on mere page entry/rotation through the
+    // Capture/Trim/Tune group (that used to wipe a loaded Kit just by
+    // rotating past it on the way elsewhere -- a real reported bug).
+    void ClearSampleSynthSlotsForFreshCapture();
     void TriggerSaveSampleSynthCapture();
 
     // --- SampleSynth pack import (SampleSynthParamPage::Import) ---------

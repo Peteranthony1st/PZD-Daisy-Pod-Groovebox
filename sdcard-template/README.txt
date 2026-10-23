@@ -10,13 +10,13 @@ matching feature (Save, Export, etc). This template exists for two
 folders specifically that do NOT get created automatically, so the
 matching Import feature would otherwise silently find nothing:
 
-  IMPORT/     Grains WAV import
-  DXIMPORT/   Dexed SysEx (.syx) import
+  GRAINS IMPORT/   Grains WAV import
+  DEXED IMPORT/    Dexed SysEx (.syx) import
 
-The rest (PERF/, GRNP/, DEXP/, DEXP/IMPORTS/, WAV/, custom/) are
-included too so a fresh card already looks like a populated one and you
-can see at a glance what each folder is for -- see the README.txt
-inside each one.
+The rest (PERFORMANCES/, GRAINS/, DEXED/, DEXED/IMPORTS/, EXPORTS/,
+custom/, SAMPLES/...) are included too so a fresh card already looks
+like a populated one and you can see at a glance what each folder is
+for -- see the README.txt inside each one.
 
 See this project's own README.md ("Building and flashing") for how to
 get the firmware itself (main.bin) onto the card.

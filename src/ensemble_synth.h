@@ -199,7 +199,7 @@ class EnsembleSynth
         int32_t filter_mode          = (int32_t)FilterMode::Off;
         float   filter_cutoff01      = 1.f;
         float   filter_res01         = 0.f;
-        float   output_level01       = 0.8f;
+        float   output_level01       = 0.70f;
         float   pan01                = 0.5f;
         float   reverb_send01        = 0.f;
         float   delay_send01         = 0.f;
@@ -260,7 +260,7 @@ class EnsembleSynth
     // Shared across all 8 voices (every voice's own osc.SetAmplitudes()
     // gets the same registration), cached here so Process() doesn't
     // need to rebuild the array per voice.
-    float drawbar_levels_[kNumDrawbars] = {0.60f, 0.00f, 0.25f, 0.00f, 0.10f, 0.00f, 0.05f};
+    float drawbar_levels_[kNumDrawbars] = {0.60f, 0.60f, 0.60f, 0.60f, 0.60f, 0.60f, 0.60f};
 
     // ONE shared instance, not one per voice -- see the class's own
     // doc comment for the real measured reason. Genuinely stereo
@@ -282,7 +282,7 @@ class EnsembleSynth
 
     // Same curve every other engine's own Output Level uses
     // (GranularEngine::SetOutputLevel01() etc.).
-    float output_level01_ = 0.8f;
+    float output_level01_ = 0.70f;
     float output_level_   = 1.f; // powf(output_level01_, 2.5f)*1.4f, cached by the setter
 
     // See IsLimiting()'s own comment. Checked in Process() against

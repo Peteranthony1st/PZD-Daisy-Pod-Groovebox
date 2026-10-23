@@ -2,9 +2,10 @@
 
 ## Credit
 
-This project's name and original concept are based on
+This project's original concept is based on
 [kooliha's Ouroboros Loop Station](https://github.com/kooliha/Ouroboros_Loop_Station)
-— a DIY 5-track stereo loop station for the Electrosmith Daisy Seed. This
+— a DIY 5-track stereo loop station for the Electrosmith Daisy Seed (the
+name has since diverged, grown well past a pure loop station). This
 firmware follows that project's per-layer loop-buffer struct as a direct
 structural template — the same field set (`buffer_l`/`buffer_r`/
 `record_len`/`write_idx`/`play_pos`/`speed`/`volume`/`pan`) and the same
@@ -1224,7 +1225,7 @@ once Dexed got a real Pan control (see below) -- a trailing field with a
 own tune01/pan01 fields used when THEY were added later, so every
 existing positional/aggregate initializer still gets a sensible neutral
 value. `output_level01` defaults
-to **0.6** (not 1.0), and since factory presets never set this field
+to **0.70** (not 1.0), and since factory presets never set this field
 themselves, that's the level every one of the 3129 factory presets
 actually loads at. User presets save/load to `DEXP/PRESnnn.DAT` via
 `PerformanceStore` (up to `kMaxDexedPresets = 3500` total slot numbers,
@@ -2051,6 +2052,46 @@ when held" with a different real cause (envelope shape, not
 registration or filtering) — still a clear pluck transient, just not
 dead when sustained.
 
+A later, separate request: "the first ensemble preset is a little weak
+let add another one with all bar values set to 50 as a starting
+preset." First read as "add an entry to the factory preset list" — a
+new preset ("Flat Drawbars") was inserted ahead of Warm Pad as the new
+slot 1. Corrected once the user clarified what "default" actually
+meant: "i asked for the ensemble default to have all bars set to 60%
+this means when first enabled it loads this patch" — not a preset the
+user has to browse to and select, but the actual state Ensemble boots
+into *before any preset is ever loaded*. That's a different piece of
+state entirely: `drawbar_levels_[kNumDrawbars]`'s own default member
+initializer in `EnsembleSynth` (previously `{0.60, 0.00, 0.25, 0.00,
+0.10, 0.00, 0.05}`, the asymmetric "fundamental-heavy" registration
+carried over from the old single-macro design), fed straight into
+`OscillatorBank::SetAmplitudes()` at `Init()` with no `ApplyPreset()`
+call in between — confirmed nothing else overwrites it at boot (no
+factory preset auto-loads, and the loaded-preset slot is pure runtime
+UI state, never persisted across a power cycle, per `performance_
+store.cpp`'s own prefs save/load). The "Flat Drawbars" factory-preset
+addition was reverted (back to 8 presets, Warm Pad first again) and
+`drawbar_levels_`'s own default changed to all 7 drawbars flat at
+`0.60` instead — so that's genuinely what plays the moment Ensemble is
+first enabled, no browsing required.
+
+### Default output levels rebalanced to 70% across the board
+
+A direct request to make a consistent, moderate starting volume the
+default everywhere rather than each engine carrying its own
+independently-chosen number: Dexed/Ensemble/SampleSynth/Grains' own
+live `output_level01_` (the per-engine Mixer-channel level) all moved
+from their previous 0.8 default to **0.70**, together with the Home
+screen's own `master_volume01_` (previously 0.5, the "main" overall
+volume) and each engine's own factory/new-preset `output_level01`
+default (Dexed 0.6, Ensemble 0.8, SampleSynth 0.8, all now 0.70 too) --
+so a freshly-loaded factory preset lands at the same level the Mixer
+channel itself now starts at, rather than the two quietly disagreeing.
+Grains' own `grain_volume01`/`scan_volume01` (the Grain-cloud/Scan-
+layer internal mix, a separate control from its Mixer-channel level)
+were moved to 0.70 each too, for the same "one consistent number"
+reasoning, replacing their previous 0.8/0.5 split.
+
 ### ADSR graphic and live scope, added for parity with Grains
 
 A direct request: "adsr needs the graphic that grains has and I would
@@ -2616,31 +2657,89 @@ universal rule.
 
 ## SD card management (Global:SdMgmt)
 
-Lets you browse 4 save categories — Performances, Grains Presets,
-Ensemble Presets, SampleSynth Captures — and Duplicate or Delete
-individual files directly from the Pod, no computer needed. Reuses the
-exact same cached slot-list arrays and dirty-flag/`Refresh*()`
-functions those save pages already scan and cache — no duplicate
-directory-scanning logic anywhere. The folder list outgrew the big
-default font once it hit 4 entries (the 4th crowded the footer
-divider); it now draws with `TomThumbDrawText()` instead, evenly
-spread across the body area — see that draw call's own comment for the
-baseline-vs-row-top mixup that caused the first attempt at this to draw
-"Performances" into the header.
-`DeleteDexedPreset()`/`DuplicateDexedPreset()` already exist in
-`PerformanceStore` with the identical shape, but **`SdMgmtFolder` has
-never actually been extended to cover Dexed Presets** — a real,
-currently-open gap (see *Known limitations* below), not a deliberate
-omission; the only way to remove a Dexed preset today is deleting its
-`DEXP/PRESnnn.DAT` file directly from a computer. SampleSynth's own
-Kits and ordinary Sounds aren't covered either (only its Captures
-category) — manage those directly on a computer under `SAMP/` and
-`SAMPLES/SOUNDS/`.
+Lets you browse every real user-save category on the card — currently
+**8**: Performances, Grains Presets, Dexed Presets, Ensemble Presets,
+and SampleSynth's own Captures, Kits, Voice User presets, and Drum User
+presets — and Duplicate or Delete individual files directly from the
+Pod, no computer needed. Grew from an original 4 (Performances/Grains/
+Ensemble/SampleSynth-Captures) on direct request to cover "user saves
+and captures from all engines"; deliberately narrowed to that exact
+scope rather than every real folder on the card — SampleSynth's own
+Sounds (`SAMPLES/SOUNDS/`, including its category subfolders) and the
+OP-1 pack-import staging folders were explicitly excluded, the former
+for needing its own category-then-file browse design the other 7
+categories' flat numbered lists don't, the latter because raw import
+inbox material is exactly the kind of thing a person would rather just
+clean up by hand on a computer than manage here.
+
+Reuses the exact same cached slot-list arrays and dirty-flag/
+`Refresh*()` functions those save pages already scan and cache for 5 of
+the 8 (Performances/Grains/Dexed/Ensemble/SampleSynth-Kits reuse their
+own page's existing cache; the 2 SampleSynth User-preset categories get
+their own small `RefreshSampleSynthVoiceUserSlots()`/
+`RefreshSampleSynthDrumUserSlots()`, written to fully replicate each
+one's existing shared-dirty-flag contract — including the Kit name
+cache and each page's own cursor clamp — not just the bare `List*()`
+call, since a cheaper partial refresh would have left the SampleSynth
+Preset page's own name cache stale the next time it was opened after a
+Delete/Duplicate run from here) — no duplicate directory-scanning logic
+anywhere.
+
+The folder picker outgrew a flat list once it reached 8 entries (even
+`TomThumbDrawText()`'s own tiny font, already needed once this hit 4,
+would have needed a scroll window or illegibly cramped rows at 8) — it's
+now a 4x2 grid instead, one 32x18px box per category, flush edge-to-edge
+(adjoining borders simply double up into one shared line, same look as
+a plain spreadsheet grid). The selected box fills solid with its label
+punched out in the display's "off" color so it reads as dark-on-light;
+every other box just gets an outline. `SdMgmtFolder`'s own declared
+order IS the grid's row-major cell order (0-3 top row, 4-7 bottom row)
+— reordering the enum moves which box something draws in, safe to do
+freely since `sd_mgmt_folder_` is never persisted (always boots back to
+Performances).
+
+Each box has its own short label (`SdMgmtFolderShortLabel()`: `PERF`/
+`GRAINS`/`DEXED`/`ENSM`/`CAPT`/`KITS`/`SMPVO`/`SMPDR`) — the same
+vocabulary now reused everywhere a bare slot number is shown on any
+engine's own page too (see *Slot-number display prefixes* below), kept
+deliberately distinct from `SdMgmtFolderName()`'s own longer names
+("Sampler Kits", "SMPVO User", etc.), which stay for the "now browsing
+X:" header once drilled into a box — the grid's own tiny cells have no
+room for those.
+
+Dexed Presets closes what used to be a real, open gap here:
+`DeleteDexedPreset()`/`DuplicateDexedPreset()` already existed in
+`PerformanceStore` with the identical shape (Dexed's own Preset page
+already used them), but `SdMgmtFolder` had never actually been extended
+to add a stop for it. SampleSynth's Kits/Voice-User/Drum-User presets
+needed real new backend work, by contrast — `List*()`/`NextFree*Slot()`
+already existed for all three (built alongside the User-preset save/
+load system itself, see *Splitting SampleSynth...* above), but no
+`Delete*()`/`Duplicate*()` pair did. Added following the exact template
+`DeleteGranularPreset()`/`DuplicateGranularPreset()` already set —
+reusing the same shared `DeleteFileGeneric()`/`CopyFileChunked()`/
+`CompactSlotsAfterDelete()` helpers every other category's own pair
+already calls, since none of the three (Kits/Voice-User/Drum-User) has
+a factory tier to protect, the same "every slot is user content" shape
+Granular's own pair already has.
+
+A real, easy-to-miss correctness issue surfaced while wiring the longer
+new folder names (see *SD card folder renaming* below) into these same
+functions: several existing path buffers (`char fname[24]` and similar,
+sized for the old short codes like `DEXP`/`SAMP`) were too small for
+paths like `SAMPLES/VOICE PRESETS/PRES099.DAT` — `snprintf()` would
+have silently *truncated* the filename rather than overflow anything,
+which is its own quiet kind of corruption (a truncated path either
+resolves to the wrong file or simply fails to open, not a crash).
+Caught by computing the real worst-case length for every renamed path
+and widening every buffer that builds one (`PERFORMANCES/PERF099.DAT`
+→ 32, `SAMPLES/DRUM KITS/KIT099.DAT` → 36, the two `SAMPLES/*
+PRESETS/PRES099.DAT` paths → 40) before ever running the new code on
+real hardware.
 
 - **Duplicate** (Button 1 held 800ms): byte-for-byte chunked copy into
   the next free slot in that category (`CopyFileChunked()`, shared by
-  all 3 categories at the `PerformanceStore` level, 2 of which are
-  actually reachable from this screen today, see above) — `FA_CREATE_NEW`,
+  every category at the `PerformanceStore` level) — `FA_CREATE_NEW`,
   not `FA_CREATE_ALWAYS`, so an
   unexpected filename collision fails loudly instead of silently
   overwriting something; any failure partway through deletes the partial
@@ -2804,8 +2903,11 @@ improvement over the original ~15s, confirmed clean on repeated
 Performance/Grains saves and loads.
 
 **A real bug this surfaced**: `TriggerLoadGranularPreset()` turned out
-to be the one load/save function in `ui.cpp` still missing its own
-`g_audio_suspended` guard (every other one already has it — see above).
+to be missing its own `g_audio_suspended` guard. At the time this was
+believed to be the *one* load/save function in `ui.cpp` still missing
+it — a later, more thorough audit (see *A fuller audit* below) found
+that claim was wrong; it just happened to be the one that had already
+failed loudly enough on real hardware to get noticed and fixed first.
 The old small chunking had apparently kept the audio-ISR-vs-SDMMC-DMA
 contention window narrow enough to avoid visibly tripping it; removing
 the chunk loop widened a Grains preset load into one long, uninterrupted
@@ -2823,6 +2925,60 @@ with the same full `g_audio_suspended` wrap every analogous function
 already uses — yes, this does silence Dexed and the Looper layers too
 for the ~1-2s a Grains load now takes, but real hardware testing showed
 that's genuinely not avoidable here, not an unnecessarily blunt hammer.
+
+### A fuller audit: more unguarded SD calls than the claim above suggested
+
+Direct question asked after the SD-speed optimization work above:
+whether import/capture/Performance-save-load are genuinely "heavy, OK
+for audio to stop for" while a Dexed/Ensemble/SampleSynth-Sound-or-Kit
+save/load is "light enough that it shouldn't need to." Rather than
+answer from memory, every `g_audio_suspended = true` site in `ui.cpp`
+was greped and mapped to its enclosing function, then every save/load/
+import/capture-sounding function *without* a hit was read in full to
+confirm whether it actually touches the SD card unguarded.
+
+The claim one section above ("Granular's load was the *one* missing
+guard") turned out to be stale and wrong by the time this ran:
+`TriggerLoadDexedPreset()` and `TriggerLoadEnsemblePreset()` had no
+guard at all (confirmed by reading both in full), and neither did the
+tiny struct-read at the top of the new `TriggerLoadSampleSynthVoiceUser
+Preset()`/`TriggerLoadSampleSynthDrumUserPreset()` (the heavier Kit/
+Sound reload each one triggers right after *is* separately guarded
+inside `LoadSampleSynthKitBySlot()`/`LoadSampleSynthFileIntoEngine()`,
+so only the small preset-file read itself was exposed). Three more,
+genuinely heavier functions were also found completely unguarded:
+`TriggerDexedSyxImport()` (reads one `.syx` then writes up to **32
+separate** `SaveDexedPreset()` files in a loop — the single heaviest
+unguarded call found, up to 33 real SD transactions with zero
+suspension), `TriggerSaveSampleSynthCapture()` (writes a trimmed
+Capture/Trim selection to SD), and `TriggerSampleSynthImport()` (the
+single-file Import page's own `ImportWav()` read).
+
+The physics explains why the user's own "heavy vs. light" framing is
+directionally reasonable but not the real safety boundary: the DMA-
+contention bug this project's own `g_audio_suspended` guard exists for
+(see *Audio suspended during save* above) is triggered by *any*
+concurrent `f_read()`/`f_write()` call while the audio ISR keeps
+running, not by how much data moves — the measured ~10.5ms fixed
+per-call overhead (see *Removing the chunk loop* above) is paid
+whether the payload is a 200-byte Dexed patch or a 20MB Performance.
+What actually scales with "heaviness" is the *number* of calls back to
+back (a Kit load's up to 24, a `.syx` bulk import's up to 33) and any
+CPU-bound decode/resample time sharing the same window — not whether an
+operation conceptually feels like "a sound" vs. "a project." An
+unguarded light call isn't safe-by-design, it's just a smaller,
+currently-untriggered instance of the same risk class Performance Save
+originally hit.
+
+On direct instruction, only the two genuinely heavy-but-unguarded gaps
+got fixed — `TriggerDexedSyxImport()`, `TriggerSaveSampleSynthCapture()`,
+and `TriggerSampleSynthImport()` all now wrap their SD work in
+`g_audio_suspended` the same way every other real write/import in this
+project already does. `TriggerLoadDexedPreset()`/
+`TriggerLoadEnsemblePreset()` were deliberately left unguarded — "very
+light," per that direct instruction — a conscious, requested trade-off
+rather than an oversight, now that the trade-off itself has been
+surfaced and named rather than left implicit.
 
 ### Save-file "bubbles"
 
@@ -3001,19 +3157,23 @@ A few things that are intentional, not bugs:
   vari-speed, they're live-performance controls that always reset to
   their defaults on boot and after Load — not part of a saved
   performance, and not covered by Startup Defaults either.
-- **No on-device Delete/Duplicate for Dexed or Ensemble Presets**:
-  `Global:SdMgmt` (see its own section above) only covers Performances
-  and Grains Presets — `DeleteDexedPreset()`/`DuplicateDexedPreset()`
-  and their Ensemble equivalents (`DeleteEnsemblePreset()`/
-  `DuplicateEnsemblePreset()`) already exist in `PerformanceStore` with
-  the identical shape, but `SdMgmtFolder` was never extended to add a
-  stop for either. The only way to remove one today is deleting its
-  `DEXP/PRESnnn.DAT`/`ENSP/PRESnnn.DAT` file directly on a computer —
-  safe for a plain User preset, but doing this to a Dexed preset covered
-  by a recorded Import folder (see *SysEx import* above) leaves that
-  folder's own manifest record pointing at a slot range with a hole in
-  it, since the manifest doesn't verify each slot still exists (Ensemble
-  has no import feature, so this specific risk doesn't apply there).
+- **SampleSynth Sounds aren't covered by `Global:SdMgmt`**: every other
+  real user-save category is (8 now — see *SD card management* above),
+  but Sounds live under category subfolders (`SAMPLES/SOUNDS/`,
+  `PIANO`, `MELLOTRON3`, etc.) rather than one flat numbered list, which
+  needs its own category-then-file browse design none of the other 8
+  needed — deliberately deferred rather than built in a hurry. Manage
+  those directly on a computer for now. The OP-1 pack-import staging
+  folders (`DRUM PACK IMPORT/`/`SOUND PACK IMPORT/`) aren't covered
+  either, by design — see that section's own reasoning above.
+- **Deleting a Dexed preset can leave a stale Import-folder manifest
+  record**: whether done from `Global:SdMgmt` (now wired in) or by
+  deleting the file directly on a computer, removing a preset that's
+  covered by a recorded SysEx Import folder (see *SysEx import* above)
+  leaves that folder's own manifest record pointing at a slot range with
+  a hole in it, since the manifest doesn't verify each slot still exists
+  on delete. Ensemble has no import feature, so this specific risk
+  doesn't apply there.
 - **No SD card hot-swapping while powered on**: the SD socket is
   hand-wired with no card-detect pin (see *Hardware* above), so the
   firmware has no way to know a card was physically pulled and
@@ -3437,6 +3597,289 @@ counter that could skip every frame of a short batch), and
 by a plain `ProgressFn`" shape `g_progress_disp` already uses) so a
 22-slice kit's own import now visibly increments 22 times, not once.
 
+### Setup page: Break Divide and a general Tune, for already-loaded content
+
+A real gap Capture/Trim/Tune can't fill: that whole group only ever
+operates on a fresh capture's slot 0 (`OnEnterSampleSynthCaptureGroup()`
+wipes every other slot the moment you rotate in from anywhere else, by
+design) -- there was no way to retune or re-chop a Kit or Sound once
+it's already loaded via Preset/User/Import. Direct request: "we need
+the tune screen to work for imported samples too." Decided, after
+discussion, to leave Capture/Trim/Tune exactly as-is (it's correctly
+scoped to captured audio) and add a new, separate page instead --
+`SampleSynthParamPage::Setup`, inserted right after Mix in the normal
+rotate sequence (not button-only/special-cased -- every other
+"alternate view" in this codebase, like Env's AD/SR toggle or FX's
+Reverb/Delay toggle, is an in-page flag, not a real page jump, but
+Setup genuinely needed its own Knob1/Knob2 context, so a real page is
+the honest shape here). Mono/Choke's own toggle moved here from Mix
+(Button1) -- Mix's own buttons go back to unused.
+
+**Why Break Divide is cheap.** `Ui::TriggerLoadSampleSynthKit()` loads
+every pad a Kit's manifest references into one shared arena
+(`sample_synth_arena_l_/r_`), back-to-back in original order, via a
+plain bump-allocator -- and `SampleSynth::SampleSlot` just stores a raw
+`buf_l`/`buf_r` pointer + `len` into that arena, no per-pad copy. Since
+a real OP-1 break's slices are already confirmed (above) to sit back-
+to-back with no gaps, the kit's *entire* combined recording is already
+sitting in RAM as one contiguous span the moment that load loop
+finishes. Re-chopping it into N equal pieces is therefore pure
+arithmetic over already-loaded memory (`Ui::ApplySampleSynthBreakDivide()`)
+-- no re-import, no extra SD writes, fully reversible. The ORIGINAL
+per-pad manifest and combined length are cached separately
+(`sample_synth_kit_real_slots_`/`_real_pad_len_`/`_real_pad_count_`/
+`_real_total_len_`) specifically so Setup's own Button2 confirm --
+which can run long after the initial load -- always recomputes fresh
+from the real layout rather than from whatever the arena currently
+holds, so flipping Slices back and forth repeatedly never compounds or
+drifts. Knob2 only ever shows a *pending* count (0-16, default-
+proposed 16) until Button2 is held 800ms to actually splice it --
+deliberately gated the same as every other hold-to-confirm batch
+action here, since unlike a plain scalar knob this is a real
+structural change to the kit's own pad layout. 0 means off: restore
+the kit's real, originally-imported per-pad mapping.
+
+Scope was explicitly widened past real OP-1 breaks on direct request
+("available on every [kit] as it would be hard for the device to
+distinguish") -- there's no reliable signal separating a genuine
+break import from a hand-assembled Kit of unrelated one-shots, so
+Break Divide is offered everywhere; results are only musically
+coherent on the former. Mono/Choke was explicitly kept independent --
+Break Divide does **not** force it on, left as the user's own call.
+
+**Tune needed a genuinely new engine mechanism, not just UI wiring.**
+A one-shot (`chromatic=false`) `SampleSlot` already always plays back
+at native pitch -- `NoteOn()`'s own `read_inc` hardcoded `1.f` for that
+case, by design, since a drum pad shouldn't retune itself based on
+which key triggered it. There is also no existing way to transpose a
+*whole* Kit at once (only per-pad `root_note`, which one-shot content
+doesn't even use). Added `SampleSlot::pitch_offset_semis` (new field)
+and a `SampleSynth::SetSlotPitchOffsetSemis()` live setter -- a flat,
+note-independent shift, folded additively into `read_inc` for BOTH the
+chromatic and one-shot cases:
+`powf(2, ((note-root)+pitch_offset_semis)/12)` chromatic,
+`powf(2, pitch_offset_semis/12)` one-shot. At the default offset of 0
+this is bit-for-bit identical to the old formula either way
+(`powf(2,0)==1`), so every existing kit/sound is unaffected until
+Setup's Tune is actually touched. Folding it in additively like this
+(rather than a separate `SetSlotRootNote()` that moves `root_note`
+itself) was a deliberate simplification: it needs no cached "original
+root_note" to compute a relative shift from each time the knob moves,
+since it's just one more term in an already-additive exponent -- the
+first version of this plan had a separate root-note setter and that
+caching requirement; dropped once the simpler unification was spotted.
+Applied live, the instant Knob1 moves, to every currently active slot
+(`SlotHasSample()`) -- same "+-24 semitones, dead center = 0" range/
+quantization as the existing Capture/Tune page.
+
+**Neither Tune nor Slices persist with a Kit, and that's correct, not
+a shortcut.** `SampleSynthParamPage::Preset` is explicitly LOAD-ONLY --
+"Button2 is the only way into BrowsingLoad itself... no 'Save' to
+reveal" (that page's own existing comment) -- and `SaveSampleSynthKit()`
+is, in fact, only ever called from `ImportAifDrumPack()` at import
+time, never from any user-facing action. So Mono/Choke, Pan, Level,
+and every other "per-kit" control already only ever live as session
+state, reset from the kit file's own saved defaults on every reload --
+Setup's Tune/Slices just follow that exact same, already-established
+convention (`Ui::sample_synth_setup_tune_semis_`/
+`_applied_slices_`/`_pending_slices_`, reset by
+`OnSampleSynthContentLoaded()` on every fresh Kit/Sound load). An
+earlier pass of this work actually added `break_divide_count`/
+`break_tune_semis` fields to `SampleSynthPresetData` itself, with a
+version-tolerant v3->v4 file bump mirroring `mono_choke`'s own v2->v3
+one -- reverted once it became clear nothing could ever actually write
+a non-default value into a kit file for that bump to protect, since no
+Save path exists. Building a real Save-Kit feature to make the setting
+persist was explicitly out of scope -- not asked for, and a materially
+bigger change than what was requested.
+
+**Two real bugs found once this got played with on real hardware.**
+First, reported as "loaded break, then sliced into 16, then sliced
+into 8... remaining 8 play the slots from when it was split to 16":
+`ApplySampleSynthBreakDivide()`'s own clearing sweep only ran from the
+new count up to `max(original pad count, new divide count)`, not
+accounting for a PREVIOUS, larger split -- re-splitting 16 down to 8
+only reloads slots `[0,8)`, so stopping the sweep there left slots 8-15
+still holding their old 16-way content untouched. Fixed by sweeping
+unconditionally all the way to `SampleSynth::kMaxSampleSlots` (cheap --
+`ClearSlot()` is a plain struct reset) rather than trying to track a
+tighter bound across repeated splits. Second, independently:
+`ApplySampleSynthBreakDivide()` was reassigning slot buffers without
+first calling `ResetAllVoices()`, unlike `TriggerLoadSampleSynthKit()`
+which does this deliberately -- a voice still sounding mid-split keeps
+referencing its slot by index, not content, so remapping that slot out
+from under it would briefly render whatever new audio now lives there
+until its next retrigger. Added the same `ResetAllVoices()` call Kit-
+load already makes, for the same reason.
+
+### Splitting SampleSynth into SMPVO (voice) and SMPDR (drum)
+
+Direct request, discussed at length before any code changed: one
+engine/screen trying to serve both melodic Sounds (Capture/Trim/Tune)
+and multi-pad drum Kits (Setup's own Break Divide) had grown into two
+genuinely different instruments sharing a UI. Split into two Global-
+menu entries/screens, **SMPVO** and **SMPDR** -- confirmed through
+discussion they're mutually exclusive (enabling one disables the
+other), which reframed this from "two engines" to "one engine, two
+faces."
+
+**Why not two independent engines.** Seriously considered first --
+worked out the real memory cost rather than guessing. The actual
+`SampleSynth` C++ object is only 1,552 bytes (confirmed via
+`arm-none-eabi-nm --size-sort -S build/main.elf`, not estimated), its
+scope buffer 4,096 more -- duplicating those would only move SRAM from
+95.83% to 96.91%, trivial. The real cost is the 8MB Kit-loading arena
+and 2.3MB capture buffer, both in external SDRAM (already 89.44% used,
+~6.76MB free) -- duplicating those overflows SDRAM to ~104.8%, past
+100%, a hard link failure, not a tight-but-survivable squeeze. One
+shared engine/arena/capture-buffer/voice-pool was the only option that
+actually fits, which is also exactly consistent with the two faces
+being mutually exclusive in the first place.
+
+**Mechanically, this is almost entirely a `Ui`-layer concept.**
+`main.cpp`'s own wiring, the Mixer page (channel 7 stays one Level/Pan
+either way), and `SampleSynth`'s own `Process()` needed no changes at
+all. `Screen::SampleSynth` stayed ONE screen (not split into two, as
+an earlier draft of this plan proposed) -- `GlobalPage::SampleSynth`
+became `GlobalPage::SampleSynthVoice`/`SampleSynthDrum`, each its own
+Button1-toggle entry point with an interlock (enabling one forces the
+other's own enabled flag off), both landing on the same screen with a
+new `sample_synth_mode_` (`Ui::SampleSynthMode::Voice`/`Drum`) flag
+deciding the title prefix ("SMPVO:"/"SMPDR:"), which pages are
+reachable, and which of Preset/Import's two lists (Sounds vs Kits)
+shows -- reusing the EXISTING `SampleSynthParamPage` enum and
+`DrawSampleSynthScreen()`/`ApplyKnobs()`/button-handler functions
+unchanged for every page both faces share (Filter/Env/Mix/FX/MIDI/
+Import/Preset/User). `Ui::IsSampleSynthPageValidForMode()` gates the
+encoder's own page-rotate skip-loop (Setup is Drum-only, Capture/Trim/
+Tune are Voice-only) -- deliberately steps by `+-1` regardless of the
+real encoder delta's own magnitude, so a fast spin can't get stuck
+cycling through only a fixed subset of pages if the delta and page
+count ever shared a common factor.
+
+**New engine mechanism: chromatic Mono/Poly.** SMPVO's Tune page
+needed a monophonic mode for melodic content, and this engine had none
+-- it's always been purely polyphonic for chromatic slots. Added
+`SampleSynth::chromatic_mono_` + `SetChromaticMono()`, a deliberately
+different mechanism from the existing `mono_choke_` (one-shot/drum
+pads choking with a fade window) -- classic "last note wins": in
+`NoteOn()`, when the matched slot is chromatic and this is on, every
+OTHER voice currently holding a chromatic note gets the SAME
+`ForceRelease()`-then-clear-`held_note` sequence a real `NoteOff()`
+already uses. Worth recording as a near-miss: the first version just
+cleared `held_note` without `ForceRelease()` first, which is exactly
+the confirmed-on-hardware stuck-note bug class `NoteOff()`'s own
+existing comment warns about (the ADSR gate `Process()` samples would
+still read true for one more block) -- caught on self-review before
+it ever got flashed, by reading `NoteOff()`'s real implementation
+instead of assuming `held_note = -1` alone was enough.
+
+**The Tune page redesign and Cap/Imp banks.** Direct request: K1/B1
+stay Tune/Mono-Poly for the captured WAV (unchanged); K2/B2 become an
+independent Tune/Mono-Poly for whatever's loaded via Import/Preset/
+User. This surfaced a real conflict: Tune's existing Button1 already
+did something (toggle chromatic on/off for the capture). Resolved by
+direct confirmation that captures are now always chromatic within
+SMPVO (every other melodic path already was), so that toggle was
+removed outright rather than relocated. Since Capture and an Imported
+Sound are mutually exclusive in the live engine (loading one still
+clears the other) but each needs settings that don't bleed into the
+other, added two `SampleSynthPresetData` snapshots
+(`sample_synth_cap_bank_`/`_imp_bank_`) plus a third
+(`sample_synth_drum_bank_`) for Drum's own Filter/Env/Mix/FX, so
+switching Voice<->Drum doesn't bleed those either -- a lazy snapshot-
+on-switch in the new `SwitchSampleSynthMode()`, not a live mirror on
+every knob tick, so the existing Filter/Env/Mix/FX `ApplyKnobs()` cases
+needed zero changes.
+
+**What actually gets remembered vs. reloaded across a switch.** A
+Kit (Drum) and an Imported Sound (Voice) both live in the one shared
+Kit-loading arena, so "remembering" means remembering the slot number/
+filename (`sample_synth_drum_kit_slot_`, `sample_synth_voice_sound_
+name_`/`_category_` -- deliberately separate from `sample_synth_
+loaded_kit_slot_`/`sample_synth_loaded_sound_name_`, which just reflect
+whatever's CURRENTLY resident and get stomped by the other face's own
+loads) and re-running the existing `LoadSampleSynthKitBySlot()`
+(extracted from `TriggerLoadSampleSynthKit()` so `SwitchSampleSynthMode()`
+can call it directly by slot, no browse-cursor involved) or
+`LoadSampleSynthFileIntoEngine()` -- a brief SD reload, same delay any
+Kit/Sound load already has. A captured-but-unsaved WAV needs no SD
+read at all: its own buffer is never touched by Drum mode, so
+re-entering Voice just reapplies slot 0 via the existing
+`ApplySampleSynthTrim()` (which already respects whatever Trim range/
+root_note was last set, not just the full untrimmed capture).
+
+**Five real bugs found playing with the split on real hardware,** each
+reported and fixed in turn:
+1. *"Enable doesn't load until you drill in."* The Button1 enable
+   toggle only flipped `sample_synth_voice_enabled_`/`_drum_enabled_`
+   -- `SwitchSampleSynthMode()` was only ever called from the encoder-
+   click entry point. Fixed by calling it from the enable toggle too.
+2. *"Split lost on a Drum<->Voice round trip."* Re-loading a Kit (which
+   happens every time you switch back into Drum) resets Setup's own
+   Break Divide/Tune to off/0, same as any fresh Kit load always has
+   -- `SwitchSampleSynthMode()` now snapshots `sample_synth_setup_
+   applied_slices_`/`_tune_semis_` into `sample_synth_drum_remembered_
+   slices_`/`_tune_semis_` on the way out and re-applies them via
+   `ApplySampleSynthBreakDivide()` right after the Kit reloads on the
+   way back in.
+3. *Favorites bleeding across engines* (fixed, then had to be
+   partially undone -- see below).
+4. *Wrong starting page.* `FX` is valid on both faces, so it silently
+   carried the raw shared `sample_synth_param_page_` straight across
+   -- switching to Voice from Drum's own FX page landed on Voice's FX
+   page too. First fix (force Filter on every switch) was itself
+   corrected per direct follow-up ("didn't want it to always reset to
+   Filter, only on startup") to two independent remembered-page fields
+   (`sample_synth_voice_last_page_`/`_drum_last_page_`, both Filter by
+   default) -- each face now keeps its own browsing position across
+   switches, only defaulting to Filter the first time it's ever
+   visited.
+5. *Silence after drilling in.* Drilling into a screen only switched
+   content, never the enabled flags -- if you'd explicitly disabled
+   the face you were leaving first, neither flag ended up true and
+   nothing played despite content being loaded. Fixed by having the
+   encoder-click entry point also enable that face (interlocked, same
+   as the Button1 toggle) and call `AllNotesOff()`.
+
+**Favorites replaced with real per-face User presets.** The old
+`PerformanceStore::SampleSynthFavorite` only ever bookmarked a
+reference (`category`+`filename`, confirmed "no preset params...
+this is still 'audition a sound,' not 'recall a configuration'") --
+loading one swapped the audio but left Filter/Env/Mix/FX/Tune/Mono-
+Poly as whatever happened to already be live. Direct request: replace
+it with a real save/load system, one per face, that captures the full
+settings too -- "including splice for drums."
+
+Two new lightweight structs (`SampleSynthVoiceUserPreset`/
+`SampleSynthDrumUserPreset`, `performance_store.h`) -- a reference
+(Sound filename+category, or a Kit's own slot number) plus a full
+`SampleSynthPresetData` snapshot, and for Drum specifically
+`break_divide_count`/`break_tune_semis` too (otherwise pure live/
+session state, never saved with the Kit itself). Saving never
+duplicates or re-slices audio -- loading replays the exact same
+already-built machinery everything else here uses
+(`LoadSampleSynthFileIntoEngine()`/`ApplyPreset()`/
+`SetChromaticMono()`/`SetSlotPitchOffsetSemis()` for Voice;
+`LoadSampleSynthKitBySlot()`/`ApplyPreset()`/
+`ApplySampleSynthBreakDivide()` for Drum, the identical sequence
+`SwitchSampleSynthMode()`'s own restore paths already use). The User
+page itself became a real Save/Load page (modeled directly on
+Ensemble's own flat-list Preset page, `ui.cpp:982-1034` -- no factory
+range or "New" chooser needed here, so it's the simpler version of
+that same `SaveLoadMode` idiom), replacing the old single Button1=
+bookmark action.
+
+This also meant re-examining the Drum-side `User` exclusion from bug
+#3 above: the FIRST fix (excluding `User` entirely from
+`IsSampleSynthPageValidForMode()`'s Drum case) was the right call for
+the OLD bookmark-only Favorites (Sound-only, no business being
+reachable from Drum at all) but became wrong the moment User turned
+into a real per-face preset system -- Drum needed its OWN User page
+back, showing Kit-based presets, never Voice's Sound-based ones. Same
+shape as how Preset itself was never excluded either, just shows a
+different list per face.
+
 **Legacy Presets removed from the distributable branch.** The original
 21-category Sounds list and "Starter Kits" Kit category were kept,
 off by default, as `SampleSynthParamPage::LegacyPreset` (toggled by an
@@ -3451,3 +3894,117 @@ in git, so this was purely a code change) — a `personal-legacy-sounds`
 branch, forked from the commit right before the removal, keeps it for
 personal use going forward. The two branches otherwise share the
 identical OP-1 import feature and every fix described above.
+
+## SD card folder renaming
+
+Direct report: the card's own folder names were "not named or organised
+in a logical way" — cryptic 4-letter engine codes (`DEXP`, `ENSP`,
+`GRNP`, `PERF`) sitting alongside full-word folders (`SAMPLES`,
+`IMPORT`, `custom`), no consistent rule either way, and one real,
+confirmed source of confusion: SampleSynth's drum Kits lived in `SAMP/`
+— a folder sitting right next to `SAMPLES/` at the SD root, one full of
+nicely organized subfolders (`CAPTURED1`/`CAPTURED2`/`SOUNDS`), the
+other just bare `KIT001.DAT` files with nothing legible about what they
+were. Confirmed `_USE_LFN 1` is already enabled in this project's FatFs
+config (up to 255-character names) before proposing anything, so
+nothing was ever forcing the old 8.3-style abbreviations.
+
+Renamed throughout (`performance_store.h`/`.cpp`'s own `*Filename()`
+helpers and every literal `f_mkdir()`/`f_opendir()` call):
+
+| Old | New |
+|---|---|
+| `PERF/` | `PERFORMANCES/` |
+| `DEXP/` | `DEXED/` |
+| `ENSP/` | `ENSEMBLE/` |
+| `GRNP/` | `GRAINS/` |
+| `SAMP/` | `SAMPLES/DRUM KITS/` |
+| `SVU/` | `SAMPLES/VOICE PRESETS/` |
+| `SDU/` | `SAMPLES/DRUM PRESETS/` |
+| `WAV/` | `EXPORTS/` |
+| `custom/` | unchanged — required verbatim, see below |
+| `IMPORT/` | `GRAINS IMPORT/` |
+| `DXIMPORT/` | `DEXED IMPORT/` |
+| `SampleKit/` | `DRUM PACK IMPORT/` |
+| `SampleSound/` | `SOUND PACK IMPORT/` |
+
+`custom/` is the one folder name left untouched on purpose — not
+cosmetic, MicroDexed Touch itself scans its own SD card for a folder
+with exactly that name (see *WAV export* above), so renaming it would
+silently break the existing "export straight into MicroDexed's second
+slot" workflow. `SAMP`/`SVU`/`SDU` moved from being siblings of
+`SAMPLES/` at the SD root to real subfolders *of* `SAMPLES/` — the fix
+for the actual reported confusion, folding Kits/Voice-User-presets/
+Drum-User-presets in alongside Captures/Sounds instead of inventing yet
+another top-level folder.
+
+A real, caught-before-flashing bug from this: several path-building
+buffers across `performance_store.cpp` (declared `char fname[24]`/
+`[20]`, sized for the old short codes) were too small for the new
+longer paths — see *SD card management*'s own note above on the exact
+sizes this needed, the same issue found independently while wiring the
+3 new SampleSynth Delete/Duplicate pairs into these same renamed paths.
+
+**Migration**: since this is a single personal device, not firmware
+shipped onto other people's already-populated cards, the fix was a
+one-time manual `mv`/`mkdir` pass run directly on the mounted card
+(matching the renamed constants the new firmware build now expects) —
+no migration code written into the firmware itself, which would have
+meant permanently carrying both the old and new folder names forever
+for a transition that only ever needed to happen once. One stray
+leftover file was found and removed during the move: `SAMP/FAVS.DAT`,
+the old Favorites bookmark format's own file (see *Favorites replaced
+with real per-face User presets* above) — nothing in the firmware has
+read that format since User presets replaced it, so it was dead weight
+rather than data worth preserving. `sdcard-template/` (the starter-card
+folder set handed to a fresh install) was renamed to match, plus gained
+template folders for `SAMPLES/DRUM KITS/`, `SAMPLES/VOICE PRESETS/`,
+and `SAMPLES/DRUM PRESETS/` (previously not pre-made at all, since
+none of those three existed as their own folders before this session).
+
+## Slot-number display prefixes
+
+Direct follow-up request: make a bare slot number on screen (e.g. a
+Performance's "Now: 3") identifiable by which engine it belongs to
+without needing surrounding context, "so they can be more easily
+identified by the user." Confirmed before building anything that this
+needed zero filename changes — the on-disk file for a save has never
+been shown on the Pod's own screen anyway, only the bare slot number
+is, so a prefix is purely a display-text change.
+
+Research pass first (not guessed at): every on-screen site showing a
+bare slot number was found and read, which surfaced that two categories
+already show something strictly better than a bare number — Dexed
+shows the DX7 patch's own embedded name (falling back to a number only
+for pre-name-field saves with blank name bytes), and SampleSynth Kits
+show their own stored `name` field (`"3:Snaps Kit"`) — while
+**Performances, Grains Presets, Ensemble user presets, and both
+SampleSynth User-preset categories are bare-number-only everywhere**,
+across roughly 20 separate `snprintf()` call sites (each engine's own
+"Now:", its own browse list, and its own "Loaded N"/"Copied to N"
+status line are all separate call sites, not one shared function).
+
+Scope deliberately narrowed to where a prefix actually resolves
+ambiguity, not applied to literally every site: on each engine's own
+dedicated page, the screen title already names the engine, so
+"DEXED12" there would just be redundant screen-space cost for no real
+benefit — and would actively regress Dexed/Kits' own better existing
+name display back down to a generic number in cases where a name
+*is* available. The place a prefix earns its keep is `Global:SdMgmt`,
+whose own "Deleted N"/"Copied to N" confirmation line (see *SD card
+management* above) spans all 8 categories at once and gives you a bare
+number with no category attached if you glance at it in isolation.
+
+Implemented by reusing `SdMgmtFolderShortLabel()`'s existing `PERF`/
+`GRAINS`/`DEXED`/`ENSM`/`SMPVO`/`SMPDR` vocabulary everywhere a prefix
+was added — one shared convention rather than inventing a second one —
+on: the 5 bare-number-only categories' own "Now:"/"Load:"/"Loaded N"
+sites; Dexed's two genuine bare-number fallback sites (the pre-name-
+field-save case, left otherwise untouched everywhere its real embedded
+name already shows); and `Global:SdMgmt`'s own "Deleted N"/"Copied to
+N" line, which pulls the short label dynamically from whichever
+category is currently selected (`SdMgmtFolderShortLabel(sd_mgmt_
+folder_)`) rather than being 8 separate hardcoded strings. SampleSynth
+Kits/Sounds and Captures were left untouched — they already show a
+real name or filename, never a bare number, so there was nothing to
+prefix.

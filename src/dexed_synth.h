@@ -242,12 +242,12 @@ class DexedSynth
     {
         uint8_t patch[156]  = {};
         float   reverb_send01  = 0.2f;
-        // 0.6 (not 1.0) so a freshly-loaded factory/new preset lands at a
+        // 0.70 (not 1.0) so a freshly-loaded factory/new preset lands at a
         // safe, reasonable level by default -- factory presets never set
         // this themselves (GetFactoryPreset() only fills in patch[]), so
         // this default is literally what every one of the 700+ factory
         // presets loads at.
-        float   output_level01 = 0.6f;
+        float   output_level01 = 0.70f;
         int32_t filter_mode     = (int32_t)FilterMode::Off;
         float   filter_cutoff01 = 1.f;
         float   filter_res01    = 0.f;
@@ -429,7 +429,7 @@ class DexedSynth
     // genuine reduction here just made real playing too quiet without
     // actually fixing the clipping, which was really a peak-headroom
     // problem, not an average-loudness one).
-    float output_level01_  = 0.8f;
+    float output_level01_  = 0.70f;
     float output_level_    = 1.f; // powf(output_level01_, 2.5f)*1.4f, cached by the setter
 
     // See IsLimiting()'s own comment. Checked against the PRE-tanhf()

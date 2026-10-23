@@ -88,12 +88,20 @@ constexpr UINT kAudioDecodeChunkSamples = 600000;
 // was never protecting real-time audio either -- so those 4 functions
 // now do one f_write()/f_read() per channel, no chunk loop at all.
 
-// Kept inside its own "PERF/" subfolder, same reasoning as "custom/"
-// below -- tidier SD root, and it's still a plain PERFxxx.DAT name
-// underneath so nothing else about the format changes.
+// Kept inside its own "PERFORMANCES/" subfolder, same reasoning as
+// "custom/" below -- tidier SD root, and it's still a plain PERFxxx.DAT
+// name underneath so nothing else about the format changes. Named to
+// read plainly in any file browser -- see this file's own SD-layout
+// rename (PERF->PERFORMANCES, DEXP->DEXED, ENSP->ENSEMBLE, GRNP->GRAINS,
+// SAMP->SAMPLES/DRUM KITS, SVU/SDU->SAMPLES/VOICE|DRUM PRESETS,
+// WAV->EXPORTS, IMPORT->GRAINS IMPORT, DXIMPORT->DEXED IMPORT,
+// SampleKit/SampleSound->DRUM PACK IMPORT/SOUND PACK IMPORT) -- every
+// one of those old 4-letter engine codes had no relationship to what's
+// shown on screen; "custom" alone stays untouched since MicroDexed
+// Touch itself scans for that exact folder name (see ExportFilename()).
 void SlotFilename(int slot, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "PERF/PERF%03d.DAT", slot);
+    snprintf(out, out_size, "PERFORMANCES/PERF%03d.DAT", slot);
 }
 
 // Own subfolder/numbering, same reasoning as SlotFilename()'s own split
@@ -101,7 +109,7 @@ void SlotFilename(int slot, char* out, size_t out_size)
 // this way either.
 void GranularPresetFilename(int slot, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "GRNP/PRES%03d.DAT", slot);
+    snprintf(out, out_size, "GRAINS/PRES%03d.DAT", slot);
 }
 
 // Own subfolder/numbering, same reasoning as GranularPresetFilename()
@@ -109,7 +117,7 @@ void GranularPresetFilename(int slot, char* out, size_t out_size)
 // friends' own factory-range guard) -- factory slots are never files.
 void DexedPresetFilename(int slot, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "DEXP/PRES%03d.DAT", slot);
+    snprintf(out, out_size, "DEXED/PRES%03d.DAT", slot);
 }
 
 // Own subfolder/numbering, same reasoning as DexedPresetFilename() above.
@@ -117,7 +125,7 @@ void DexedPresetFilename(int slot, char* out, size_t out_size)
 // own factory-range guard) -- factory slots are never files.
 void EnsemblePresetFilename(int slot, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "ENSP/PRES%03d.DAT", slot);
+    snprintf(out, out_size, "ENSEMBLE/PRES%03d.DAT", slot);
 }
 
 // Own subfolder for user-supplied WAV files to import as Grains capture
@@ -127,15 +135,15 @@ void EnsemblePresetFilename(int slot, char* out, size_t out_size)
 // rather than a slot number.
 void ImportWavFilename(const char* filename, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "IMPORT/%s", filename);
+    snprintf(out, out_size, "GRAINS IMPORT/%s", filename);
 }
 
 // Own subfolder for user-supplied DX7 .syx files, deliberately separate
-// from ImportWavFilename()'s own IMPORT/ so a Grains WAV listing and a
-// Dexed SysEx listing never mix into one folder.
+// from ImportWavFilename()'s own GRAINS IMPORT/ so a Grains WAV listing
+// and a Dexed SysEx listing never mix into one folder.
 void ImportSyxFilename(const char* filename, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "DXIMPORT/%s", filename);
+    snprintf(out, out_size, "DEXED IMPORT/%s", filename);
 }
 
 // Bare filename in the SD root (unlike PERFxxx.DAT/EXPnnn.wav, this one's
@@ -150,19 +158,20 @@ inline float Clampf(float v, float lo, float hi)
 
 // Each export mode is kept in its own subfolder with its own independent
 // EXPnnn numbering sequence (see ExportWav()'s for_microdexed param) --
-// "WAV/" for full-quality native exports, "custom/" for MicroDexed-ready
-// 44.1kHz ones. "custom" is deliberate, not cosmetic -- that's the exact
-// folder name MicroDexed Touch scans its SD slots for, so that card,
-// moved straight into MicroDexed's second slot, is already laid out the
-// way it expects with no copy step needed at all. Neither ever collides
-// with ListSlots()/NextFreeSlot(), which only look inside "PERF/" (see
-// SlotFilename() above).
+// "EXPORTS/" for full-quality native exports, "custom/" for
+// MicroDexed-ready 44.1kHz ones. "custom" is deliberate, not cosmetic --
+// that's the exact folder name MicroDexed Touch scans its SD slots for,
+// so that card, moved straight into MicroDexed's second slot, is already
+// laid out the way it expects with no copy step needed at all -- the one
+// folder name this project's own SD-layout rename leaves untouched.
+// Neither ever collides with ListSlots()/NextFreeSlot(), which only look
+// inside "PERFORMANCES/" (see SlotFilename() above).
 void ExportFilename(bool for_microdexed, int n, char* out, size_t out_size)
 {
     if(for_microdexed)
         snprintf(out, out_size, "custom/EXP%03d.wav", n);
     else
-        snprintf(out, out_size, "WAV/EXP%03d.wav", n);
+        snprintf(out, out_size, "EXPORTS/EXP%03d.wav", n);
 }
 
 // Lowest-numbered free EXPnnn file in the given mode's folder -- same
@@ -581,7 +590,7 @@ int ListSlots(int* out_slots, int max_out)
     int count = 0;
     for(int slot = 1; slot <= kMaxSlots && count < max_out; slot++)
     {
-        char    fname[20];
+        char    fname[32];
         FILINFO fno;
         SlotFilename(slot, fname, sizeof(fname));
         if(f_stat(fname, &fno) == FR_OK)
@@ -596,7 +605,7 @@ int NextFreeSlot()
         return -1;
     for(int slot = 1; slot <= kMaxSlots; slot++)
     {
-        char    fname[20];
+        char    fname[32];
         FILINFO fno;
         SlotFilename(slot, fname, sizeof(fname));
         if(f_stat(fname, &fno) != FR_OK)
@@ -727,7 +736,7 @@ bool DeleteSlot(int slot, int* loaded_slot_inout)
 {
     if(!card_ready || slot < 1 || slot > kMaxSlots)
         return false;
-    char fname[20];
+    char fname[32];
     SlotFilename(slot, fname, sizeof(fname));
     if(!DeleteFileGeneric(fname))
         return false;
@@ -744,7 +753,7 @@ bool DuplicateSlot(int slot, int* out_new_slot, ProgressFn on_progress)
     *out_new_slot = -1;
     if(!card_ready || slot < 1 || slot > kMaxSlots)
         return false;
-    char    src[20];
+    char    src[32];
     FILINFO fno;
     SlotFilename(slot, src, sizeof(src));
     if(f_stat(src, &fno) != FR_OK)
@@ -758,7 +767,7 @@ bool DuplicateSlot(int slot, int* out_new_slot, ProgressFn on_progress)
         SetError("dupslot", FR_OK);
         return false;
     }
-    char dst[20];
+    char dst[32];
     SlotFilename(new_slot, dst, sizeof(dst));
     if(!CopyFileChunked(src, dst, on_progress))
         return false;
@@ -792,10 +801,10 @@ bool Save(int                slot,
     if(!card_ready || slot < 1 || slot > kMaxSlots)
         return false;
 
-    char fname[20];
+    char fname[32];
     SlotFilename(slot, fname, sizeof(fname));
 
-    FRESULT mkdir_res = f_mkdir("PERF");
+    FRESULT mkdir_res = f_mkdir("PERFORMANCES");
     if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
     {
         SetError("mkdir", mkdir_res);
@@ -954,7 +963,7 @@ bool Load(int          slot,
     if(!card_ready || slot < 1 || slot > kMaxSlots)
         return false;
 
-    char fname[20];
+    char fname[32];
     SlotFilename(slot, fname, sizeof(fname));
 
     ClearError();
@@ -1258,7 +1267,7 @@ bool SaveGranularPreset(int                                       slot,
     char fname[24];
     GranularPresetFilename(slot, fname, sizeof(fname));
 
-    FRESULT mkdir_res = f_mkdir("GRNP");
+    FRESULT mkdir_res = f_mkdir("GRAINS");
     if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
     {
         SetError("mkdir", mkdir_res);
@@ -1487,7 +1496,7 @@ bool SaveDexedPreset(int slot, const DexedSynth::DexedPresetData& preset)
     char fname[24];
     DexedPresetFilename(slot, fname, sizeof(fname));
 
-    FRESULT mkdir_res = f_mkdir("DEXP");
+    FRESULT mkdir_res = f_mkdir("DEXED");
     if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
     {
         SetError("mkdir", mkdir_res);
@@ -1617,8 +1626,8 @@ int ListDexedPresets(int* out_numbers, int max_out)
     // shape but only scans up to kMaxGranularPresets=99, ~4x fewer
     // calls, which was fast/quiet enough never to be noticed.
     static DIR dir; // see the DTCMRAM/DMA comment on Save() above
-    if(f_opendir(&dir, "DEXP") != FR_OK)
-        return 0; // no DEXP/ folder yet -- not an error, just nothing to list
+    if(f_opendir(&dir, "DEXED") != FR_OK)
+        return 0; // no DEXED/ folder yet -- not an error, just nothing to list
 
     int first_user_slot = DexedSynth::GetNumFactoryPresets() + 1;
     int count            = 0;
@@ -1688,7 +1697,7 @@ int NextFreeDexedPresetSlot(int search_from)
     memset(used, 0, sizeof(used));
 
     static DIR dir;
-    if(f_opendir(&dir, "DEXP") == FR_OK)
+    if(f_opendir(&dir, "DEXED") == FR_OK)
     {
         static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
         while(true)
@@ -1706,7 +1715,7 @@ int NextFreeDexedPresetSlot(int search_from)
         }
         f_closedir(&dir);
     }
-    // No DEXP/ folder at all yet -- every slot is free, used[] stays
+    // No DEXED/ folder at all yet -- every slot is free, used[] stays
     // all-zero from the memset above, same as the loop below finding
     // nothing taken.
 
@@ -1767,7 +1776,7 @@ bool SaveEnsemblePreset(int slot, const EnsembleSynth::EnsemblePresetData& prese
     char fname[24];
     EnsemblePresetFilename(slot, fname, sizeof(fname));
 
-    FRESULT mkdir_res = f_mkdir("ENSP");
+    FRESULT mkdir_res = f_mkdir("ENSEMBLE");
     if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
     {
         SetError("mkdir", mkdir_res);
@@ -1946,8 +1955,8 @@ int ListImportWavFiles(char out_names[][kMaxImportWavNameLen + 1], int max_out)
     if(!card_ready)
         return 0;
     static DIR dir; // see the DTCMRAM/DMA comment on Save() above
-    if(f_opendir(&dir, "IMPORT") != FR_OK)
-        return 0; // no IMPORT/ folder yet -- not an error, just nothing to list
+    if(f_opendir(&dir, "GRAINS IMPORT") != FR_OK)
+        return 0; // no GRAINS IMPORT/ folder yet -- not an error, just nothing to list
 
     int            count = 0;
     static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
@@ -2089,9 +2098,15 @@ bool ParseNoteNameFromFilename(const char* filename, uint8_t* out_note)
     return true;
 }
 
+// Nested under kSampleSynthFolder ("SAMPLES/DRUM KITS/"), not a sibling
+// folder -- the old "SAMP/" sat right next to "SAMPLES/" at the SD root,
+// two near-identical names where one held nicely organized subfolders
+// (Captured1/2, Sounds) and the other just bare KITxxx.DAT files with
+// nothing legible about what they were. See this file's own SD-layout
+// rename comment on SlotFilename() above.
 void SampleSynthKitFilename(int slot, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "SAMP/KIT%03d.DAT", slot);
+    snprintf(out, out_size, "%s/DRUM KITS/KIT%03d.DAT", kSampleSynthFolder, slot);
 }
 
 namespace
@@ -2109,6 +2124,14 @@ struct SampleSynthKitFileHeader
 // own end -- real kits already exist by this point (KIT001-011), so
 // this one DOES need the version-tolerant read, same shape as
 // kDexedPresetFileVersion's own v2->v3 bump (see kSampleSynthKitDataV2Size).
+// Setup page's own Break Divide/Tune deliberately did NOT become a v4
+// here -- there's no user-facing "Save Kit" action at all (this page
+// is LOAD-ONLY, see SampleSynthParamPage::Preset's own doc comment),
+// so nothing could ever actually write a non-default value to a kit
+// file for a bump to protect; it's pure live/session state instead
+// (Ui::sample_synth_setup_tune_semis_/_applied_slices_), same
+// "resets to a sensible default on every reload" convention
+// mono_choke/Pan/Level/etc. already follow for this exact reason.
 constexpr uint32_t kSampleSynthKitFileVersion   = 3;
 constexpr uint32_t kSampleSynthKitFileVersionV2 = 2; // previous version, still loadable
 constexpr size_t   kSampleSynthKitDataV2Size
@@ -2122,14 +2145,17 @@ bool SaveSampleSynthKit(int slot, const char* name,
     if(!card_ready || slot < 1 || slot > kMaxSampleSynthKits)
         return false;
 
-    FRESULT mkdir_res = f_mkdir("SAMP");
+    f_mkdir(kSampleSynthFolder); // harmless if it already exists, same as every other f_mkdir() call here
+    char kits_dir[32];
+    snprintf(kits_dir, sizeof(kits_dir), "%s/DRUM KITS", kSampleSynthFolder);
+    FRESULT mkdir_res = f_mkdir(kits_dir);
     if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
     {
         SetError("mkdir", mkdir_res);
         return false;
     }
 
-    char fname[24];
+    char fname[36];
     SampleSynthKitFilename(slot, fname, sizeof(fname));
 
     ClearError();
@@ -2196,7 +2222,7 @@ bool SaveSampleSynthKit(int slot, const char* name,
 FIL* OpenSampleSynthKitAndReadName(int slot, char* out_name, size_t out_name_size,
                                      uint32_t* out_version = nullptr)
 {
-    char fname[24];
+    char fname[36];
     SampleSynthKitFilename(slot, fname, sizeof(fname));
 
     ClearError();
@@ -2324,7 +2350,7 @@ int ListSampleSynthKits(int* out_numbers, int max_out)
     int count = 0;
     for(int slot = 1; slot <= kMaxSampleSynthKits && count < max_out; slot++)
     {
-        char    fname[24];
+        char    fname[36];
         FILINFO fno;
         SampleSynthKitFilename(slot, fname, sizeof(fname));
         if(f_stat(fname, &fno) == FR_OK)
@@ -2404,21 +2430,46 @@ bool LoadSampleSynthSound(const char* filename, SampleSynthKitSlot out_slots[kMa
 
 namespace
 {
-constexpr const char* kSampleSynthFavoritesFilename = "SAMP/FAVS.DAT";
-struct SampleSynthFavoritesFileHeader
+// Nested under kSampleSynthFolder ("SAMPLES/VOICE PRESETS/"), same
+// "fold into SAMPLES/ instead of a cryptic sibling" reasoning as
+// SampleSynthKitFilename()'s own comment above.
+void SampleSynthVoiceUserPresetFilename(int slot, char* out, size_t out_size)
 {
-    char     magic[4]; // "SMPF"
+    snprintf(out, out_size, "%s/VOICE PRESETS/PRES%03d.DAT", kSampleSynthFolder, slot);
+}
+struct SampleSynthVoiceUserPresetFileHeader
+{
+    char     magic[4]; // "SVUP"
     uint32_t version;
 };
-constexpr uint32_t kSampleSynthFavoritesFileVersion = 1;
+constexpr uint32_t kSampleSynthVoiceUserPresetFileVersion = 1;
+
+// Nested under kSampleSynthFolder ("SAMPLES/DRUM PRESETS/"), same
+// reasoning as SampleSynthVoiceUserPresetFilename() above.
+void SampleSynthDrumUserPresetFilename(int slot, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "%s/DRUM PRESETS/PRES%03d.DAT", kSampleSynthFolder, slot);
+}
+struct SampleSynthDrumUserPresetFileHeader
+{
+    char     magic[4]; // "SDUP"
+    uint32_t version;
+};
+constexpr uint32_t kSampleSynthDrumUserPresetFileVersion = 1;
 } // namespace
 
-bool SaveSampleSynthFavorites(const SampleSynthFavorite favorites[kMaxSampleSynthFavorites])
+bool SaveSampleSynthVoiceUserPreset(int slot, const SampleSynthVoiceUserPreset& preset)
 {
-    if(!card_ready)
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthVoiceUserPresets)
         return false;
 
-    FRESULT mkdir_res = f_mkdir("SAMP");
+    char fname[40];
+    SampleSynthVoiceUserPresetFilename(slot, fname, sizeof(fname));
+
+    f_mkdir(kSampleSynthFolder); // harmless if it already exists, same as every other f_mkdir() call here
+    char voice_presets_dir[32];
+    snprintf(voice_presets_dir, sizeof(voice_presets_dir), "%s/VOICE PRESETS", kSampleSynthFolder);
+    FRESULT mkdir_res = f_mkdir(voice_presets_dir);
     if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
     {
         SetError("mkdir", mkdir_res);
@@ -2427,28 +2478,27 @@ bool SaveSampleSynthFavorites(const SampleSynthFavorite favorites[kMaxSampleSynt
 
     ClearError();
     static FIL file; // see the DTCMRAM/DMA comment on Save() above
-    FRESULT    fr = f_open(&file, kSampleSynthFavoritesFilename, FA_CREATE_ALWAYS | FA_WRITE);
+    FRESULT    fr = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
     if(fr != FR_OK)
     {
         SetError("open", fr);
         return false;
     }
 
-    static SampleSynthFavoritesFileHeader hdr;
-    hdr = SampleSynthFavoritesFileHeader{};
-    memcpy(hdr.magic, "SMPF", 4);
-    hdr.version = kSampleSynthFavoritesFileVersion;
+    static SampleSynthVoiceUserPresetFileHeader hdr;
+    hdr = SampleSynthVoiceUserPresetFileHeader{};
+    memcpy(hdr.magic, "SVUP", 4);
+    hdr.version = kSampleSynthVoiceUserPresetFileVersion;
 
-    static SampleSynthFavorite data[kMaxSampleSynthFavorites];
-    for(int i = 0; i < kMaxSampleSynthFavorites; i++)
-        data[i] = favorites[i];
+    static SampleSynthVoiceUserPreset data;
+    data = preset;
 
     UINT bw;
     fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
     bool ok = fr == FR_OK && bw == sizeof(hdr);
     if(ok)
     {
-        fr = f_write(&file, data, sizeof(data), &bw);
+        fr = f_write(&file, &data, sizeof(data), &bw);
         ok = fr == FR_OK && bw == sizeof(data);
     }
     if(!ok)
@@ -2460,27 +2510,31 @@ bool SaveSampleSynthFavorites(const SampleSynthFavorite favorites[kMaxSampleSynt
     return ok && close_res == FR_OK;
 }
 
-bool LoadSampleSynthFavorites(SampleSynthFavorite out_favorites[kMaxSampleSynthFavorites])
+bool LoadSampleSynthVoiceUserPreset(int slot, SampleSynthVoiceUserPreset* out_preset)
 {
-    if(!card_ready)
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthVoiceUserPresets || !out_preset)
         return false;
 
+    char fname[40];
+    SampleSynthVoiceUserPresetFilename(slot, fname, sizeof(fname));
+
     ClearError();
-    static FIL file; // see the DTCMRAM/DMA comment on Save() above
-    FRESULT    fr = f_open(&file, kSampleSynthFavoritesFilename, FA_READ);
+    static FIL file;
+    FRESULT    fr = f_open(&file, fname, FA_READ);
     if(fr != FR_OK)
     {
         SetError("open", fr);
-        return false; // no favorites saved yet -- a real, expected case
+        return false;
     }
 
-    static SampleSynthFavoritesFileHeader hdr;
-    hdr = SampleSynthFavoritesFileHeader{};
+    static SampleSynthVoiceUserPresetFileHeader hdr;
+    hdr = SampleSynthVoiceUserPresetFileHeader{};
     UINT br;
     fr      = f_read(&file, &hdr, sizeof(hdr), &br);
     bool ok = fr == FR_OK && br == sizeof(hdr);
     if(ok
-       && (memcmp(hdr.magic, "SMPF", 4) != 0 || hdr.version != kSampleSynthFavoritesFileVersion))
+       && (memcmp(hdr.magic, "SVUP", 4) != 0
+           || hdr.version != kSampleSynthVoiceUserPresetFileVersion))
     {
         ok = false;
         SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
@@ -2490,26 +2544,282 @@ bool LoadSampleSynthFavorites(SampleSynthFavorite out_favorites[kMaxSampleSynthF
         SetError("hdr", fr);
     }
 
-    static SampleSynthFavorite data[kMaxSampleSynthFavorites];
-    for(int i = 0; i < kMaxSampleSynthFavorites; i++)
-        data[i] = SampleSynthFavorite{};
+    static SampleSynthVoiceUserPreset data;
+    data = SampleSynthVoiceUserPreset{};
     if(ok)
     {
-        fr = f_read(&file, data, sizeof(data), &br);
+        fr = f_read(&file, &data, sizeof(data), &br);
         ok = fr == FR_OK && br == sizeof(data);
         if(!ok)
             SetError("data", fr);
     }
     if(ok)
-    {
-        for(int i = 0; i < kMaxSampleSynthFavorites; i++)
-            out_favorites[i] = data[i];
-    }
+        *out_preset = data;
 
     FRESULT close_res = f_close(&file);
     if(close_res != FR_OK)
         SetError("close", close_res);
     return ok && close_res == FR_OK;
+}
+
+int ListSampleSynthVoiceUserPresets(int* out_numbers, int max_out)
+{
+    if(!card_ready)
+        return 0;
+    int count = 0;
+    for(int slot = 1; slot <= kMaxSampleSynthVoiceUserPresets && count < max_out; slot++)
+    {
+        char    fname[40];
+        FILINFO fno;
+        SampleSynthVoiceUserPresetFilename(slot, fname, sizeof(fname));
+        if(f_stat(fname, &fno) == FR_OK)
+            out_numbers[count++] = slot;
+    }
+    return count;
+}
+
+int NextFreeSampleSynthVoiceUserPresetSlot()
+{
+    if(!card_ready)
+        return -1;
+    for(int slot = 1; slot <= kMaxSampleSynthVoiceUserPresets; slot++)
+    {
+        char    fname[40];
+        FILINFO fno;
+        SampleSynthVoiceUserPresetFilename(slot, fname, sizeof(fname));
+        if(f_stat(fname, &fno) != FR_OK)
+            return slot;
+    }
+    return -1;
+}
+
+// No factory tier (every slot is a user save) -- same shape as
+// DeleteGranularPreset()/DuplicateGranularPreset(). Global:SdMgmt's own
+// Delete/Duplicate on the SMPVO User box.
+bool DeleteSampleSynthVoiceUserPreset(int slot, int* loaded_slot_inout)
+{
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthVoiceUserPresets)
+        return false;
+    char fname[40];
+    SampleSynthVoiceUserPresetFilename(slot, fname, sizeof(fname));
+    if(!DeleteFileGeneric(fname))
+        return false;
+    if(loaded_slot_inout && *loaded_slot_inout == slot)
+        *loaded_slot_inout = -1;
+    CompactSlotsAfterDelete(slot, kMaxSampleSynthVoiceUserPresets,
+                             SampleSynthVoiceUserPresetFilename, loaded_slot_inout);
+    return true;
+}
+
+bool DuplicateSampleSynthVoiceUserPreset(int slot, int* out_new_slot, ProgressFn on_progress)
+{
+    if(!out_new_slot)
+        return false;
+    *out_new_slot = -1;
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthVoiceUserPresets)
+        return false;
+    char    src[40];
+    FILINFO fno;
+    SampleSynthVoiceUserPresetFilename(slot, src, sizeof(src));
+    if(f_stat(src, &fno) != FR_OK)
+    {
+        SetError("dupsrc", FR_NO_FILE);
+        return false;
+    }
+    int new_slot = NextFreeSampleSynthVoiceUserPresetSlot();
+    if(new_slot < 0)
+    {
+        SetError("dupslot", FR_OK);
+        return false;
+    }
+    char dst[40];
+    SampleSynthVoiceUserPresetFilename(new_slot, dst, sizeof(dst));
+    if(!CopyFileChunked(src, dst, on_progress))
+        return false;
+    *out_new_slot = new_slot;
+    return true;
+}
+
+bool SaveSampleSynthDrumUserPreset(int slot, const SampleSynthDrumUserPreset& preset)
+{
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthDrumUserPresets)
+        return false;
+
+    char fname[40];
+    SampleSynthDrumUserPresetFilename(slot, fname, sizeof(fname));
+
+    f_mkdir(kSampleSynthFolder); // harmless if it already exists, same as every other f_mkdir() call here
+    char drum_presets_dir[32];
+    snprintf(drum_presets_dir, sizeof(drum_presets_dir), "%s/DRUM PRESETS", kSampleSynthFolder);
+    FRESULT mkdir_res = f_mkdir(drum_presets_dir);
+    if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
+    {
+        SetError("mkdir", mkdir_res);
+        return false;
+    }
+
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static SampleSynthDrumUserPresetFileHeader hdr;
+    hdr = SampleSynthDrumUserPresetFileHeader{};
+    memcpy(hdr.magic, "SDUP", 4);
+    hdr.version = kSampleSynthDrumUserPresetFileVersion;
+
+    static SampleSynthDrumUserPreset data;
+    data = preset;
+
+    UINT bw;
+    fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(hdr);
+    if(ok)
+    {
+        fr = f_write(&file, &data, sizeof(data), &bw);
+        ok = fr == FR_OK && bw == sizeof(data);
+    }
+    if(!ok)
+        SetError("data", fr);
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+bool LoadSampleSynthDrumUserPreset(int slot, SampleSynthDrumUserPreset* out_preset)
+{
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthDrumUserPresets || !out_preset)
+        return false;
+
+    char fname[40];
+    SampleSynthDrumUserPresetFilename(slot, fname, sizeof(fname));
+
+    ClearError();
+    static FIL file;
+    FRESULT    fr = f_open(&file, fname, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static SampleSynthDrumUserPresetFileHeader hdr;
+    hdr = SampleSynthDrumUserPresetFileHeader{};
+    UINT br;
+    fr      = f_read(&file, &hdr, sizeof(hdr), &br);
+    bool ok = fr == FR_OK && br == sizeof(hdr);
+    if(ok
+       && (memcmp(hdr.magic, "SDUP", 4) != 0
+           || hdr.version != kSampleSynthDrumUserPresetFileVersion))
+    {
+        ok = false;
+        SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
+    }
+    else if(!ok)
+    {
+        SetError("hdr", fr);
+    }
+
+    static SampleSynthDrumUserPreset data;
+    data = SampleSynthDrumUserPreset{};
+    if(ok)
+    {
+        fr = f_read(&file, &data, sizeof(data), &br);
+        ok = fr == FR_OK && br == sizeof(data);
+        if(!ok)
+            SetError("data", fr);
+    }
+    if(ok)
+        *out_preset = data;
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+int ListSampleSynthDrumUserPresets(int* out_numbers, int max_out)
+{
+    if(!card_ready)
+        return 0;
+    int count = 0;
+    for(int slot = 1; slot <= kMaxSampleSynthDrumUserPresets && count < max_out; slot++)
+    {
+        char    fname[40];
+        FILINFO fno;
+        SampleSynthDrumUserPresetFilename(slot, fname, sizeof(fname));
+        if(f_stat(fname, &fno) == FR_OK)
+            out_numbers[count++] = slot;
+    }
+    return count;
+}
+
+int NextFreeSampleSynthDrumUserPresetSlot()
+{
+    if(!card_ready)
+        return -1;
+    for(int slot = 1; slot <= kMaxSampleSynthDrumUserPresets; slot++)
+    {
+        char    fname[40];
+        FILINFO fno;
+        SampleSynthDrumUserPresetFilename(slot, fname, sizeof(fname));
+        if(f_stat(fname, &fno) != FR_OK)
+            return slot;
+    }
+    return -1;
+}
+
+// No factory tier (every slot is a user save) -- same shape as
+// DeleteSampleSynthVoiceUserPreset()/DuplicateSampleSynthVoiceUserPreset()
+// above. Global:SdMgmt's own Delete/Duplicate on the SMPDR User box.
+bool DeleteSampleSynthDrumUserPreset(int slot, int* loaded_slot_inout)
+{
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthDrumUserPresets)
+        return false;
+    char fname[40];
+    SampleSynthDrumUserPresetFilename(slot, fname, sizeof(fname));
+    if(!DeleteFileGeneric(fname))
+        return false;
+    if(loaded_slot_inout && *loaded_slot_inout == slot)
+        *loaded_slot_inout = -1;
+    CompactSlotsAfterDelete(slot, kMaxSampleSynthDrumUserPresets,
+                             SampleSynthDrumUserPresetFilename, loaded_slot_inout);
+    return true;
+}
+
+bool DuplicateSampleSynthDrumUserPreset(int slot, int* out_new_slot, ProgressFn on_progress)
+{
+    if(!out_new_slot)
+        return false;
+    *out_new_slot = -1;
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthDrumUserPresets)
+        return false;
+    char    src[40];
+    FILINFO fno;
+    SampleSynthDrumUserPresetFilename(slot, src, sizeof(src));
+    if(f_stat(src, &fno) != FR_OK)
+    {
+        SetError("dupsrc", FR_NO_FILE);
+        return false;
+    }
+    int new_slot = NextFreeSampleSynthDrumUserPresetSlot();
+    if(new_slot < 0)
+    {
+        SetError("dupslot", FR_OK);
+        return false;
+    }
+    char dst[40];
+    SampleSynthDrumUserPresetFilename(new_slot, dst, sizeof(dst));
+    if(!CopyFileChunked(src, dst, on_progress))
+        return false;
+    *out_new_slot = new_slot;
+    return true;
 }
 
 bool SaveSampleSynthCapture(const char* category_folder, const float* buf_l, const float* buf_r,
@@ -3281,13 +3591,60 @@ int NextFreeSampleSynthKitSlot()
         return -1;
     for(int slot = 1; slot <= kMaxSampleSynthKits; slot++)
     {
-        char    fname[24];
+        char    fname[36];
         FILINFO fno;
         SampleSynthKitFilename(slot, fname, sizeof(fname));
         if(f_stat(fname, &fno) != FR_OK)
             return slot;
     }
     return -1;
+}
+
+// No factory tier to protect (every Kit slot is user content) -- same
+// shape as DeleteGranularPreset()/DuplicateGranularPreset() above, just
+// a different Filename()/NextFreeSlot() pair. Global:SdMgmt's own
+// Delete/Duplicate on the Kits box.
+bool DeleteSampleSynthKit(int slot, int* loaded_slot_inout)
+{
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthKits)
+        return false;
+    char fname[36];
+    SampleSynthKitFilename(slot, fname, sizeof(fname));
+    if(!DeleteFileGeneric(fname))
+        return false;
+    if(loaded_slot_inout && *loaded_slot_inout == slot)
+        *loaded_slot_inout = -1;
+    CompactSlotsAfterDelete(slot, kMaxSampleSynthKits, SampleSynthKitFilename, loaded_slot_inout);
+    return true;
+}
+
+bool DuplicateSampleSynthKit(int slot, int* out_new_slot, ProgressFn on_progress)
+{
+    if(!out_new_slot)
+        return false;
+    *out_new_slot = -1;
+    if(!card_ready || slot < 1 || slot > kMaxSampleSynthKits)
+        return false;
+    char    src[36];
+    FILINFO fno;
+    SampleSynthKitFilename(slot, src, sizeof(src));
+    if(f_stat(src, &fno) != FR_OK)
+    {
+        SetError("dupsrc", FR_NO_FILE);
+        return false;
+    }
+    int new_slot = NextFreeSampleSynthKitSlot();
+    if(new_slot < 0)
+    {
+        SetError("dupslot", FR_OK);
+        return false;
+    }
+    char dst[36];
+    SampleSynthKitFilename(new_slot, dst, sizeof(dst));
+    if(!CopyFileChunked(src, dst, on_progress))
+        return false;
+    *out_new_slot = new_slot;
+    return true;
 }
 
 namespace
@@ -3968,8 +4325,8 @@ int ListImportSyxFiles(char out_names[][kMaxImportSyxNameLen + 1], int max_out)
     if(!card_ready)
         return 0;
     static DIR dir; // see the DTCMRAM/DMA comment on Save() above
-    if(f_opendir(&dir, "DXIMPORT") != FR_OK)
-        return 0; // no DXIMPORT/ folder yet -- not an error, just nothing to list
+    if(f_opendir(&dir, "DEXED IMPORT") != FR_OK)
+        return 0; // no DEXED IMPORT/ folder yet -- not an error, just nothing to list
 
     int            count = 0;
     static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
@@ -4155,11 +4512,11 @@ namespace
 // backed up, or manually removed independently of every other one.
 void DexedImportFolderFilename(int slot, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "DEXP/IMPORTS/IMP%03d.DAT", slot);
+    snprintf(out, out_size, "DEXED/IMPORTS/IMP%03d.DAT", slot);
 }
 
 // One-time compatibility step: an earlier version of this feature kept
-// every import folder appended in a single shared "DEXP/IMPORTS.DAT"
+// every import folder appended in a single shared "DEXED/IMPORTS.DAT"
 // file instead of one file per import. If that file still exists,
 // split its records out into the new per-file scheme (so an import
 // made under the old scheme keeps its own folder instead of silently
@@ -4169,10 +4526,10 @@ void DexedImportFolderFilename(int slot, char* out, size_t out_size)
 void MigrateOldDexedImportManifest()
 {
     static FIL file; // see the DTCMRAM/DMA comment on Save() above
-    if(f_open(&file, "DEXP/IMPORTS.DAT", FA_READ) != FR_OK)
+    if(f_open(&file, "DEXED/IMPORTS.DAT", FA_READ) != FR_OK)
         return; // nothing to migrate -- not an error
 
-    f_mkdir("DEXP/IMPORTS");
+    f_mkdir("DEXED/IMPORTS");
     for(;;)
     {
         DexedImportFolder rec;
@@ -4197,7 +4554,7 @@ void MigrateOldDexedImportManifest()
         }
     }
     f_close(&file);
-    f_unlink("DEXP/IMPORTS.DAT"); // done -- never migrate again
+    f_unlink("DEXED/IMPORTS.DAT"); // done -- never migrate again
 }
 } // namespace
 
@@ -4206,8 +4563,8 @@ bool SaveDexedImportFolder(const char* name, int first_slot, int last_slot)
     if(!card_ready || !name)
         return false;
     ClearError();
-    f_mkdir("DEXP"); // harmless if it already exists -- SaveDexedPreset() usually made it first
-    f_mkdir("DEXP/IMPORTS");
+    f_mkdir("DEXED"); // harmless if it already exists -- SaveDexedPreset() usually made it first
+    f_mkdir("DEXED/IMPORTS");
     MigrateOldDexedImportManifest();
 
     int slot = -1;
@@ -4325,7 +4682,7 @@ bool ExportWav(TempoClock&  tempo,
         return false;
     }
 
-    FRESULT mkdir_res = f_mkdir(for_microdexed ? "custom" : "WAV");
+    FRESULT mkdir_res = f_mkdir(for_microdexed ? "custom" : "EXPORTS");
     if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
     {
         SetError("mkdir", mkdir_res);

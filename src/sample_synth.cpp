@@ -29,19 +29,27 @@ void SampleSynth::ClearSlot(int index)
 
 void SampleSynth::LoadSlot(int index, const float* buf_l, const float* buf_r, int32_t len,
                              bool chromatic, uint8_t root_note, uint8_t low_note,
-                             uint8_t high_note, float volume01)
+                             uint8_t high_note, float volume01, int8_t pitch_offset_semis)
 {
     if(index < 0 || index >= kMaxSampleSlots)
         return;
     SampleSlot& s = slots_[index];
-    s.buf_l      = buf_l;
-    s.buf_r      = buf_r;
-    s.len        = len;
-    s.chromatic  = chromatic;
-    s.root_note  = root_note;
-    s.low_note   = low_note;
-    s.high_note  = high_note;
-    s.volume01   = volume01;
+    s.buf_l       = buf_l;
+    s.buf_r       = buf_r;
+    s.len         = len;
+    s.chromatic   = chromatic;
+    s.root_note   = root_note;
+    s.low_note    = low_note;
+    s.high_note   = high_note;
+    s.volume01    = volume01;
+    s.pitch_offset_semis = pitch_offset_semis;
+}
+
+void SampleSynth::SetSlotPitchOffsetSemis(int index, int8_t semis)
+{
+    if(index < 0 || index >= kMaxSampleSlots)
+        return;
+    slots_[index].pitch_offset_semis = semis;
 }
 
 void SampleSynth::ResetAllVoices()
@@ -118,7 +126,18 @@ void SampleSynth::NoteOn(uint8_t note, uint8_t velocity)
     // uses -- fixed-pitch (drum/one-shot) slots ignore the incoming
     // note's pitch entirely, same reasoning a drum machine pad plays
     // its sample at native pitch regardless of which key triggered it.
-    v.read_inc = s.chromatic ? powf(2.f, ((float)note - (float)s.root_note) / 12.f) : 1.f;
+    // pitch_offset_semis is Setup page's own Tune knob -- a flat extra
+    // shift added either way (0 = today's exact behavior either way,
+    // powf(2,0)==1): for a one-shot slot it's the ONLY way to
+    // transpose it at all (it otherwise has no note-relative pitch);
+    // for a chromatic slot it's equivalent to shifting root_note, just
+    // without needing to cache/restore the original root_note to
+    // compute a relative shift each time the knob moves -- see
+    // SetSlotPitchOffsetSemis()'s own comment.
+    v.read_inc = s.chromatic
+                     ? powf(2.f, ((float)note - (float)s.root_note
+                                   + (float)s.pitch_offset_semis) / 12.f)
+                     : powf(2.f, (float)s.pitch_offset_semis / 12.f);
     v.adsr.Retrigger(false);
     if(!s.chromatic && mono_choke_)
     {
@@ -140,6 +159,27 @@ void SampleSynth::NoteOn(uint8_t note, uint8_t velocity)
             float   fade_start = (float)other_len - OneShotFadeWindow(other_len);
             if(other.read_pos < fade_start)
                 other.read_pos = fade_start;
+        }
+    }
+    else if(s.chromatic && chromatic_mono_)
+    {
+        // SMPVO's own Mono/Poly -- classic "last note wins" monophonic
+        // behavior, a deliberately different mechanism from mono_choke_
+        // above. Same ForceRelease()-then-clear-held_note sequence as a
+        // real NoteOff() (see that function's own comment) -- NOT just
+        // clearing held_note, which is exactly the confirmed-on-
+        // hardware stuck-note bug class that fix addresses (the gate
+        // Process() samples would otherwise still read true for one
+        // more block, same risk EnsembleSynth had).
+        for(int i = 0; i < kMaxVoices; i++)
+        {
+            if(i == vi)
+                continue;
+            Voice& other = voices_[i];
+            if(other.slot < 0 || !slots_[other.slot].chromatic)
+                continue;
+            other.adsr.ForceRelease();
+            other.held_note = -1;
         }
     }
     __enable_irq();

@@ -246,8 +246,8 @@ bool DeleteEnsemblePreset(int slot, int* loaded_slot_inout = nullptr);
 bool DuplicateEnsemblePreset(int slot, int* out_new_slot, ProgressFn on_progress = nullptr);
 
 // Importing a user-supplied DX7 SysEx file (.syx, from a computer,
-// dropped into DXIMPORT/ on the SD card) as new Dexed USER presets --
-// a separate folder from Grains' own IMPORT/ (WAV) so the two file
+// dropped into DEXED IMPORT/ on the SD card) as new Dexed USER presets
+// -- a separate folder from Grains' own GRAINS IMPORT/ so the two file
 // types never collide in one listing. Two real-world SysEx shapes are
 // recognized, both fully validated (Yamaha ID byte, message length,
 // 7-bit checksum) before anything is trusted:
@@ -266,18 +266,18 @@ bool DuplicateEnsemblePreset(int slot, int* out_new_slot, ProgressFn on_progress
 constexpr int kMaxImportSyxNameLen = 60;
 // Same shape/rules as ListImportWavFiles() below (ascending directory
 // order, skips macOS AppleDouble sidecars, skips names longer than
-// kMaxImportSyxNameLen rather than truncating), scoped to DXIMPORT/ and
-// .syx/.SYX instead of IMPORT/ and .wav/.WAV.
+// kMaxImportSyxNameLen rather than truncating), scoped to DEXED IMPORT/
+// and .syx/.SYX instead of GRAINS IMPORT/ and .wav/.WAV.
 int  ListImportSyxFiles(char out_names[][kMaxImportSyxNameLen + 1], int max_out);
 constexpr int kMaxSyxBulkVoices = 32;
-// Reads and validates filename (inside DXIMPORT/), decodes every voice
+// Reads and validates filename (inside DEXED IMPORT/), decodes every voice
 // it contains into out_presets[0..*out_count-1] (patch bytes only --
 // reverb_send01/output_level01/filter/pan all take DexedPresetData's
 // own defaults, same as GetFactoryPreset()) and sets *out_count to 1
 // (single dump) or 32 (bulk dump). Caller is responsible for actually
 // writing each one to a real user slot (see
 // Ui::TriggerDexedSyxImport()) -- this function only reads and decodes
-// the file, it never touches the DEXP/ preset store itself.
+// the file, it never touches the DEXED/ preset store itself.
 bool ImportDexedSyx(const char*                  filename,
                     DexedSynth::DexedPresetData out_presets[kMaxSyxBulkVoices],
                     int*                         out_count);
@@ -287,7 +287,7 @@ bool ImportDexedSyx(const char*                  filename,
 // since the SysEx data itself carries no overall "bank name" field,
 // only each voice's own 10-character name) plus the contiguous range
 // of USER slots that import filled. A flat, fixed-size-record file
-// (DEXP/IMPORTS.DAT, no header -- record count is just file size /
+// (DEXED/IMPORTS.DAT, no header -- record count is just file size /
 // sizeof(DexedImportFolder)) rather than a versioned/magic'd format
 // like every other *PresetData store here, since there's nothing about
 // this shape that could ever need to change compatibly -- if it ever
@@ -314,7 +314,7 @@ bool SaveDexedImportFolder(const char* name, int first_slot, int last_slot);
 int ListDexedImportFolders(DexedImportFolder* out, int max_out);
 
 // Importing a user-supplied WAV file (from a computer, dropped into
-// IMPORT/ on the SD card) as Grains capture audio -- a third capture
+// GRAINS IMPORT/ on the SD card) as Grains capture audio -- a third capture
 // source alongside Direct Record and From Layer. Accepts 16/24/32-bit
 // PCM or 32-bit IEEE float, mono or stereo, and any of the common real-
 // world WAV sample rates (8000/11025/16000/22050/24000/32000/44100/
@@ -328,7 +328,7 @@ int ListDexedImportFolders(DexedImportFolder* out, int max_out);
 // misread.
 constexpr int kMaxImportWavNameLen = 60;
 // Fills out_names ascending (directory order) with .wav/.WAV filenames
-// found in IMPORT/ on the SD root, returns how many were found (up to
+// found in GRAINS IMPORT/ on the SD root, returns how many were found (up to
 // max_out). A name longer than kMaxImportWavNameLen is SKIPPED entirely
 // rather than truncated -- an earlier version truncated it instead, which
 // silently produced a listed name that didn't match any real file on
@@ -345,23 +345,23 @@ int  ListImportWavFiles(char out_names[][kMaxImportWavNameLen + 1], int max_out)
 // the file's own length (after any resampling) is truncated to that,
 // same "never write past what the caller owns" rule as
 // LoadGranularPreset(). *out_len is set to however many samples were
-// actually produced. folder defaults to "IMPORT" (Grains' own, unchanged
-// for every existing call site) -- SampleSynth's own loader passes
-// kSampleSynthFolder instead, same RIFF-decode/resample logic either
-// way, just a different SD folder (see kSampleSynthFolder's own comment
-// for why this is a separate folder rather than sharing IMPORT/).
+// actually produced. folder defaults to "GRAINS IMPORT" (Grains' own,
+// unchanged for every existing call site) -- SampleSynth's own loader
+// passes kSampleSynthFolder instead, same RIFF-decode/resample logic
+// either way, just a different SD folder (see kSampleSynthFolder's own
+// comment for why this is a separate folder rather than sharing it).
 bool ImportWav(const char* filename,
                float*      out_l,
                float*      out_r,
                size_t      audio_capacity,
                size_t*     out_len,
                ProgressFn  on_progress = nullptr,
-               const char* folder      = "IMPORT");
+               const char* folder      = "GRAINS IMPORT");
 
 // SampleSynth's own SD folder for user-supplied WAV files -- deliberately
-// separate from Grains' IMPORT/ and Dexed's DXIMPORT/, same "never mix
-// different engines' own file listings into one folder" reasoning
-// ImportSyxFilename()'s own comment already documents for DXIMPORT/.
+// separate from Grains' GRAINS IMPORT/ and Dexed's DEXED IMPORT/, same
+// "never mix different engines' own file listings into one folder"
+// reasoning ImportSyxFilename()'s own comment already documents.
 constexpr const char* kSampleSynthFolder        = "SAMPLES";
 constexpr int         kMaxSampleSynthWavNameLen = kMaxImportWavNameLen;
 // Same shape/rules as ListImportWavFiles() above, just scoped to
@@ -431,7 +431,7 @@ int ListSampleSynthKits(int* out_numbers, int max_out);
 // instrument at different pitches (e.g. a violin sampled at F3 and C4),
 // each covering its own zone of the keyboard so a note is always played
 // from its nearest real recording instead of one sample stretched
-// across all 88 keys. Lives in SAMPLES/ itself (not SAMP/, unlike a
+// across all 88 keys. Lives in SAMPLES/ itself (not SAMPLES/DRUM KITS/, unlike a
 // Kit) with a ".SND" extension, right alongside the plain .wav files it
 // references -- ListSampleSynthFiles() lists both side by side, and
 // Ui::TriggerLoadSampleSynthSound() dispatches on the extension: a
@@ -448,23 +448,60 @@ int ListSampleSynthKits(int* out_numbers, int max_out);
 bool LoadSampleSynthSound(const char* filename, SampleSynthKitSlot out_slots[kMaxSampleSynthSlots],
                            const char* subfolder = nullptr);
 
-// Bookmarked individual Sounds -- a reference (which category + which
-// filename), never a copy of the audio itself, so favoriting something
-// from e.g. Mellotron 4 doesn't duplicate that WAV anywhere. Lives on
-// its own SampleSynthParamPage::User (see that enum's own comment) as
-// a flat, category-free list -- the whole point is not having to
-// re-browse categories for something you already know you like.
-struct SampleSynthFavorite
+// SMPVO's own real User preset -- a reference (which category + which
+// filename), never a copy of the audio itself, plus a full settings
+// snapshot (Filter/Env/Mix/FX, and the Imp-bank's own Tune/Mono-Poly --
+// see SampleSynthParamPage::Tune's own K2/B2). Replaces the old
+// SampleSynthFavorite bookmark (reference only, no settings -- "load a
+// Sound and get none of your settings back with it," a real reported
+// gap) now that this covers the same job plus the params. Lives on
+// SampleSynthParamPage::User (Voice-only, see Ui::IsSampleSynthPageValidForMode()).
+struct SampleSynthVoiceUserPreset
 {
-    char category[17] = {}; // a kSampleSynthCategoryFolders entry, e.g. "MELLOTRON3"
-    char filename[kMaxSampleSynthWavNameLen + 1] = {}; // empty = unused slot
+    char    category[17] = {}; // a kSampleSynthCategoryFolders entry, e.g. "MELLOTRON3"
+    char    filename[kMaxSampleSynthWavNameLen + 1] = {};
+    SampleSynth::SampleSynthPresetData params; // mono_choke unused here -- SMPVO uses chromatic Mono/Poly instead
+    int8_t  tune_semis = 0;
+    bool    mono       = false;
 };
-constexpr int kMaxSampleSynthFavorites = 32; // same per-list cap as every category
+constexpr int kMaxSampleSynthVoiceUserPresets = 99; // same user headroom as Granular/Ensemble presets
 
-// Whole-file read/write -- 32 fixed records, no name/preset fields,
-// much simpler than a kit's own save/load (see SaveSampleSynthKit()).
-bool SaveSampleSynthFavorites(const SampleSynthFavorite favorites[kMaxSampleSynthFavorites]);
-bool LoadSampleSynthFavorites(SampleSynthFavorite out_favorites[kMaxSampleSynthFavorites]);
+bool SaveSampleSynthVoiceUserPreset(int slot, const SampleSynthVoiceUserPreset& preset);
+bool LoadSampleSynthVoiceUserPreset(int slot, SampleSynthVoiceUserPreset* out_preset);
+// Lists existing slots only (ascending) -- same shape as ListEnsemblePresets().
+int  ListSampleSynthVoiceUserPresets(int* out_numbers, int max_out);
+// Lowest free slot, or -1 if the whole range is full/no card.
+int  NextFreeSampleSynthVoiceUserPresetSlot();
+// No factory tier -- every slot is a user save. Global:SdMgmt's own
+// Delete/Duplicate on the SMPVO User box.
+bool DeleteSampleSynthVoiceUserPreset(int slot, int* loaded_slot_inout = nullptr);
+bool DuplicateSampleSynthVoiceUserPreset(int slot, int* out_new_slot,
+                                           ProgressFn on_progress = nullptr);
+
+// SMPDR's own counterpart -- references a real Kit by slot
+// (SAMPLES/DRUM KITS/KITxxx.DAT, never copied or re-sliced) plus a full settings snapshot
+// including Setup's own Break Divide/Tune (break_divide_count/
+// break_tune_semis are otherwise pure live/session state, never saved
+// with the Kit itself -- see that field's own comment in sample_synth.h's
+// history). Lives on SampleSynthParamPage::User (Drum-only).
+struct SampleSynthDrumUserPreset
+{
+    int     kit_slot = -1;
+    SampleSynth::SampleSynthPresetData params; // Filter/Env/Mix/FX/Mono-Choke
+    uint8_t break_divide_count = 0;
+    int8_t  break_tune_semis   = 0;
+};
+constexpr int kMaxSampleSynthDrumUserPresets = 99;
+
+bool SaveSampleSynthDrumUserPreset(int slot, const SampleSynthDrumUserPreset& preset);
+bool LoadSampleSynthDrumUserPreset(int slot, SampleSynthDrumUserPreset* out_preset);
+int  ListSampleSynthDrumUserPresets(int* out_numbers, int max_out);
+int  NextFreeSampleSynthDrumUserPresetSlot();
+// No factory tier -- every slot is a user save. Global:SdMgmt's own
+// Delete/Duplicate on the SMPDR User box.
+bool DeleteSampleSynthDrumUserPreset(int slot, int* loaded_slot_inout = nullptr);
+bool DuplicateSampleSynthDrumUserPreset(int slot, int* out_new_slot,
+                                          ProgressFn on_progress = nullptr);
 
 // Writes a trimmed Capture/Trim selection out as a real, plain 16-bit
 // PCM stereo WAV under SAMPLES/<category_folder>/ (e.g. "CAPTURED1"),
@@ -501,14 +538,14 @@ bool DuplicateSampleSynthCapture(const char* category_folder, int n, int* out_ne
 // pack builder) -- SD root, separate from kSampleSynthFolder itself,
 // user-managed drop-off points. Capped at kMaxSampleSynthImportPackFiles
 // (32) like every other real-folder listing in this project.
-constexpr const char* kSampleKitImportFolder    = "SampleKit";
-constexpr const char* kSampleSoundImportFolder  = "SampleSound";
+constexpr const char* kSampleKitImportFolder    = "DRUM PACK IMPORT";
+constexpr const char* kSampleSoundImportFolder  = "SOUND PACK IMPORT";
 constexpr int         kMaxSampleSynthImportPackFiles = 32;
 // The single destination category every imported Sound lands in --
 // replaces the old 21 licensed-pack category folders (nothing to
 // bundle for licensing reasons, see this header's own git history).
-// Imported Kits need no equivalent -- SAMP/KITxxx.DAT was never
-// category-scoped to begin with.
+// Imported Kits need no equivalent -- SAMPLES/DRUM KITS/KITxxx.DAT was
+// never category-scoped to begin with.
 constexpr const char* kSampleSynthSoundsFolder = "SOUNDS";
 
 // Lists .aif files directly under `folder` (one of the two staging
@@ -530,6 +567,11 @@ bool ImportAif(const char* filename, float* out_l, float* out_r, size_t audio_ca
 // the one preset-ish format in this file that never got one (nothing
 // needed it before pack import).
 int NextFreeSampleSynthKitSlot();
+// No factory tier -- every Kit slot is user content. Same shape as
+// DeleteGranularPreset()/DuplicateGranularPreset(). Global:SdMgmt's own
+// Delete/Duplicate on the Kits box.
+bool DeleteSampleSynthKit(int slot, int* loaded_slot_inout = nullptr);
+bool DuplicateSampleSynthKit(int slot, int* out_new_slot, ProgressFn on_progress = nullptr);
 
 // Decodes filename (expected inside `folder`, one of the staging
 // folders above) as an OP-1 "op-1" APPL-chunk drum patch: slices its
@@ -582,7 +624,7 @@ bool MoveToImportDoneFolder(const char* folder, const char* filename);
 // every layer's real filter/character-effect/reverb chain applied,
 // same as live playback) to a new stereo 16-bit PCM WAV file. Two
 // independent output modes, selected by for_microdexed:
-//   false: full-quality native 48000 Hz, under "WAV/" -- general
+//   false: full-quality native 48000 Hz, under "EXPORTS/" -- general
 //     purpose, kept out of the SD root so it never shows up as a load
 //     target in ListSlots().
 //   true: same performance/DSP chain (the chain itself always runs at

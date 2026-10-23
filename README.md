@@ -4,472 +4,167 @@ Video and looper generated WAV file below!
 
 # PZD-Daisy-Pod-Groovebox
 
-A pocket groovebox for the [Electrosmith Daisy
-Pod](https://daisy.audio/products/pod): a **4-layer stereo looper**, a
-real 6-operator DX7 clone (**Dexed**), a granular synth (**Grains**), a
-divide-down string-machine/ensemble organ (**Ensemble**), and an
-**OP-1-style sample player** (**SampleSynth** — melodic Sounds and
-multi-pad drum Kits, including direct import of real OP-1 packs) all
-running together on one small board, with an I2C OLED display added
-for a full on-device menu — live level/waveform display, per-layer
-filter/effects/reverb, tempo-locked count-in, and SD card save/load,
-all controlled from the Pod's two knobs, two buttons, and encoder. All
-four instruments are MIDI-played and independently switchable
-alongside the looper.
+A pocket, **multitimbral** groovebox for the [Electrosmith Daisy
+Pod](https://daisy.audio/products/pod): a 4-layer stereo looper plus five
+synth/sampler engines, every one of them playable together at the same
+time on one small board — not one-at-a-time — each independently
+switchable and MIDI-played alongside the looper. An added I2C OLED
+display gives it a full on-device menu: live waveform/level display,
+per-layer filter/effects/reverb, tempo-locked recording, and SD card
+save/load, all controlled from the Pod's two knobs, two buttons, and one
+clickable encoder.
 
-The name, general concept, and file organization are based on
-[kooliha's Ouroboros Loop Station](https://github.com/kooliha/Ouroboros_Loop_Station)
-— see **Thanks** below.
+## Engines
+
+- **Looper** — 4 independent stereo layers sharing one tempo-locked loop
+  length (the first layer recorded sets it for the rest). Record,
+  overdub, undo, per-layer filter/character effect/reverb send, and
+  project-wide vari-speed with Scrub/Freeze transport modes.
+- **Dexed** — a real 6-operator, 10-voice DX7 clone built on Google's own
+  **msfa** emulation core. 3129 factory presets across 54 folders, SysEx
+  import for your own banks, a real algorithm diagram, and a full
+  per-operator advanced editor.
+- **Grains** — a monophonic granular instrument: a fixed-position grain
+  cloud plus an independent sweeping scan layer, rhythmic grain
+  patterns, and audio-inclusive presets. Capture live input, pull from a
+  loop layer, or import a WAV.
+- **Ensemble** — an 8-voice divide-down string-machine/ensemble organ in
+  the ARP Solina lineage: 7 real drawbars, built-in chorus, pitch bend,
+  and a mod wheel.
+- **Sample Drum (SMPDR)** — a multi-pad one-shot drum sampler, up to 24
+  slices per Kit, with live re-slicing and direct import of real OP-1
+  drum packs.
+- **Sample Sound (SMPVO)** — a melodic, chromatic sampler for one
+  captured or imported sound at a time, with its own Capture/Trim/Tune
+  workflow and direct import of real OP-1 instrument packs.
+
+SMPDR and SMPVO share one underlying sample-playback engine and are
+mutually exclusive — enabling one disables the other.
 
 ## Hardware
 
-- **[Daisy Pod](https://daisy.audio/products/pod)** — two
-  knobs, two buttons, one clickable encoder, two RGB LEDs, stereo in/out,
-  all built in.
-- **I2C OLED display** (SSD1306/SSD1309, 128x64), wired to the pins
-  broken out on the Pod's header:
-  - `SCL` → `D11`
-  - `SDA` → `D12`
-  - plus `3V3` and `GND`
-
-  These are libDaisy's default I2C1 pins, so no extra pin configuration
-  is needed in code. Default I2C address is `0x3C` — if the display stays
-  dark, it's likely a `0x3D` module; there's a commented-out line in
-  `main.cpp` to switch it.
-
-- **MIDI IN** (optional) — the Pod's built-in MIDI jack, used to play the
-  Dexed, Ensemble, Grains, and SampleSynth instruments described below.
-  Standard 5-pin DIN or TRS MIDI IN, whatever your controller uses; no
-  extra wiring needed.
-- **Micro SD Card** formatted to FAT32.
-  Inserted into the pod to save and load your files. This is a
-  hand-wired socket with no card-detect pin, so swapping cards while the
-  Pod is powered on isn't reliably picked up — power off before
-  removing/reinserting a card, then power back on. See
+- **[Daisy Pod](https://daisy.audio/products/pod)** — two knobs, two
+  buttons, one clickable encoder, two RGB LEDs, stereo in/out, all built
+  in.
+- **I2C OLED display** (SSD1306/SSD1309, 128x64) on the Pod's default
+  I2C1 pins: `SCL`→`D11`, `SDA`→`D12`, plus `3V3`/`GND`. Default address
+  `0x3C` — if it stays dark, try the commented-out `0x3D` line in
+  `main.cpp`.
+- **MIDI IN** (optional) — the Pod's built-in jack, plays Dexed/
+  Ensemble/Grains/SampleSynth.
+- **Micro SD card**, FAT32. A hand-wired socket with no card-detect pin
+  — power off before swapping cards. See
   [`sdcard-template/`](sdcard-template/) for a ready-made folder set to
   copy onto a fresh card (most folders are created automatically as you
-  use each feature, but the two Import folders aren't). It also ships 9
-  starter Grains presets (`GRNP/PRES001.DAT`-`PRES009.DAT`) so Grains has
-  something to play with out of the box.
-
-- **PZD Daisy Pod Case**
-  available at:
+  use each feature; the Import staging folders aren't, so the template
+  pre-makes those). Ships 9 starter Grains presets.
+- **PZD Daisy Pod Case** — free to print on
   [CULTS3D](https://cults3d.com/en/users/Planet_Zero_Designs_PZD/3d-models)
-  [PRINTABLES](https://www.printables.com/@PlanetZeroDe_5266703)
-  and
-  [ETSY](https://www.etsy.com/uk/shop/PlanetZeroDesignsPZD?ref=shop_profile&listing_id=4560482983)
+  or [PRINTABLES](https://www.printables.com/@PlanetZeroDe_5266703), or
+  buy one ready-made on
+  [ETSY](https://www.etsy.com/uk/shop/PlanetZeroDesignsPZD?ref=shop_profile&listing_id=4560482983).
 
 ## Features
 
-**Looping**
-- 4 independent stereo layers sharing one master loop length — the first
-  layer recorded sets the tempo-locked length every other layer records
-  to, so everything stays in sync automatically.
-- Record, play/pause, and overdub (additively layer new material onto an
-  existing take) on any layer — overdub gets its own tempo-locked
-  count-in too, then auto-stops after exactly one full pass (or stop it
-  early with a tap).
-- Tempo-locked count-in with an audible metronome click, or record
-  instantly with the metronome off.
-- Live waveform display per layer with a moving playhead, auto-scaled so
-  quiet input still shows clearly.
-- Undo last overdub — a short tap of Button 2 on Layer:Status instantly
-  restores that layer to right before its most recent overdub. One
-  shared slot across all 4 layers (undoes only the single most recent
-  overdub, not a full history per layer).
+**Looping** — 4 tempo-synced layers; record/pause/overdub with
+count-in; undo last overdub; live waveform with moving playhead.
 
-**Per-layer controls**
-- Volume, Pan, Speed (0.3x–2x, tape-style — affects pitch too)
-- Filter: Off / Low-pass / High-pass / Band-pass, with live cutoff and
-  resonance
-- One character effect at a time: Drive, Bitcrush, Chorus, Tremolo,
-  Phaser, AutoWah, or Flanger. Drive's second knob is an output trim
-  (0%–200%, centered at 100% = unchanged) to compensate for how much
-  louder a heavily-driven signal gets
-- Reverb send (each layer sends into one shared reverb — see Size below)
-- Input gain (1x–4x) for quiet sources
+**Per-layer** — Volume/Pan/Speed (0.3x–2x), Filter (Off/Low-pass/
+High-pass/Band-pass), one character effect at a time (Drive/Bitcrush/
+Chorus/Tremolo/Phaser/AutoWah/Flanger), reverb send, input gain
+(1x–4x).
 
-**Global**
-- Tempo (50–240 BPM), bars per loop (1–16, though slower tempos cap out
-  lower — see Control reference), metronome on/off — locked once any
-  layer holds a recording, so you can't pull layers out of sync
-- Master-bus filter, applied to the full mix
-- Reverb — one shared Dattorro-topology plate reverb (a real port of
-  [el-visio/dattorro-verb](https://github.com/el-visio/dattorro-verb),
-  see Thanks below) for every layer's reverb send, plus Bypass's own
-  independent send into that same room. `Global:GLB-FX`'s Size/decay is
-  the one knob everything already used; two more pages,
-  `Global:RevTone` (PreDelay, PreFilter, DecayDiffusion, Damping) and
-  `Global:RevDiff` (Input Diffusion 1+2), dial in the rest — from a
-  tight classic plate to a long, smeared, cloud-like wash. Turning Size
-  all the way down to 0% now fully switches the reverb off (and the
-  shared delay bus the same way, at its own Time knob's 0%) instead of
-  just running it on silence — a real, measured CPU cost with
-  everything else disabled, now avoidable when you're not using either
-- Bypass: hear your live input mixed into the output before you've even
-  recorded anything
-- Startup defaults — save your usual BPM/Bars/Volume/Metro/Filter/Reverb
-  size/Bypass as what the pedal boots into, so powering on lands exactly
-  where you like it instead of the factory defaults
-- Vari-speed — a project-wide tape-style speed control (0.3x–2x, same
-  feel as per-layer Speed) layered on top of everything already
-  recorded, changing pitch and tempo together — the metronome and beat
-  indicator track it live. Recording or overdubbing while it's off 1.0x
-  captures correctly in sync with everything else, so it's genuinely
-  usable as a performance/recording tool, not just a monitor toy
-- Scrub/Freeze — Button 1 on Global:Speed cycles Normal → Scrub →
-  Freeze → Normal. Scrub repurposes the encoder as a tape-scratch
-  control over the shared playback position across every layer at once
-  (normal playback keeps advancing underneath), with a composite
-  waveform + moving playhead to scrub against — fast turns cover more
-  ground than slow, deliberate ones. Freeze genuinely holds the
-  transport still instead: every layer loops a small (~60ms) window
-  around wherever playback currently sits as a smooth, click-free drone
-  (Hann-windowed, the same click-avoidance trick Grains' own grains
-  use), and the encoder scrubs which part of the loop that window plays
-  from. Un-freezing resumes exactly where the drone left off
+**Global** — Tempo (50–240 BPM)/Bars (1–16)/metronome, master filter,
+one shared Dattorro-topology plate reverb (Size/Tone/Diffusion pages)
+plus a shared delay, Bypass (live monitoring), and project-wide
+vari-speed with Scrub/Freeze transport modes.
 
-**Save/load**
-- Save and load full performances (all 4 layers' audio plus every
-  looper/tempo/global setting) to an SD card, up to 99 slots. Dexed and
-  Grains each have their own fully independent preset
-  systems (see above) — a performance deals only with the looper, and
-  never embeds any instrument's sound, so switching/tweaking a synth's
-  patch never disturbs a saved performance and vice versa.
-- Saving always offers a choice between Overwrite (the currently loaded
-  file) and Save New; loading shows the same style of choice between
-  browsing existing files or starting fresh with New — identical
-  convention across performances, Dexed presets, and Grains presets.
-- Loading a performance is now much faster — a full 4-layer save that
-  used to take around 15 seconds now loads in under 2.
-- Export the current performance as a standard stereo WAV file — one full
-  loop, every layer's live filter/effect/reverb chain and the
-  master filter applied, peak-normalized so it doesn't come out quiet.
-  Two output options: full-quality native 48kHz for general use, or a
-  44.1kHz-resampled copy saved straight into a `custom/` folder so the
-  same SD card can go directly into a MicroDexed Touch's second card
-  slot and be picked up as a sample with no copying needed. Whatever
-  vari-speed is currently dialed in gets baked into the export on
-  purpose, so you can capture a deliberate vari-speed effect to a file
+**Save/load** — Performances (all 4 layers' audio plus every looper/
+global setting) and every engine's own presets save to SD, each with
+the same Overwrite/Save New convention. Export the current performance
+as a WAV — full-quality native 48kHz, or 44.1kHz straight into a
+`custom/` folder so the same card drops into MicroDexed Touch's second
+slot with no copying needed.
 
-**Dexed** — a MIDI-played, real 6-operator, 10-voice DX7 clone running
-alongside the looper (`Global:Dexed`, opened by clicking the encoder
-there), built around Google's own **msfa** DX7 emulation core — the real
-32 algorithms, the real envelope/scaling model, not an approximation.
-Off by default; switch it on from `Global:Dexed` (independent of
-Grains — no mutex, both can run together). Its own `MIDI` page sets
-which incoming MIDI channel it listens to (Omni or 1-16) — independent
-of Grains' own channel, so a keyboard split across channels can play
-just one engine at a time, or both can stay on Omni as before.
-- **3129 factory presets** across 54 folders — **Rom 1**-**Rom 4** (the
-  real, unsorted contents of the actual Yamaha factory ROM cartridges),
-  plus 50 more from one real ~100-bank collection that came already
-  organized into named categories (Synth/Piano/EPiano/Bass/Strings/
-  Woodwind/Brass/Organ/Perc/Voice/Bells/FX/Div), each split into as many
-  same-named numbered folders (Synth 1, Synth 2, ...) as it takes to
-  keep every one at or under 64 presets, so scrolling with Knob 1 always
-  stays accurate — real, freely-distributed SysEx data from the broader
-  Dexed/MicroDexed open-source ecosystem, never invented.
-  Picking "Files" opens a group chooser first — **Roms** / **Dexed**
-  (the two factory groups above) / **Imports** / **User** — since the
-  flat folder list alone would only keep growing as you import more
-  banks (see below). Button 1 is Back, Button 2 is Open at the group and
-  folder-list levels; once inside an actual folder, a short Button 2 tap
-  previews the highlighted patch live without leaving the browser, hold
-  to commit. Opening this page used to be noticeably slow (and audibly
-  noisy) — fixed by replacing hundreds of individual SD card lookups
-  with one real directory scan.
-- **Import your own SysEx patches** — drop a `.syx` file (a single voice
-  or a full 32-voice bank dump) into `DXIMPORT/` on the SD card, then
-  Preset → Files → Import → hold Button 2. Each import gets its own
-  named folder (named after the file itself) under the Files → Imports
-  group, saved as regular files on the card and read back on demand —
-  never baked into the firmware, so you can import as many banks as the
-  card has room for.
-- **Algorithm page** shows a real box-and-arrow diagram of whichever of
-  the 32 algorithms is loaded (carriers filled, modulators outlined, feedback
-  tagged) — drawn fresh from the actual routing data, not 32 fixed
-  pictures. Cycle it with Knob 1 or Buttons 1/2.
-- **Brightness** and **Envelope Speed** macros scale every modulator's
-  level, or every operator's envelope rate, together — centered at "as
-  the preset saved it," so they're a quick sound-shaping layer on top of
-  any patch rather than a replacement for editing it.
-- Feedback, Vibrato (LFO speed/depth), its own filter, Pan, its own
-  DX-FX (reverb/delay send) page, and output level round out the simple
-  pages. Automatically compensates its own headroom when several notes
-  play at once, so a hot, high-feedback patch doesn't distort just from
-  being played as a chord.
-- **DX-FOLD — a true wavefolder, Dexed-only.** Unlike a clip-style
-  distortion (which just flattens peaks), folding reflects an
-  overshooting signal back into the waveform, generating genuinely new
-  harmonic content the harder it's driven — a classic pairing with FM
-  synthesis, not something that suits recorded/granular audio as well,
-  which is why it's kept exclusive to Dexed rather than added
-  everywhere. Knob 1 is Fold Amount (0% is an exact, click-free bypass);
-  Knob 2 is output trim, same role as Drive's own trim above. Sits
-  right after DX-FX in the page order.
-- **Advanced editor** — the last simple page before Preset drills into a
-  real per-operator editor (encoder click to enter, short click to
-  return, long-press to Home like everywhere else). Its first page is
-  the same Algorithm diagram as the Algo page above (read-only here —
-  edit it from there), handy as a routing/carrier reference while
-  browsing operators without leaving the screen. Pick one of the 6
-  operators (Button 1) and edit its Ratio/Level, Detune, Attack/Decay/
-  Sustain/Release for both its pitch-EG rate and level pairs, mod-wheel
-  Amp/EG sensitivity, key velocity sensitivity, and keyboard rate
-  scaling.
+**Mixer** (`Global:Mixer`) — one screen with Volume/Pan/Reverb-send for
+all 4 layers plus every engine and Bypass, a live oscilloscope of the
+final mix, per-channel peak meters with clip indicators, and a live CPU
+meter.
 
-Dexed sound demos:
+**SD card management** (`Global:SdMgmt`) — a grid of all 8 save
+categories (Performances, Grains/Dexed/Ensemble presets, and
+SampleSynth's Captures/Kits/Voice User/Drum User presets) — duplicate
+or delete any file directly on the device, no computer needed.
 
-Flexitone:
-https://github.com/user-attachments/assets/fb43b8bd-0961-47e8-9b8a-c146e5467c7b
+### Importing real OP-1 sample packs
 
-Marimba with delay:
-https://github.com/user-attachments/assets/e26f79ab-3f50-418c-a878-0a9233a4e0d5
+The actual licensed OP-1 packs aren't bundled with this firmware, but
+you can download your own from [op1fun](https://op1.fun/) (or export one
+from the OP-1 pack builder) as `.aif` files and convert them yourself:
 
-Clav DNS:
-https://github.com/user-attachments/assets/ee4c3608-c0e0-40c6-aa30-00c4e3d72f9b
-
-**Ensemble** — a MIDI-played, 8-voice divide-down string-machine/
-ensemble-organ instrument (`Global:Ensemble`), the same lineage as the
-real ARP Solina String Ensemble and the classic 1970s string machines it
-inspired. Off by default; switch it on from `Global:Ensemble`,
-independent of Dexed, Grains, and SampleSynth — all four can run
-together.
-- **7 real drawbars**, Hammond-style: Saw8', Sq8', Saw4', Sq4', Saw2',
-  Sq2', Saw1' (organ pipe-footage naming — lower numbers are lower
-  octaves). Knob 1 selects which drawbar, Knob 2 sets its level — mix
-  saws and squares freely to dial in anything from a warm, fundamental-
-  heavy pad to a bright, buzzy ensemble tone.
-- **Chorus** (depth/rate) gives it real stereo width, the same role the
-  Solina's own bucket-brigade chorus plays in the original instrument.
-- Its own filter, ADSR envelope (with the same live envelope graphic
-  Grains' own ADSR page has), output level/pan, reverb/delay send, and a
-  live oscilloscope on most pages so every knob visibly changes the
-  actual waveform.
-- **Pitch bend** (±2 semitones) always bends every held note; the
-  **mod wheel** is off by default and, once you pick a target (Chorus
-  Depth, Output Level, or Filter Cutoff — cycled with Button 1 on its
-  own MIDI page), pushes that parameter up from wherever its own knob
-  already has it set, rather than sweeping an independent range —
-  picking Filter Cutoff only does anything once Filter Mode is already
-  on.
-- Its own `MIDI` page sets which incoming channel it listens to (Omni
-  or 1-16), independent of Dexed's and Grains' own channels. Like both
-  of those, it also responds to MIDI CC 123/120 (All Notes Off/All
-  Sound Off) — and toggling it off and back on from `Global:Ensemble`
-  forces any stuck note to release too, a manual panic button that
-  doesn't depend on your controller sending that message at all.
-- 8 bundled factory presets to start from (Warm Pad, Bright Ensemble,
-  Organ, Thin Strings, Sub Swell, Chorus Lead, Mellow Choir, Bright
-  Pluck), plus auto-numbered save slots for your own.
-
-**Grains** — a MIDI-played, monophonic granular instrument
-(`Global:Granular`), also running alongside the looper. Capture audio
-either by recording live input directly (also picks up Dexed's own
-sound if it's playing) or pulling in whatever's already
-on one of the 4 loop layers, then play it back through two overlapping
-grain layers: a fixed-position **Grain** cloud and a sweeping **Scan**
-layer, each with its own independent Fill/Gap and Direction (forward/
-reverse/random) — Grain also has its own Jitter (randomizes each
-grain's read position slightly, smearing out an otherwise perfectly
-periodic click some sources can produce), Scan has its own adjustable
-Start/End range with Bounce (reverses at each edge) or Wrap (jumps
-straight to the opposite edge). Grain size ranges 0-1000ms. Plus
-Position, Tune (with optional note-tracking), its own ADSR/filter/
-reverb+delay send (its own FX page)/pan, and a full-sample waveform
-display with live grain markers, including the Scan range's own
-boundary lines. A long Release now genuinely sustains a tail (new grains
-keep triggering through the whole release, not just while a note is
-held). The Grain layer can also be given a **rhythmic pattern** (Off, a
-small named groove bank, or two Euclidean density stops) and its own
-independent **Speed** (including syncing to the Looper's live tempo) —
-Fill still controls how thick each hit sounds, Speed controls how often
-they happen. Presets save the captured audio itself alongside every
-parameter, so loading one restores the exact sound, not just settings.
-Capture buffer holds up to ~10 seconds; importing a `.wav` from the SD
-card's `IMPORT/` folder accepts 16/24/32-bit PCM or 32-bit float, mono
-or stereo, and any of the common real-world WAV rates (8000-192000Hz) —
-anything other than 48kHz is resampled automatically, with a real
-anti-aliasing filter for genuine downsampling. Also switchable off from
-`Global:Granular` to free its CPU share. Its own `MIDI` page sets which
-incoming MIDI channel it listens to (Omni or 1-16), independent of
-Dexed's own channel.
-
-Grains demo:
-https://github.com/user-attachments/assets/8aa7bd86-f749-4e34-a360-c5dd3af774d0
-
-**SampleSynth** — a MIDI-played, 10-voice sample player
-(`Global:SampleSynth`), also running alongside the looper. Plays two
-different kinds of content: a **Sound** is a single melodic sample,
-chromatic across the whole keyboard (a captured recording, an
-orchestral/synth one-shot, whatever you load); a **Kit** is a
-multi-pad drum kit, up to 24 slices each mapped to its own key,
-one-shot (plays to its own natural end regardless of how briefly the
-key's held, like a real drum machine pad rather than a sustained
-synth voice).
-- Its own filter, ADSR envelope, output level/pan, reverb/delay send,
-  and a MIDI page (channel Omni or 1-16, independent of Dexed/
-  Ensemble/Grains) — same shape as the other three instruments.
-- **Capture** your own Sound directly: record live input, pull in
-  whatever's already on one of the 4 loop layers, or import a `.wav`
-  from the SD card's shared `IMPORT/` folder (the same folder Grains'
-  own Capture page uses). **Trim** sets start/end non-destructively
-  and previews with Button 1; holding Button 2 saves the trimmed range
-  as a real Sound file under `SAMPLES/CAPTURED1` or `CAPTURED2`, ready
-  to browse, favorite, or drop straight into a Kit like anything else.
-  **Tune** sets a ±24 semitone offset and toggles chromatic playback on
-  or off.
-- **Preset** (load-only) browses your saved Kits (a flat numbered
-  list) and Sounds (a small category list, plus whatever you've
-  Captured). **User** is a flat, category-free list of favorited
-  Sounds — bookmark whatever's currently loaded with Button 1 so a
-  sound you like from deep inside a category never means re-browsing
-  it.
-- **Mono/Choke** — a per-Kit toggle (Mix page, Button 1) that makes a
-  new pad silence whatever other pad was still ringing instead of
-  layering over it. Off by default (so a real drum kit's independent
-  kick/snare/hihat pads keep overlapping freely, same as a real drum
-  machine); importing an OP-1 drum pack below turns it on automatically
-  for that Kit, since every one of its pads is a slice of the *same*
-  recording and letting two of them ring at once is never intended.
-
-**Importing real OP-1 sample packs** — the actual licensed OP-1 packs
-can't be bundled with this firmware, but you can download your own from
-[op1fun](https://op1.fun/) (or export one from the OP-1 pack builder)
-as `.aif` files and convert them into real, playable Kits/Sounds
-yourself:
-1. Drop drum-pack `.aif` files into the SD card's `SampleKit/` folder,
-   and sampler/instrument-pack `.aif` files into `SampleSound/` (both
-   already exist at the card's root, each with their own `README.txt`).
-2. On the Pod, go to `Global:SampleSynth` → **Import** page. Button 1
-   cycles what to convert (Kit / Sound / All); holding Button 2 for
-   800ms runs the conversion, with a progress bar for larger packs.
-3. A drum pack becomes a new Kit, with each of its real splice points
-   (read straight from the pack's own OP-1 metadata) mapped to its own
-   key, tuned and sliced exactly as the pack author intended — no
-   manual trimming needed. A sampler/instrument pack becomes a new
-   Sound, already tuned to its own real recorded pitch (also read from
-   the pack's own metadata) — play it at that note for the original
-   pitch, any other note transposes from there.
-4. Successfully-converted files move into their own `Done/` subfolder
-   automatically, so running Import again never reprocesses them —
-   drop in a new pack any time and Import picks up only what's new.
-5. Both AIFF and AIFF-C (compressed-container, PCM or byte-swapped PCM)
-   `.aif` files are accepted, mono or stereo, since real packs
-   (especially sampler/instrument patches) use either.
+1. Drop drum-pack `.aif` files into `DRUM PACK IMPORT/`, and sampler/
+   instrument-pack `.aif` files into `SOUND PACK IMPORT/` (both already
+   exist at the card's root).
+2. On the Pod: `Global:SMPDR` for a drum pack, or `Global:SMPVO` for a
+   sampler pack → **Import** page. Button 1 cycles what to convert (Kit/
+   Sound/All); hold Button 2 to run the conversion.
+3. A drum pack becomes a new Kit with each real splice point mapped to
+   its own key; a sampler pack becomes a new Sound already tuned to its
+   real recorded pitch — both read straight from the pack's own
+   metadata, no manual trimming needed.
+4. Converted files move into their own `Done/` subfolder automatically,
+   so running Import again only picks up what's new.
 
 **Recording Dexed, Ensemble, Grains, or SampleSynth into a loop layer**
-— playing any instrument while a layer is actively recording/overdubbing
-captures its live sound directly into the take, mixed with your physical
-input, with no patch cable needed.
+— playing any instrument while a layer is recording/overdubbing captures
+its live sound directly into the take, mixed with your physical input,
+no patch cable needed.
 
-**CPU tips** — the Looper, Dexed, Ensemble, Grains, and SampleSynth are
-all independently switchable (`Global:Looper`/`Global:Dexed`/
-`Global:Ensemble`/`Global:Granular`/`Global:SampleSynth`), and each
-toggle is a real CPU lever, not just a mute: turning an engine off
-skips its processing entirely, not just its output. Ensemble itself is
-cheap — 8 voices plus its shared chorus measured at only ~19-23% peak
-CPU in isolation — but running everything at once with reverb/delay
-active on several of them is still the heaviest realistic combination
-this hardware handles — worth keeping in mind if you're pushing 4
-layers, all four instruments, and effects all together.
+### CPU tips
 
-A workflow that keeps CPU headroom on your side: record your Dexed,
-Ensemble, Grains, and SampleSynth parts into loop layers first, **then
-switch those engines off** once you've got the takes you want — you get
-their CPU share back immediately. Save dialing in reverb/delay for
-last, once you know what's actually being kept, rather than running
-effects continuously while you're still auditioning sounds.
+CPU headroom isn't a real concern on the current build, but a few
+habits keep it on your side:
 
-The Looper can also be switched off entirely while still playing Dexed,
-Ensemble, Grains, and/or SampleSynth live — none of them depend on it
-at all, and Bypass (live mic monitoring) keeps working too, so you can
-jam with any combination of them plus a live mic with the whole looper
-switched off and using none of its CPU.
-
-Dexed now skips its own idle voice slots instead of always computing
-all 10 — a real, free CPU saving for sparse/single-note playing. A full
-chord still uses most or all of those 10 voices for real, though, so
-that specific case doesn't benefit as much.
-
-The firmware itself also got a lot more CPU-efficient across the board
-this session — same sound, confirmed by ear every step, just real
-headroom gained back. Part of it was compiler-level (nothing to turn
-on), and part was moving the reverb's own internal buffers to faster
-memory, which turned out to be the single biggest win of all —
-reverb's own CPU cost dropped by roughly 60%. Even the heaviest
-realistic combination (all 4 layers recorded, reverb, Dexed, and
-Grains all playing at once) now tops out well under 100% rather than
-pinning the ceiling. Playing absolutely everything at once will still
-cost real CPU eventually — there's only so much one chip can do — but
-the ceiling is much further away than it used to be.
-
-**Mixer** — one screen (`Global:Mixer`, opened by clicking the encoder
-there) with Volume/Pan/Reverb-Send for all 4 loop layers, Grains, Dexed,
-Ensemble, SampleSynth, and Bypass, plus Volume/Reverb-Size for the
-final Master bus, ending in a live oscilloscope of the actual output
-mix. Each channel also shows a real-time Peak meter alongside its
-Vol/Rev bars, with a clip indicator (a brief hold, not just instant)
-that lights up if that channel pushes past nominal full-scale — useful
-for checking levels before you record, since there's no other level
-feedback anywhere else in the UI. Rotate the encoder to step through
-each channel in turn; `Global:Mixer` itself shows an at-a-glance
-overview grid of all 10 channels' live Peak levels,
-plus a live CPU meter in its own footer (smoothed average and a peak
-reading that quietly rolls over every ~10 seconds, so changing a
-setting shows its own fresh peak again quickly instead of staying
-pinned to an old worst-case) — measures the audio engine's own time
-budget specifically, not the whole system (display/MIDI/UI overhead
-isn't included).
-
-**SD card management** — `Global:SdMgmt` lets you browse 4 save
-categories (Performances / Grains Presets / Ensemble Presets /
-SampleSynth Captures — Dexed Presets aren't covered by this screen
-yet, a known gap; remove one by deleting its `DEXP/PRESnnn.DAT` file
-directly on a computer instead) and Duplicate or Delete individual
-files directly on the card, without needing a computer. SampleSynth's
-own Kits and ordinary Sounds aren't covered here either (only its
-Captures) — manage those directly on a computer under `SAMP/` and
-`SAMPLES/SOUNDS/`. Deleting a file automatically closes the gap left behind —
-every higher-numbered file in that category shifts down to keep the
-numbering contiguous, so a later Save New always continues right after
-the last real file instead of quietly reusing whatever number you just
-freed.
+- Looper, Dexed, Ensemble, Grains, and SampleSynth are each
+  independently switchable from their own `Global:` page — switching
+  one off frees its CPU share entirely, not just its output.
+- SMPVO/SMPDR share one engine and are mutually exclusive, so only one
+  of them ever costs CPU at a time.
+- Record your synth parts into loop layers first, then switch those
+  engines off once you've got the take you want.
+- Dial in reverb/delay last, once you know what's actually being kept —
+  several engines sending into effects at once is the heaviest realistic
+  combination.
+- `Global:Mixer`'s own footer shows a live CPU meter if you want to
+  check headroom directly.
 
 ## How to use it
 
 **Recording your first loop**
 1. On the Home screen, rotate the encoder to pick a layer (1–4).
-2. Hold Button 1 to arm recording — if the metronome is on, it'll count
-   in a bar first.
-3. Play. Recording stops automatically once the bar loop length is
-   reached (or tap Button 1 to stop early).
-4. Tap Button 1 again to pause/resume playback; hold it again to overdub
-   more onto the same layer.
+2. Hold Button 1 to arm recording — the metronome counts in a bar first
+   if it's on.
+3. Play. Recording stops automatically at the bar loop length (or tap
+   Button 1 to stop early).
+4. Tap Button 1 to pause/resume playback; hold it again to overdub more
+   onto the same layer.
 
 **Navigating the menu**
 - **Rotate** the encoder: on Home, moves between layers; on any other
   page, cycles through that page's sub-pages.
 - **Click** the encoder: from Home, opens the selected layer's pages; on
-  `Global:Dexed`/`Global:Ensemble`/`Global:Granular`/`Global:Mixer`,
-  drills into that instrument/mixer's own screen; on any Dexed,
-  Ensemble, or Grains page, mutes/unmutes all 4 loop layers, same as
-  every other Global page's click. On the Mixer screen itself, rotate
-  steps through channels instead of pages (see below).
+  any Global page hosting an instrument (Dexed/Ensemble/Grains/SMPVO/
+  SMPDR) or the Mixer, drills into that screen; anywhere else, mutes/
+  unmutes all 4 loop layers.
 - **Long-press** the encoder: from Home, opens Global settings; from
-  anywhere else (including Dexed, Ensemble, Grains, and Mixer), goes
-  back to Home.
+  anywhere else, goes back to Home.
 
 Both knobs and both buttons are "soft" — what they do depends on which
-page is open, and it's always shown on screen: each footer row has a
-label on either side of a small icon (a circle for the knobs, a square
-for the buttons).
+page is open, and it's always shown on screen in the footer.
 
 **Knob pickup** — knobs don't jump the moment you touch them. Each one
 shows its live current value; turning the physical knob only takes
-control once it reaches that value, so switching pages or layers never
-suddenly yanks a setting to wherever the knob happens to be sitting.
+control once it reaches that value.
 
 **Basic workflow**, using pocket operators (applied effects before
 making the video). Also includes a WAV file of acoustic guitar input,
@@ -482,48 +177,13 @@ https://github.com/user-attachments/assets/1c081390-e61f-4a1b-9088-a552860b9a5d
 full performance combining everything above at once:
 https://github.com/user-attachments/assets/025a71a1-f06f-424a-bb34-b3bdb560e121
 
-**LEDs** — LED1 shows the currently-selected layer's state at a glance
-(off = empty, amber = counting in, red = recording, orange = overdubbing,
-green = playing, blue = paused). LED2 is a steady Bypass on/off indicator.
+**LEDs** — LED1 shows the looper's transport at a glance: green = any
+layer playing, blue = any layer paused, off = looper disabled or nothing
+playing/paused yet. LED2 lights red whenever something is actively
+recording — a loop layer recording/overdubbing, or a Grains/SampleSynth
+capture in progress.
 
-**Startup defaults** — dial in the Tempo/Volume/Metro/Filter/Reverb size/
-Bypass you always want to start with, then hold Button 2 on Global:Tempo
-for 800ms to remember it. From then on, powering the pedal on applies
-that saved state automatically — nothing saved yet just boots with the
-firmware's own defaults. This only covers global settings, never
-per-layer ones, and it's separate from "New" on Global:File, which keeps
-every current setting exactly as-is and only clears recorded audio.
-
-**Vari-speed, Scrub, and Freeze** — Global:Speed's Knob 1 is a
-tape-machine-style speed control for the whole project, not just one
-layer: dead-zone centered on 1.0x, sweeping down to 0.3x or up to 2x
-changes pitch and tempo together, and the metronome/beat indicator move
-with it so everything stays honest about what's actually audible.
-Button 1 cycles Normal → Scrub → Freeze → Normal:
-- **Scrub** repurposes the encoder to scratch the shared playback
-  position across every layer at once, against a composite waveform of
-  everything currently recorded — normal playback keeps advancing
-  underneath the whole time.
-- **Freeze** genuinely stops the transport instead: every layer loops a
-  small (~60ms) window around wherever playback currently sits as a
-  smooth, click-free drone (Hann-windowed, the same trick Grains' own
-  grains use to avoid clicks), and the encoder scrubs which part of the
-  loop that window plays from. Un-freezing resumes exactly where the
-  drone left off, no jump.
-
-Navigate away or long-press to Home and the encoder goes right back to
-normal (leaving while frozen un-freezes everything first). Recording or
-overdubbing while vari-speed is off 1.0x captures correctly (returning
-to 1.0x afterward won't throw anything out of sync), which also makes it
-a genuine creative tool — record something while sped up, and it comes
-back lower and slower once you return to normal speed, the classic tape
-trick. Button 2 resets vari-speed straight back to 1.0x. Vari-speed is a
-live-performance control like Master Volume — it always starts at 1.0x
-on boot and after loading a save, and it's *not* excluded from WAV
-export the way Master Volume is: whatever it's set to when you hit
-Export gets baked into the file on purpose.
-
-**Control reference**
+## Control reference
 
 | Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
 |---|---|---|---|---|
@@ -541,12 +201,13 @@ Export gets baked into the file on purpose.
 | Global: RevTone | PreDelay / DecayDiffusion | PreFilter / Damping | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
 | Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
 | Global: File | Choosing Save: Overwrite/Save New; Browsing Load: scroll files | — | Save / Select file list (Load) / Back | Hold 800ms = Save or Load, whichever's open |
-| Global: SD Mgmt | Scroll (folder or file list) | — | Tap = drill in/back, Hold 800ms = Duplicate | Hold 1500ms = Delete |
+| Global: SD Mgmt | Scroll (category grid or file list) | — | Tap = drill in/back, Hold 800ms = Duplicate | Hold 1500ms = Delete |
 | Global: Export | — | — | Tap = Export, native 48kHz ("Studio") | Tap = Export, 44.1kHz for MicroDexed ("CD") |
 | Global: Dexed | — | — | Toggle Dexed on/off (off by default) | — (push encoder to enter Screen::Dexed) |
 | Global: Ensemble | — | — | Toggle Ensemble on/off (off by default) | — (push encoder to enter Screen::Ensemble) |
 | Global: Granular | — | — | Toggle Grains on/off | — (push encoder to enter Screen::Granular) |
-| Global: SampleSynth | — | — | Toggle SampleSynth on/off (off by default) | — (push encoder to enter Screen::SampleSynth) |
+| Global: SMPVO | — | — | Toggle SMPVO on/off (disables SMPDR) | — (push encoder to enter Screen::SampleSynth) |
+| Global: SMPDR | — | — | Toggle SMPDR on/off (disables SMPVO) | — (push encoder to enter Screen::SampleSynth) |
 | Global: Looper | — | — | Toggle the whole 4-layer looper on/off | — |
 | Global: Mixer | — | — | — | — (push encoder to enter the Mixer screen) |
 
@@ -569,11 +230,9 @@ Export gets baked into the file on purpose.
 
 The Algo page shows a real box-and-arrow diagram of whichever algorithm
 is loaded (filled boxes = carriers, outlined = modulators, "FB" tags the
-one operator with feedback), redrawn fresh from the actual routing data
-for all 32 rather than 32 fixed pictures. Clicking the encoder on any
-Dexed page other than Advanced mutes/unmutes all 4 loop layers, same as
-every Global page. Pan isn't on this screen — it's on Dexed's own Mixer
-channel instead (see Mixer below).
+feedback operator). Clicking the encoder on any Dexed page other than
+Advanced mutes/unmutes all 4 loop layers. Pan isn't on this screen — see
+Mixer below.
 
 **Dexed advanced editor (`Screen::DexedOperator`, entered from the
 Advanced page above, rotate to cycle pages)**
@@ -589,9 +248,8 @@ Advanced page above, rotate to cycle pages)**
 | VelocitySens | Key velocity sensitivity (0-7) | — | Cycle operator (1-6) | — |
 | KeybRateScale | Keyboard rate scaling (0-7) | — | Cycle operator (1-6) | — |
 
-A short encoder click here returns to Screen::Dexed's own Advanced
-page; long-press still goes all the way to Home, same as everywhere
-else. The real DX7 operator number (1-6) is always shown in the title.
+A short encoder click here returns to Screen::Dexed's own Advanced page;
+long-press goes all the way to Home.
 
 **Ensemble (`Screen::Ensemble`, rotate to cycle pages)**
 
@@ -607,9 +265,8 @@ else. The real DX7 operator number (1-6) is always shown in the title.
 | Preset | Top: Files/New. Files → combined factory+user list | — | Save / Back | Select (top) / Tap: preview, Hold: confirm |
 
 Clicking the encoder on any Ensemble page mutes/unmutes all 4 loop
-layers, same as every other instrument screen. The mod wheel's own
-target cycle (Button 1 on the MIDI page) defaults to Off — see
-**Ensemble** above for what each target does.
+layers. Boots with all 7 drawbars flat at 60% before any preset is
+loaded.
 
 **Grains (`Screen::Granular`, rotate to cycle pages)**
 
@@ -629,36 +286,47 @@ target cycle (Button 1 on the MIDI page) defaults to Off — see
 | Trim | Trim start | Trim end | Play trimmed section | — |
 | Preset | See Save/load above | — | Save / Select (Load) / Back | Hold 800ms = confirm |
 
-Clicking the encoder on any Grains page also mutes/unmutes all 4 loop
-layers.
+Clicking the encoder on any Grains page mutes/unmutes all 4 loop layers.
 
-**SampleSynth (`Screen::SampleSynth`, rotate to cycle pages)**
+**SampleSynth (`Screen::SampleSynth`, shared by SMPVO/SMPDR — rotate to
+cycle pages)**
+
+Shared by both:
 
 | Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
 |---|---|---|---|---|
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Env | Attack / Sustain | Decay / Release | Target AD | Target SR |
-| Mix | Output level | Pan | Toggle Mono/Choke (per-kit) | — |
+| Mix | Output level | Pan | — | — |
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Target Reverb | Target Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
+| Import | — | — | Cycle target (Kit/Sound/All) | Hold 800ms = Import |
+| Preset | SMPVO: Sounds/Captured category → files. SMPDR: Kits flat list | — | — (Back while browsing) | Select/Open, Hold 800ms = Load |
+| User | — | — | Save (Overwrite/New, Idle) / Back | Select/Open, Hold 800ms = Load/Save |
+
+SMPVO-only:
+
+| Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
+|---|---|---|---|---|
 | Capture | — | — | Cycle source (Direct/Layer/Import) | Hold = record or capture |
 | Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save as Sound |
-| Tune | Tune (±24 semitones) | — | Toggle chromatic on/off | — |
-| Import | — | — | Cycle target (Kit/Sound/All) | Hold 800ms = Import |
-| Preset | Kits: flat list. Sounds: Sounds/Captured category → files | — | Toggle Kits/Sounds (or Back) | Select/Open, Hold 800ms = Load |
-| User | — | — | Bookmark (Idle) / Back (Browsing) | Select/Open, Hold 800ms = Load |
+| Tune | Cap Tune (±24 semitones) | Imp Tune (±24 semitones) | Mono/Poly-Cap | Mono/Poly-Imp |
+
+SMPDR-only:
+
+| Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
+|---|---|---|---|---|
+| Setup | Tune (±24 semitones, live) | Slices (0-16, pending) | Toggle Mono/Choke (per-kit) | Hold 800ms = apply Slices |
 
 Clicking the encoder on any SampleSynth page mutes/unmutes all 4 loop
-layers, same as every other instrument screen. See **Importing real
-OP-1 sample packs** above for how Kits/Sounds actually get onto the
-card, and **SampleSynth** above for what Mono/Choke does.
+layers. See **Importing real OP-1 sample packs** above for how Kits/
+Sounds get onto the card.
 
 **Mixer (`Screen::Mixer`, rotate to step through channels)**
 
-Each of the 10 channels (Layer 1–4, Grains, Dexed ("DXD"), Ensemble
-("ESB"), SampleSynth ("SMP"), Bypass, Master) gets its own stop;
-rotating past the last one shows a live oscilloscope of the final
-output mix, then wraps back to Layer 1.
+Each of the 10 channels (Layer 1–4, Grains, Dexed, Ensemble, SampleSynth,
+Bypass, Master) gets its own stop; rotating past the last one shows a
+live oscilloscope of the final output mix, then wraps back to Layer 1.
 
 | Channel | Knob 1 | Knob 2 | Button 1 | Button 2 |
 |---|---|---|---|---|
@@ -698,9 +366,7 @@ first time right after the bootloader install above):
   automatically — no DFU window to catch, works every time. If it's a
   fresh card, copy the contents of [`sdcard-template/`](sdcard-template/)
   onto the same root first (or alongside `main.bin`, order doesn't
-  matter) — it sets up the folders Grains/Dexed importing needs
-  (`IMPORT/`, `DXIMPORT/`), which aren't created automatically, and
-  pre-loads 9 starter Grains presets.
+  matter).
 - **Alternative — DFU**: put the Pod into DFU mode the same way as above,
   then either `make program-dfu` from `src/`, or drop `main.bin` onto
   [Electrosmith's web programmer](https://flash.daisy.audio/). The
@@ -719,9 +385,10 @@ cd src && make
 ## Thanks
 
 - [**kooliha's Ouroboros Loop Station**](https://github.com/kooliha/Ouroboros_Loop_Station)
-  — this project's name and general concept come from that original
-  design, a DIY 5-track stereo loop station for the Daisy Seed. This
-  firmware follows its per-layer loop-buffer struct as a direct
+  — this project's original concept and file organization came from
+  that design, a DIY 5-track stereo loop station for the Daisy Seed
+  (the name has since diverged, grown well past a pure loop station).
+  This firmware follows its per-layer loop-buffer struct as a direct
   structural template, then rewrites everything else — no direct
   hardware coupling in the DSP layer, plus filter/effects/reverb,
   the OLED menu, and SD save/load, none of which exist in the original.
