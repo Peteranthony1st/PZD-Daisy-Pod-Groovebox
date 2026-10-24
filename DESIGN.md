@@ -2163,8 +2163,10 @@ otherwise read out of bounds against a shorter new capture.
 **Two grain layers, one mechanism**: both **Grain** (a fixed-Position
 anchor) and **Scan** (a continuously-sweeping anchor, bouncing or
 wrapping between an independently adjustable Start/End range) are the
-exact same `GrainCluster` — `kGrainsPerVoice` = 10 overlapping grain
-slots (raised from an original 3, see *A real periodic-click bug* below
+exact same `GrainCluster` — up to 16 overlapping grain slots for Grain
+(`kGrainsPerVoice`) and 10 for Scan (`kScanGrainsPerVoice`) (raised from
+an original 3, then to 10, then Grain alone to 16 — see *Grain count 16,
+and making each grain cheaper* below; see *A real periodic-click bug* below
 for why headroom to go well past a bare minimum overlap turned out to
 matter), scheduled independently per cluster. This is a deliberate
 redesign, not a port: the earlier engine's Scan was a single retriggered
@@ -2188,7 +2190,8 @@ are genuinely different textures that want different overlap/spacing
   request, once the shorter ceiling turned out to rule out longer,
   more ambient textures.
 - **Fill** (Grain page Knob 2, Scan page Knob 2, independently): how many
-  of the `kGrainsPerVoice` slots each cluster uses (0 = silence).
+  of its cluster's slots each layer uses (0 = silence; up to 16 for
+  Grain, 10 for Scan).
   Renamed from the earlier engine's "Grain Count" to match the reference
   hardware granular device this redesign is modeled after.
 - **Gap** (Grain page Knob 1 under Button2's Gap+Jitter toggle for
@@ -2505,8 +2508,8 @@ bumps.
 **A known aliasing artifact with Map to Note**: playing notes well above
 or below the held note that a grain's Tune was set at can sound
 noticeably louder/brighter going up and quieter going down. Traced this
-to `RenderGrain()`'s plain 2-point linear interpolation (`src_l_[idx0]*
-(1-frac) + src_l_[idx1]*frac`) having no anti-aliasing filter — Map to
+to `RenderGrainSpan()`'s plain 2-point linear interpolation (`p0 +
+(p1-p0)*frac` between adjacent source frames) having no anti-aliasing filter — Map to
 Note pushes `read_inc` above 1.0 for higher notes, skipping source
 samples with nothing band-limiting the read first, which is a textbook
 recipe for aliased energy folding back into the audible range (heard as
@@ -2518,6 +2521,57 @@ property of the interpolation, not a gain bug. A real fix (a properly
 band-limited resampler, or an oversample-then-filter approach) is a
 genuine DSP addition with its own real per-grain CPU cost, not attempted
 yet.
+
+**Grain count 16, and making each grain cheaper**: a request for denser
+Grain textures without more CPU — Scan deliberately left at 10. Grains
+was the most expensive engine on its own (Size 60ms, Fill 10, Scan 68%
+Fill 10, reverb send 35%, everything else off: **45 avg / 49 peak**
+playing, 20/22 idle), so raising the count alone wasn't acceptable.
+Three changes, each checked on the Mac against the previous version
+with a host build of `GranularEngine` (7–8 scenarios: jitter, short
+pitched grains, reverse+Gap, Scan muted, Rhythm, note interrupts, release
+tails, live Trim):
+- **Block rendering.** `Process()` used to render every active grain
+  once per sample, hopping between up to 2×slots SDRAM read positions
+  every sample. It now runs a per-sample *control* pass (ADSR, grain
+  scheduling, Scan sweep) and renders each grain across a whole span in
+  one tight loop (`RenderClusterSpan()`/`RenderGrainSpan()`), splitting
+  the span exactly where a grain is about to trigger so slot stealing
+  sees the same grain phases as before. Output was identical to float
+  rounding (~6e-8). Fill 10: 45/49 → **38/43**; idle 20/22 → 16/17 (the
+  old per-sample bookkeeping ran even with no grains active).
+- **16-bit source copy.** `SetSource()` now builds the engine's own
+  interleaved int16 copy (`g_granular_shadow`, 1.9MB SDRAM, owned by
+  main.cpp), peak-normalized to the full int16 range with the inverse
+  scale folded into each grain's gain — so neither a hot capture clips
+  nor a quiet one wastes bits. Grains (both layers) read only this; the
+  float buffer still feeds Trim preview, the waveform, capture and save.
+  `SetTrimRange()` stays O(1) by offsetting into the existing copy, and
+  orders its pointer/length updates so a callback landing mid-update
+  never reads past either range. `SetSource()` hides the source
+  (`src_len_ = 0`, with a signal fence so the compiler can't fold the
+  store away) while the copy is rebuilt.
+- **Hann window** read nearest-entry from a 1024-point table instead of
+  interpolating a 256-point one.
+
+The last two together measured 72–80dB below the signal against block
+rendering alone — inaudible. Final numbers, same test: **Fill 10: 31/35**
+(fast playing 33/36); **Fill 16: 34/38** slow, 37/40 fast with an 83%
+release (was 52/56 before the 16-bit copy); Scan muted at Fill 16:
+27/30. Idle 15–16/17. So the grains' own cost (playing minus idle) went
+from ~25 points at 10 grains to ~19 at 16, with Scan's 10 grains ~7 of
+that — the 16-bit copy was the biggest single win, confirming the grain
+loop was mostly waiting on SDRAM, not doing arithmetic. A suggested cap
+on concurrent release fades was dropped after reading the code: a note
+interrupt fades the old grains over 2ms while new ones start one hop at
+a time, so it never actually doubles the grain count — the higher
+"fast playing" figure was just the engine never going idle under a long
+release.
+
+Fill is stored in presets as a fraction of the slot count, so — as when
+it went from 3 to 10 — existing Grains presets come back proportionally
+denser (full Fill = 16 now); the 1/Fill overlap gain keeps loudness the
+same. Cost: SDRAM 89.4% → 92.3%, SRAM +~5KB (95.4%).
 
 ## Screen::Mixer
 

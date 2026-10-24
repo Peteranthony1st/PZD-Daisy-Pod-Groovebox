@@ -95,6 +95,9 @@ size_t g_undo_backup_len  = 0;
 constexpr size_t kGranularCaptureSamples = 480000; // ~10s @ 48kHz
 float DSY_SDRAM_BSS g_granular_capture_l[kGranularCaptureSamples];
 float DSY_SDRAM_BSS g_granular_capture_r[kGranularCaptureSamples];
+// GranularEngine's own interleaved 16-bit copy of whatever it's playing
+// (see GranularEngine::SetSourceShadow()) -- rebuilt on every SetSource().
+int16_t DSY_SDRAM_BSS g_granular_shadow[kGranularCaptureSamples * 2];
 
 // Shared between Ui (which starts/stops recording on Button2 press/
 // release -- see Ui::HandleButton2()) and AudioCallback() (which actually
@@ -1124,6 +1127,7 @@ int main(void)
     fx_master_filter_r.Init(hw.AudioSampleRate());
 
     granular.Init(hw.AudioSampleRate());
+    granular.SetSourceShadow(g_granular_shadow, kGranularCaptureSamples);
     dexed.Init(hw.AudioSampleRate());
     ensemble.Init(hw.AudioSampleRate());
     sample_synth.Init(hw.AudioSampleRate());

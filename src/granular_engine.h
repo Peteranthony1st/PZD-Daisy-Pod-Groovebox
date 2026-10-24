@@ -30,6 +30,16 @@ class GranularEngine
 {
   public:
     void Init(float sample_rate);
+    // The engine's own 16-bit stereo copy of the source (interleaved L/R,
+    // capacity_frames frames, SDRAM, owned by main.cpp) -- see
+    // SetSource(). Grains render from this, not from the float buffer:
+    // half the SDRAM traffic per grain sample, and L/R of one frame land
+    // in a single word. Must be set before the first SetSource().
+    void SetSourceShadow(int16_t* buf, size_t capacity_frames)
+    {
+        shadow_          = buf;
+        shadow_capacity_ = capacity_frames;
+    }
 
     // len == 0 means "nothing captured yet" -- NoteOn() is a no-op then.
     // Silences both grain clusters outright (a grain's position was
@@ -53,6 +63,9 @@ class GranularEngine
     // costly to redo at knob-polling rate; doing so was a second real,
     // user-reported cause of "still jumpy, slow to update" on this page
     // even after the reset fix above.
+    // Also O(1) on the 16-bit copy when the trimmed range lies inside the
+    // buffer last given to SetSource() (always the case for Trim) -- it
+    // just offsets into the existing copy instead of rebuilding it.
     void SetTrimRange(const float* buf_l, const float* buf_r, size_t len);
     // Rebuilds waveform_peaks_ from whatever src_l_/src_len_ currently
     // point at -- called automatically by SetSource() (a rare, one-time
@@ -102,14 +115,14 @@ class GranularEngine
     void  SetFill01(float v01);
     float GetFill01() const { return (float)fill_count_ / (float)kGrainsPerVoice; }
     int   GetFill() const { return fill_count_; }
-    // Scan layer's own independent grain count, same [0, kGrainsPerVoice]
+    // Scan layer's own independent grain count, [0, kScanGrainsPerVoice]
     // quantization and meaning as Fill above, just for the Scan cluster
     // instead of the Grain cluster -- previously hardcoded to always
     // match Fill exactly (one shared fill_count_ used by both clusters),
     // split out per a real user request (dense Grain texture, sparse
     // single Scan grain, or any other independent combination).
     void  SetScanFill01(float v01);
-    float GetScanFill01() const { return (float)scan_fill_count_ / (float)kGrainsPerVoice; }
+    float GetScanFill01() const { return (float)scan_fill_count_ / (float)kScanGrainsPerVoice; }
     int   GetScanFill() const { return scan_fill_count_; }
     // 0 = grains packed with no gap (hop = grain length / Fill), 1 =
     // maximally sparse (real silence between them) -- old engine's
@@ -447,7 +460,13 @@ class GranularEngine
     // loop and the release-fade loop in RenderCluster() scale with this
     // constant) -- costs nothing extra at lower Fill settings, since
     // only as many grains as Fill actually calls for ever render.
-    static constexpr int kGrainsPerVoice = 10;
+    // Raised again from 10 to 16 for the Grain layer only, alongside the
+    // per-grain block rendering in RenderClusterSpan() that keeps the
+    // extra grains roughly CPU-neutral. Scan keeps its own smaller cap
+    // (kScanGrainsPerVoice) -- the cluster arrays are sized for the
+    // larger of the two, Scan just never fills past its own.
+    static constexpr int kGrainsPerVoice     = 16;
+    static constexpr int kScanGrainsPerVoice = 10;
 
     struct Grain
     {
@@ -482,12 +501,21 @@ class GranularEngine
     // independent (see SetScanFill01()'s own doc comment).
     void  TriggerGrainInCluster(GrainCluster& c, float read_pos, float read_inc, float gain,
                                  int fill_count);
-    void  RenderGrain(Grain& g, float extra_gain, float& out_l, float& out_r) const;
-    // Sums a cluster's active grains + its release-fade grains into L/R,
-    // advancing/deactivating each as it goes. fill_count: see
-    // TriggerGrainInCluster()'s own comment.
-    void  RenderCluster(GrainCluster& c, float overlap_gain, int fill_count, float& out_l,
-                         float& out_r);
+    // Renders one grain for `count` consecutive samples, ADDING into
+    // out_l/out_r. fade/fade_inc: the release-fade gain and its per-sample
+    // decrement (nullptr/0 for a live grain). Stops early once the grain
+    // finishes (or its fade reaches 0).
+    void  RenderGrainSpan(Grain& g, float* fade, float fade_inc, float* out_l, float* out_r,
+                           size_t count) const;
+    // Adds a cluster's active grains + its release-fade grains into
+    // out_l/out_r for `count` samples, one grain at a time over the whole
+    // span (not every grain per sample) so each grain's SDRAM reads stay
+    // sequential. Callers split the block at trigger points so slot
+    // stealing sees exactly the same grain state as per-sample rendering
+    // did. No overlap gain here -- applied in Process()'s mix loop.
+    // fill_count: see TriggerGrainInCluster()'s own comment.
+    void  RenderClusterSpan(GrainCluster& c, int fill_count, float* out_l, float* out_r,
+                             size_t count);
     // Moves every currently-active grain in a cluster into its own
     // release-fade slot (silencing the cluster's live grains without an
     // audible click) -- called from NoteOn() when a genuinely different
@@ -501,10 +529,21 @@ class GranularEngine
     float ReadHann(float phase01) const;
     float ResolveDirectionSign();
     float ResolveScanDirectionSign(); // same shape as above, for scan_direction_
+    // Fills shadow_ from buf_l/buf_r (len frames), peak-normalized to the
+    // full int16 range, and sets src_inv_scale_ to undo that at render.
+    void  BuildShadow(const float* buf_l, const float* buf_r, size_t len);
 
-    const float* src_l_   = nullptr;
-    const float* src_r_   = nullptr;
-    size_t       src_len_ = 0;
+    // src_l_/src_r_ stay float for the trim preview and waveform peaks;
+    // src_s16_ (same range, into shadow_) is what grains actually read.
+    const float*   src_l_   = nullptr;
+    const float*   src_r_   = nullptr;
+    const int16_t* src_s16_ = nullptr;
+    size_t         src_len_ = 0;
+    float          src_inv_scale_ = 1.f;
+    int16_t*       shadow_          = nullptr;
+    size_t         shadow_capacity_ = 0;
+    const float*   shadow_base_l_   = nullptr; // float buffer shadow_ was built from
+    size_t         shadow_base_len_ = 0;
     float        sample_rate_ = 48000.f;
 
     // See PlayTrimPreview()'s own comment.
@@ -619,8 +658,22 @@ class GranularEngine
     float pan_l_gain_ = 0.5f; // 1-pan01_, control-rate cache
     float pan_r_gain_ = 0.5f; // pan01_
 
-    static constexpr int kHannTableSize = 256;
+    // Read nearest-entry (no interpolation) -- 1024 points keeps the
+    // stepping error ~-56dB below each grain, masked by its own content.
+    static constexpr int kHannTableSize = 1024;
     float hann_table_[kHannTableSize];
+
+    // Per-chunk scratch for Process()'s two-pass render (control pass
+    // fills env/flags and triggers, cluster spans render into the layer
+    // buffers, then a mix pass per sample). Process() walks any block
+    // larger than this in chunks.
+    static constexpr size_t kRenderChunk = 64;
+    float   chunk_grain_l_[kRenderChunk];
+    float   chunk_grain_r_[kRenderChunk];
+    float   chunk_scan_l_[kRenderChunk];
+    float   chunk_scan_r_[kRenderChunk];
+    float   chunk_env_[kRenderChunk];
+    uint8_t chunk_grain_sounding_[kRenderChunk];
 
     float waveform_peaks_[kWaveformCols] = {};
 };

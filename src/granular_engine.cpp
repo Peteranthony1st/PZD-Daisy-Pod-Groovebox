@@ -1,5 +1,6 @@
 #include "granular_engine.h"
 #include "itcm.h"
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 
@@ -124,11 +125,39 @@ void GranularEngine::SetPan01(float v01)
     pan_r_gain_ = pan01_;
 }
 
+void GranularEngine::BuildShadow(const float* buf_l, const float* buf_r, size_t len)
+{
+    float peak = 0.f;
+    for(size_t i = 0; i < len; i++)
+    {
+        float a = fabsf(buf_l[i]), b = fabsf(buf_r[i]);
+        if(a > peak)
+            peak = a;
+        if(b > peak)
+            peak = b;
+    }
+    // Peak-normalized rather than a fixed +-1.0 mapping: a capture can sit
+    // above full scale (no clipping that way) or well below it (no wasted
+    // bits). src_inv_scale_ folds back into each grain's gain at render.
+    float scale    = peak > 0.f ? 32767.f / peak : 1.f;
+    src_inv_scale_ = 1.f / scale;
+    for(size_t i = 0; i < len; i++)
+    {
+        float l = buf_l[i] * scale, r = buf_r[i] * scale;
+        shadow_[2 * i]     = (int16_t)(l + (l >= 0.f ? 0.5f : -0.5f));
+        shadow_[2 * i + 1] = (int16_t)(r + (r >= 0.f ? 0.5f : -0.5f));
+    }
+    shadow_base_l_   = buf_l;
+    shadow_base_len_ = len;
+}
+
 void GranularEngine::SetSource(const float* buf_l, const float* buf_r, size_t len)
 {
-    src_l_   = buf_l;
-    src_r_   = buf_r;
-    src_len_ = len;
+    // Hide the source from Process() while the 16-bit copy is rebuilt
+    // (the audio callback can preempt this at any point) -- the fence
+    // stops the compiler folding this store into the final one below.
+    src_len_ = 0;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
 
     // Silence both clusters outright rather than letting an in-flight
     // grain's position (computed against the OLD src_len_) carry over
@@ -138,6 +167,19 @@ void GranularEngine::SetSource(const float* buf_l, const float* buf_r, size_t le
     scan_cluster_  = GrainCluster{};
     held_note_     = -1;
 
+    if(!shadow_)
+        len = 0;
+    else if(len > shadow_capacity_)
+        len = shadow_capacity_;
+    if(len > 0)
+        BuildShadow(buf_l, buf_r, len);
+
+    src_l_   = buf_l;
+    src_r_   = buf_r;
+    src_s16_ = shadow_;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    src_len_ = len;
+
     RecomputeWaveformPeaks();
 }
 
@@ -145,8 +187,36 @@ void GranularEngine::SetTrimRange(const float* buf_l, const float* buf_r, size_t
 {
     // Deliberately O(1) -- no RecomputeWaveformPeaks() call here, see
     // this function's own doc comment for why that's the caller's job.
+    if(shadow_base_l_ && buf_l >= shadow_base_l_
+       && buf_l + len <= shadow_base_l_ + shadow_base_len_)
+    {
+        // Shrink to the smaller of the old/new lengths before moving the
+        // start, so a callback landing mid-update never reads past either
+        // range -- grains keep sounding through a live trim.
+        if(len < src_len_)
+            src_len_ = len;
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        src_l_   = buf_l;
+        src_r_   = buf_r;
+        src_s16_ = shadow_ + 2 * (buf_l - shadow_base_l_);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        src_len_ = len;
+        return;
+    }
+
+    // Outside the existing copy (not a path Trim takes) -- rebuild it.
+    src_len_ = 0;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    if(!shadow_)
+        len = 0;
+    else if(len > shadow_capacity_)
+        len = shadow_capacity_;
+    if(len > 0)
+        BuildShadow(buf_l, buf_r, len);
     src_l_   = buf_l;
     src_r_   = buf_r;
+    src_s16_ = shadow_;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
     src_len_ = len;
 }
 
@@ -301,7 +371,7 @@ void GranularEngine::SetFill01(float v01)
 
 void GranularEngine::SetScanFill01(float v01)
 {
-    scan_fill_count_ = (int)(Clampf(v01, 0.f, 1.f) * kGrainsPerVoice + 0.5f);
+    scan_fill_count_ = (int)(Clampf(v01, 0.f, 1.f) * kScanGrainsPerVoice + 0.5f);
 }
 
 void GranularEngine::SetGap01(float v01)
@@ -611,17 +681,13 @@ float GranularEngine::ComputeHopSamples(int fill_count, float gap01) const
     return base_hop * sparse_mult;
 }
 
-// Called from RenderGrain() (itself ITCM, see its own comment below) once
-// per grain render -- up to kGrainsPerVoice*2 times per cluster per
-// sample, same miss as that function's own.
+// Called from RenderGrainSpan() (itself ITCM, see its own comment below)
+// once per rendered grain sample, same miss as that function's own.
 DSY_ITCM_TEXT
 float GranularEngine::ReadHann(float phase01) const
 {
-    float pos  = Clampf(phase01, 0.f, 1.f) * (float)(kHannTableSize - 1);
-    int   idx0 = (int)pos;
-    int   idx1 = idx0 + 1 < kHannTableSize ? idx0 + 1 : idx0;
-    float frac = pos - (float)idx0;
-    return hann_table_[idx0] * (1.f - frac) + hann_table_[idx1] * frac;
+    // Nearest entry -- see kHannTableSize's own comment.
+    return hann_table_[(int)(Clampf(phase01, 0.f, 1.f) * (float)(kHannTableSize - 1) + 0.5f)];
 }
 
 void GranularEngine::ChokeCluster(GrainCluster& c)
@@ -703,100 +769,117 @@ void GranularEngine::TriggerGrainInCluster(GrainCluster& c, float read_pos, floa
     g.gain     = gain;
 }
 
-// Called up to kGrainsPerVoice*2 times per cluster (active + release
-// grains) per sample, from RenderCluster() (itself ITCM, see below) --
-// the actual per-grain buffer read/interpolation/windowing, same miss as
-// SampleSynth::RenderVoice()'s own (see its comment): a real, standalone
-// out-of-line function left out when the callers above it were tagged.
+// Called from RenderClusterSpan() (itself ITCM, see below) once per
+// grain per span -- the actual per-grain buffer read/interpolation/
+// windowing, same miss as SampleSynth::RenderVoice()'s own (see its
+// comment): a real, standalone out-of-line function left out when the
+// callers above it were tagged. Grain state lives in locals for the whole
+// span and is written back once at the end.
 DSY_ITCM_TEXT
-void GranularEngine::RenderGrain(Grain& g, float extra_gain, float& out_l, float& out_r) const
+void GranularEngine::RenderGrainSpan(Grain& g, float* fade, float fade_inc, float* out_l,
+                                      float* out_r, size_t count) const
 {
-    int   idx0 = (int)g.read_pos;
-    float frac = g.read_pos - (float)idx0;
-    if(idx0 < 0)
-    {
-        idx0 = 0;
-        frac = 0.f;
-    }
-    else if(idx0 >= (int)src_len_)
-    {
-        idx0 = (int)src_len_ - 1;
-        frac = 0.f;
-    }
-    // Clamp, don't wrap, at the buffer's last sample -- src_l_/src_r_
-    // isn't guaranteed to be a seamless loop (a captured loop layer
-    // usually is, by construction, but an imported one-shot sample
-    // almost never is), so interpolating straight from the last sample
-    // back to sample 0 here would fabricate a real discontinuity right
-    // in the middle of a grain's read, past the Hann window's own
-    // fade-out at the grain's actual start/end -- audible as a click,
-    // worse the more of the buffer a grain (or Scan, sweeping its
-    // anchor close to both ends) reads through.
-    int   idx1 = idx0 + 1 < (int)src_len_ ? idx0 + 1 : idx0;
-    float l    = src_l_[idx0] * (1.f - frac) + src_l_[idx1] * frac;
-    float r    = src_r_[idx0] * (1.f - frac) + src_r_[idx1] * frac;
-    float env  = ReadHann(g.phase);
+    const int      len       = (int)src_len_;
+    const int16_t* src       = src_s16_;
+    float          read_pos  = g.read_pos;
+    const float    read_inc  = g.read_inc;
+    float          phase     = g.phase;
+    const float    phase_inc = g.phase_inc;
+    const float    gain      = g.gain * src_inv_scale_;
+    float        f        = fade ? *fade : 1.f;
 
-    out_l = l * env * g.gain * extra_gain;
-    out_r = r * env * g.gain * extra_gain;
+    for(size_t j = 0; j < count; j++)
+    {
+        int   idx0 = (int)read_pos;
+        float frac = read_pos - (float)idx0;
+        if(idx0 < 0)
+        {
+            idx0 = 0;
+            frac = 0.f;
+        }
+        else if(idx0 >= len)
+        {
+            idx0 = len - 1;
+            frac = 0.f;
+        }
+        // Clamp, don't wrap, at the buffer's last sample -- src_l_/src_r_
+        // isn't guaranteed to be a seamless loop (a captured loop layer
+        // usually is, by construction, but an imported one-shot sample
+        // almost never is), so interpolating straight from the last sample
+        // back to sample 0 here would fabricate a real discontinuity right
+        // in the middle of a grain's read, past the Hann window's own
+        // fade-out at the grain's actual start/end -- audible as a click,
+        // worse the more of the buffer a grain (or Scan, sweeping its
+        // anchor close to both ends) reads through.
+        int   idx1 = idx0 + 1 < len ? idx0 + 1 : idx0;
+        const int16_t* p0 = src + 2 * idx0;
+        const int16_t* p1 = src + 2 * idx1;
+        float l    = (float)p0[0] + ((float)p1[0] - (float)p0[0]) * frac;
+        float r    = (float)p0[1] + ((float)p1[1] - (float)p0[1]) * frac;
+        float env  = ReadHann(phase) * gain * f;
 
-    g.read_pos += g.read_inc;
-    // Same clamp-not-wrap reasoning as idx1 above, for the grain's
-    // ongoing read position -- a grain that runs past either end just
-    // holds at that edge (silent-ish anyway, this close to the buffer
-    // boundary and to the grain's own natural end) instead of jumping to
-    // the opposite end of a buffer that was never meant to loop.
-    if(g.read_pos >= (float)src_len_)
-        g.read_pos = (float)src_len_ - 1.f;
-    else if(g.read_pos < 0.f)
-        g.read_pos = 0.f;
-    g.phase += g.phase_inc;
-    if(g.phase >= 1.f)
-        g.active = false;
+        out_l[j] += l * env;
+        out_r[j] += r * env;
+
+        read_pos += read_inc;
+        // Same clamp-not-wrap reasoning as idx1 above, for the grain's
+        // ongoing read position -- a grain that runs past either end just
+        // holds at that edge (silent-ish anyway, this close to the buffer
+        // boundary and to the grain's own natural end) instead of jumping to
+        // the opposite end of a buffer that was never meant to loop.
+        if(read_pos >= (float)len)
+            read_pos = (float)len - 1.f;
+        else if(read_pos < 0.f)
+            read_pos = 0.f;
+        phase += phase_inc;
+        if(fade)
+        {
+            f -= fade_inc;
+            if(f < 0.f)
+                f = 0.f;
+        }
+        if(phase >= 1.f)
+        {
+            g.active = false;
+            // A finished release grain's window is already at 0, so its
+            // remaining fade would only render silence -- free the slot.
+            f = 0.f;
+            break;
+        }
+        if(fade && f <= 0.f)
+            break;
+    }
+
+    g.read_pos = read_pos;
+    g.phase    = phase;
+    if(fade)
+        *fade = f;
 }
 
-// Called twice per sample from Process() (itself ITCM) -- once for the
-// Grain layer's own cluster, once for Scan's -- same missed-callee
-// pattern as RenderGrain()'s own comment below.
+// Called from Process() (itself ITCM) for each span between trigger
+// points, per cluster -- same missed-callee pattern as RenderGrainSpan()'s
+// own comment above.
 DSY_ITCM_TEXT
-void GranularEngine::RenderCluster(GrainCluster& c, float overlap_gain, int fill_count,
-                                     float& out_l, float& out_r)
+void GranularEngine::RenderClusterSpan(GrainCluster& c, int fill_count, float* out_l,
+                                        float* out_r, size_t count)
 {
-    out_l = 0.f;
-    out_r = 0.f;
+    if(count == 0)
+        return;
     int n = fill_count > 0 ? fill_count : 1;
     if(n > kGrainsPerVoice)
         n = kGrainsPerVoice;
     for(int i = 0; i < n; i++)
     {
-        if(!c.grains[i].active)
-            continue;
-        float gl, gr;
-        RenderGrain(c.grains[i], 1.f, gl, gr);
-        out_l += gl;
-        out_r += gr;
+        if(c.grains[i].active)
+            RenderGrainSpan(c.grains[i], nullptr, 0.f, out_l, out_r, count);
     }
     const float kFadeInc = 1.f / (0.002f * sample_rate_);
     for(int i = 0; i < kGrainsPerVoice; i++)
     {
-        if(c.release_fades[i] <= 0.f)
-            continue;
-        float rl, rr;
-        RenderGrain(c.release_grains[i], c.release_fades[i], rl, rr);
-        out_l += rl;
-        out_r += rr;
-        c.release_fades[i] -= kFadeInc;
-        if(c.release_fades[i] < 0.f)
-            c.release_fades[i] = 0.f;
+        if(c.release_fades[i] > 0.f)
+            RenderGrainSpan(c.release_grains[i], &c.release_fades[i], kFadeInc, out_l, out_r,
+                            count);
     }
-    // Overlap-add gain compensation -- without this, more simultaneously
-    // active grains (higher Fill) linearly increases amplitude (up to
-    // kGrainsPerVoice+1 grains summing at once, near their Hann peak),
-    // which is exactly what made cranking Fill and the Mix knobs together
-    // clip. sqrt-based (constant-power-ish), not a full 1/n divide, so
-    // Fill still sounds a bit fuller/denser, not just louder.
-    out_l *= overlap_gain;
-    out_r *= overlap_gain;
 }
 
 DSY_ITCM_TEXT
@@ -815,7 +898,10 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
     filter_r_.SetFreq(cutoff_hz);
     filter_r_.SetRes(filter_res01_ * 0.9f);
 
-    // See RenderCluster()'s own comment -- computed once per block since
+    // Overlap-add gain compensation -- without this, more simultaneously
+    // active grains (higher Fill) linearly increases amplitude, which is
+    // exactly what made cranking Fill and the Mix knobs together clip.
+    // Computed once per block since
     // fill_count_/scan_fill_count_ only change when their own Fill knob
     // moves, not per sample. Full 1/n (not sqrt) -- sqrt-based
     // compensation still let loudness creep up audibly as Fill
@@ -840,259 +926,294 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
     float scan_lo = has_source ? fminf(scan_range_a, scan_range_b) : 0.f;
     float scan_hi = has_source ? fmaxf(scan_range_a, scan_range_b) : 0.f;
 
-    for(size_t i = 0; i < size; i++)
+    // Scan is skipped entirely (no advance, no triggering, no rendering)
+    // when EITHER Scan is in its own dead zone OR Mix's Scan Volume is
+    // at/near zero -- see IsScanMuted(). Neither can change mid-callback.
+    const bool scan_active = has_source && !IsScanMuted();
+
+    // Two passes per chunk: a per-sample control pass (envelope, grain
+    // scheduling, Scan sweep) that renders each cluster up to the sample
+    // where it's about to trigger -- so TriggerGrainInCluster()'s slot
+    // stealing sees exactly the grain phases per-sample rendering would
+    // have -- then a per-sample mix pass over the rendered layers. Grains
+    // render one at a time across each span (see RenderClusterSpan()),
+    // keeping each grain's SDRAM reads sequential instead of hopping
+    // between up to kGrainsPerVoice*2 read positions every sample.
+    for(size_t base = 0; base < size; base += kRenderChunk)
     {
-        bool gate = held_note_ >= 0;
-        float grain_l = 0.f, grain_r = 0.f, scan_l = 0.f, scan_r = 0.f;
-        // Set below (inside if(has_source)) -- used by the Grain/Scan
-        // headroom compensation just after mixed_l/mixed_r, see its own
-        // comment there.
-        bool  grain_layer_sounding = false;
-        bool  scan_layer_sounding  = false;
-        // env stays 0 (silent) when there's nothing captured -- no point
-        // running the ADSR's own Process() at all in that case, since
-        // grain_l/scan_l are already 0 without a source regardless of
-        // what env would be.
-        float env = 0.f;
+        const size_t n = size - base < kRenderChunk ? size - base : kRenderChunk;
+        for(size_t j = 0; j < n; j++)
+        {
+            chunk_grain_l_[j]        = 0.f;
+            chunk_grain_r_[j]        = 0.f;
+            chunk_scan_l_[j]         = 0.f;
+            chunk_scan_r_[j]         = 0.f;
+            // env stays 0 (silent) when there's nothing captured -- no
+            // point running the ADSR's own Process() at all in that case.
+            chunk_env_[j]            = 0.f;
+            chunk_grain_sounding_[j] = 0;
+        }
 
         if(has_source)
         {
-            env = adsr_.Process(gate);
-
-            // Keep triggering new grains through the WHOLE release tail,
-            // not just while the note is actually held -- gating this on
-            // plain `gate` meant a long Release time never actually
-            // produced a longer tail than whatever grain(s) happened to
-            // already be in flight at the moment of NoteOff (at most one
-            // grain's own Size, up to 1000ms), since nothing kept feeding
-            // new material for the envelope to shape. IsRunning() stays
-            // true until the envelope actually reaches idle (release
-            // genuinely finished), so this naturally stops triggering
-            // exactly when there'd be nothing left to hear anyway --
-            // confirmed via a real user report ("long release, let go of
-            // the note -- should sound on, but it doesn't").
-            bool still_sounding = gate || adsr_.IsRunning();
-            grain_layer_sounding = still_sounding;
-
-            // Grain layer: fixed anchor, just needs re-triggering on its
-            // own schedule. The refill interval is Fill/Gap/Size-derived
-            // (ComputeHopSamples()) when Rhythm is Off -- identical to
-            // this engine's original behaviour -- or the decoupled Speed
-            // setting (CurrentGrainIntervalSamples()) once a pattern is
-            // selected, so Fill no longer secretly controls how fast a
-            // rhythmic pattern repeats (see SetGrainSpeed()'s comment).
-            grain_cluster_.next_grain_countdown -= 1.f;
-            if(grain_cluster_.next_grain_countdown <= 0.f && still_sounding)
+            size_t grain_done = 0, scan_done = 0;
+            for(size_t j = 0; j < n; j++)
             {
-                // Rhythm gate: the step clock always advances on every
-                // scheduled hop, but only a step with its bit set in the
-                // current pattern actually spawns a grain -- a skipped
-                // step is a real silence, not a re-timed one, which is
-                // what makes the gaps genuinely uneven rather than just
-                // flat/quantized (see CycleRhythm()'s own comment).
-                bool step_fires = ((rhythm_mask_cached_ >> rhythm_step_) & 1u) != 0;
-                rhythm_step_    = (rhythm_step_ + 1) % kRhythmSteps;
-                if(step_fires)
+                bool gate     = held_note_ >= 0;
+                chunk_env_[j] = adsr_.Process(gate);
+
+                // Keep triggering new grains through the WHOLE release tail,
+                // not just while the note is actually held -- gating this on
+                // plain `gate` meant a long Release time never actually
+                // produced a longer tail than whatever grain(s) happened to
+                // already be in flight at the moment of NoteOff (at most one
+                // grain's own Size, up to 1000ms), since nothing kept feeding
+                // new material for the envelope to shape. IsRunning() stays
+                // true until the envelope actually reaches idle (release
+                // genuinely finished), so this naturally stops triggering
+                // exactly when there'd be nothing left to hear anyway --
+                // confirmed via a real user report ("long release, let go of
+                // the note -- should sound on, but it doesn't").
+                bool still_sounding      = gate || adsr_.IsRunning();
+                chunk_grain_sounding_[j] = still_sounding;
+
+                // Grain layer: fixed anchor, just needs re-triggering on its
+                // own schedule. The refill interval is Fill/Gap/Size-derived
+                // (ComputeHopSamples()) when Rhythm is Off -- identical to
+                // this engine's original behaviour -- or the decoupled Speed
+                // setting (CurrentGrainIntervalSamples()) once a pattern is
+                // selected, so Fill no longer secretly controls how fast a
+                // rhythmic pattern repeats (see SetGrainSpeed()'s comment).
+                grain_cluster_.next_grain_countdown -= 1.f;
+                if(grain_cluster_.next_grain_countdown <= 0.f && still_sounding)
                 {
-                    float dir_sign  = ResolveDirectionSign();
-                    float note_mult = grain_follows_note_ ? note_rate_ : 1.f;
-                    // Jitter -- see SetJitter01()'s own doc comment. Range
-                    // is a fraction of the CURRENT grain length (not a
-                    // fixed sample count) so it scales sensibly whether
-                    // Size is set short or long; TriggerGrainInCluster()'s
-                    // own fmodf() wraps this back into range the same way
-                    // it already does for the plain anchor.
-                    float trigger_pos = position01_ * (float)src_len_;
-                    if(jitter01_ > 0.f)
+                    // Rhythm gate: the step clock always advances on every
+                    // scheduled hop, but only a step with its bit set in the
+                    // current pattern actually spawns a grain -- a skipped
+                    // step is a real silence, not a re-timed one, which is
+                    // what makes the gaps genuinely uneven rather than just
+                    // flat/quantized (see CycleRhythm()'s own comment).
+                    bool step_fires = ((rhythm_mask_cached_ >> rhythm_step_) & 1u) != 0;
+                    rhythm_step_    = (rhythm_step_ + 1) % kRhythmSteps;
+                    if(step_fires)
                     {
-                        float grain_len_ms = Clampf(size01_, 0.f, 1.f)
-                                                  * (kMaxGrainMs - kMinGrainMs)
-                                              + kMinGrainMs;
-                        float jitter_range_samples
-                            = jitter01_ * grain_len_ms * 0.001f * sample_rate_;
-                        float r01 = (float)(NextRandom(rng_state_) & 0x00FFFFFFu)
-                                    / (float)0x00FFFFFFu;
-                        trigger_pos += (r01 * 2.f - 1.f) * jitter_range_samples;
+                        float dir_sign  = ResolveDirectionSign();
+                        float note_mult = grain_follows_note_ ? note_rate_ : 1.f;
+                        // Jitter -- see SetJitter01()'s own doc comment. Range
+                        // is a fraction of the CURRENT grain length (not a
+                        // fixed sample count) so it scales sensibly whether
+                        // Size is set short or long; TriggerGrainInCluster()'s
+                        // own fmodf() wraps this back into range the same way
+                        // it already does for the plain anchor.
+                        float trigger_pos = position01_ * (float)src_len_;
+                        if(jitter01_ > 0.f)
+                        {
+                            float grain_len_ms = Clampf(size01_, 0.f, 1.f)
+                                                      * (kMaxGrainMs - kMinGrainMs)
+                                                  + kMinGrainMs;
+                            float jitter_range_samples
+                                = jitter01_ * grain_len_ms * 0.001f * sample_rate_;
+                            float r01 = (float)(NextRandom(rng_state_) & 0x00FFFFFFu)
+                                        / (float)0x00FFFFFFu;
+                            trigger_pos += (r01 * 2.f - 1.f) * jitter_range_samples;
+                        }
+                        RenderClusterSpan(grain_cluster_, fill_count_, chunk_grain_l_ + grain_done,
+                                          chunk_grain_r_ + grain_done, j - grain_done);
+                        grain_done = j;
+                        TriggerGrainInCluster(grain_cluster_, trigger_pos,
+                                              grain_tune_rate_ * note_mult * dir_sign, note_gain_,
+                                              fill_count_);
                     }
-                    TriggerGrainInCluster(grain_cluster_, trigger_pos,
-                                          grain_tune_rate_ * note_mult * dir_sign, note_gain_,
-                                          fill_count_);
-                }
-                grain_cluster_.next_grain_countdown += CurrentGrainIntervalSamples();
-            }
-            RenderCluster(grain_cluster_, overlap_gain, fill_count_, grain_l, grain_r);
-
-            // Scan layer -- actually sweeps: bounces/wraps between
-            // Start and End (the Scan Range page's own two knobs), at
-            // the rate/direction Scan's own speed knob (Scan page) set.
-            // Skipped entirely (no advance, no
-            // triggering, no rendering) when EITHER Scan is in its own
-            // dead zone OR Mix's Scan Volume is at/near zero -- see
-            // IsScanMuted().
-            if(!IsScanMuted())
-            {
-                scan_layer_sounding = true;
-                scan_position_samples_ += scan_direction_sign_ * scan_speed_
-                                           * (1.f / sample_rate_) * (float)src_len_;
-                if(scan_position_samples_ > scan_hi)
-                {
-                    // Bounce: reverse direction at the edge (today's
-                    // original behavior). Wrap (scan_bounce_ off): jump
-                    // straight back to the other edge and keep heading
-                    // the same way, so it always resumes from the same
-                    // starting point instead of ping-ponging -- a real
-                    // user request, off by default preserves existing
-                    // behavior exactly.
-                    scan_position_samples_ = scan_bounce_ ? scan_hi : scan_lo;
-                    if(scan_bounce_)
-                        scan_direction_sign_ = -1.f;
-                }
-                else if(scan_position_samples_ < scan_lo)
-                {
-                    scan_position_samples_ = scan_bounce_ ? scan_lo : scan_hi;
-                    if(scan_bounce_)
-                        scan_direction_sign_ = 1.f;
+                    grain_cluster_.next_grain_countdown += CurrentGrainIntervalSamples();
                 }
 
-                scan_cluster_.next_grain_countdown -= 1.f;
-                if(scan_cluster_.next_grain_countdown <= 0.f && still_sounding)
+                // Scan layer -- actually sweeps: bounces/wraps between
+                // Start and End (the Scan Range page's own two knobs), at
+                // the rate/direction Scan's own speed knob (Scan page) set.
+                // Skipped entirely (no advance, no
+                // triggering, no rendering) when EITHER Scan is in its own
+                // dead zone OR Mix's Scan Volume is at/near zero -- see
+                // IsScanMuted().
+                if(scan_active)
                 {
-                    float note_mult = grain_follows_note_ ? note_rate_ : 1.f;
-                    // See ResolveScanDirectionSign()'s own comment --
-                    // independent of scan_direction_sign_ (the sweep's
-                    // own bounce/wrap heading, above).
-                    float scan_dir_sign = ResolveScanDirectionSign();
-                    TriggerGrainInCluster(scan_cluster_, scan_position_samples_,
-                                          grain_tune_rate_ * note_mult * scan_dir_sign,
-                                          note_gain_, scan_fill_count_);
-                    scan_cluster_.next_grain_countdown
-                        += ComputeHopSamples(scan_fill_count_, scan_gap01_);
+                    scan_position_samples_ += scan_direction_sign_ * scan_speed_
+                                               * (1.f / sample_rate_) * (float)src_len_;
+                    if(scan_position_samples_ > scan_hi)
+                    {
+                        // Bounce: reverse direction at the edge (today's
+                        // original behavior). Wrap (scan_bounce_ off): jump
+                        // straight back to the other edge and keep heading
+                        // the same way, so it always resumes from the same
+                        // starting point instead of ping-ponging -- a real
+                        // user request, off by default preserves existing
+                        // behavior exactly.
+                        scan_position_samples_ = scan_bounce_ ? scan_hi : scan_lo;
+                        if(scan_bounce_)
+                            scan_direction_sign_ = -1.f;
+                    }
+                    else if(scan_position_samples_ < scan_lo)
+                    {
+                        scan_position_samples_ = scan_bounce_ ? scan_lo : scan_hi;
+                        if(scan_bounce_)
+                            scan_direction_sign_ = 1.f;
+                    }
+
+                    scan_cluster_.next_grain_countdown -= 1.f;
+                    if(scan_cluster_.next_grain_countdown <= 0.f && still_sounding)
+                    {
+                        float note_mult = grain_follows_note_ ? note_rate_ : 1.f;
+                        // See ResolveScanDirectionSign()'s own comment --
+                        // independent of scan_direction_sign_ (the sweep's
+                        // own bounce/wrap heading, above).
+                        float scan_dir_sign = ResolveScanDirectionSign();
+                        RenderClusterSpan(scan_cluster_, scan_fill_count_, chunk_scan_l_ + scan_done,
+                                          chunk_scan_r_ + scan_done, j - scan_done);
+                        scan_done = j;
+                        TriggerGrainInCluster(scan_cluster_, scan_position_samples_,
+                                              grain_tune_rate_ * note_mult * scan_dir_sign,
+                                              note_gain_, scan_fill_count_);
+                        scan_cluster_.next_grain_countdown
+                            += ComputeHopSamples(scan_fill_count_, scan_gap01_);
+                    }
                 }
-                RenderCluster(scan_cluster_, scan_overlap_gain, scan_fill_count_, scan_l, scan_r);
             }
+            RenderClusterSpan(grain_cluster_, fill_count_, chunk_grain_l_ + grain_done,
+                              chunk_grain_r_ + grain_done, n - grain_done);
+            if(scan_active)
+                RenderClusterSpan(scan_cluster_, scan_fill_count_, chunk_scan_l_ + scan_done,
+                                  chunk_scan_r_ + scan_done, n - scan_done);
         }
 
-        float mixed_l = (grain_l * grain_volume01_ + scan_l * scan_volume01_) * env;
-        float mixed_r = (grain_r * grain_volume01_ + scan_r * scan_volume01_) * env;
-
-        // Grain/Scan headroom compensation -- same idea as DexedSynth's
-        // own per-note version (see its voice_headroom_scale_). Grain and
-        // Scan are two independently overlap-compensated layers that
-        // still get summed together right above; either one alone (by
-        // far the common case) is untouched, but a source that stays
-        // close to peak the whole way through -- a well-produced,
-        // seamlessly-looping pad sample, with none of the natural quiet
-        // stretches a one-shot/percussive sample has -- can push their
-        // sum well past unity far more often than the hard clamp below
-        // was ever meant to catch, hitting it repeatedly instead of just
-        // on rare outliers. Confirmed against a real user-reported
-        // import that clicked regardless of Size/Fill/pitch, on a file
-        // that played perfectly clean off the Pod entirely (so not an
-        // import/decode bug -- see the loop-layer/Dexed headroom fixes
-        // for the same pattern). 1/sqrt(2), the standard two-source
-        // equal-power curve, not a full 1/2, so two quieter/dynamic
-        // sources summing still sound a bit fuller, not just halved --
-        // and cheap (one AND plus a constant multiply, no extra
-        // transcendental call) since this runs every sample.
-        if(grain_layer_sounding && scan_layer_sounding)
+        for(size_t j = 0; j < n; j++)
         {
-            mixed_l *= 0.70710678f;
-            mixed_r *= 0.70710678f;
-        }
+            const size_t i   = base + j;
+            const float  env = chunk_env_[j];
+            float mixed_l = (chunk_grain_l_[j] * overlap_gain * grain_volume01_
+                             + chunk_scan_l_[j] * scan_overlap_gain * scan_volume01_)
+                            * env;
+            float mixed_r = (chunk_grain_r_[j] * overlap_gain * grain_volume01_
+                             + chunk_scan_r_[j] * scan_overlap_gain * scan_volume01_)
+                            * env;
 
-        // Safety backstop -- the overlap-gain compensation above handles
-        // the common case, but the release-fade grain, Grain+Scan summing
-        // together, and both Mix knobs pushed high at once can still add
-        // up past full scale. A cheap hard clamp (not a soft/tanh
-        // saturator) since this runs every sample and CPU headroom is
-        // already tight -- see the DWT-measured worst case.
-        mixed_l = Clampf(mixed_l, -1.f, 1.f);
-        mixed_r = Clampf(mixed_r, -1.f, 1.f);
-
-        float fl = mixed_l, fr = mixed_r;
-        if(filter_mode_ != FilterMode::Off)
-        {
-            filter_l_.Process(mixed_l);
-            filter_r_.Process(mixed_r);
-            switch(filter_mode_)
+            // Grain/Scan headroom compensation -- same idea as DexedSynth's
+            // own per-note version (see its voice_headroom_scale_). Grain and
+            // Scan are two independently overlap-compensated layers that
+            // still get summed together right above; either one alone (by
+            // far the common case) is untouched, but a source that stays
+            // close to peak the whole way through -- a well-produced,
+            // seamlessly-looping pad sample, with none of the natural quiet
+            // stretches a one-shot/percussive sample has -- can push their
+            // sum well past unity far more often than the hard clamp below
+            // was ever meant to catch, hitting it repeatedly instead of just
+            // on rare outliers. Confirmed against a real user-reported
+            // import that clicked regardless of Size/Fill/pitch, on a file
+            // that played perfectly clean off the Pod entirely (so not an
+            // import/decode bug -- see the loop-layer/Dexed headroom fixes
+            // for the same pattern). 1/sqrt(2), the standard two-source
+            // equal-power curve, not a full 1/2, so two quieter/dynamic
+            // sources summing still sound a bit fuller, not just halved --
+            // and cheap (one AND plus a constant multiply, no extra
+            // transcendental call) since this runs every sample.
+            if(chunk_grain_sounding_[j] && scan_active)
             {
-                case FilterMode::LowPass: fl = filter_l_.Low(); fr = filter_r_.Low(); break;
-                case FilterMode::HighPass: fl = filter_l_.High(); fr = filter_r_.High(); break;
-                case FilterMode::BandPass: fl = filter_l_.Band(); fr = filter_r_.Band(); break;
-                default: break;
+                mixed_l *= 0.70710678f;
+                mixed_r *= 0.70710678f;
             }
-        }
 
-        fl *= output_level_ * pan_l_gain_;
-        fr *= output_level_ * pan_r_gain_;
+            // Safety backstop -- the overlap-gain compensation above handles
+            // the common case, but the release-fade grain, Grain+Scan summing
+            // together, and both Mix knobs pushed high at once can still add
+            // up past full scale. A cheap hard clamp (not a soft/tanh
+            // saturator) since this runs every sample and CPU headroom is
+            // already tight -- see the DWT-measured worst case.
+            mixed_l = Clampf(mixed_l, -1.f, 1.f);
+            mixed_r = Clampf(mixed_r, -1.f, 1.f);
 
-        // Trim preview (see PlayTrimPreview()'s own comment), injected
-        // here -- AFTER output_level_/pan, not mixed into mixed_l/
-        // mixed_r earlier -- on purpose. output_level_ can scale up to
-        // 12x (see SetOutputLevel01()'s own comment), tuned to
-        // compensate for how quiet a REAL grain signal is after Hann-
-        // window overlap-gain division and grain_volume01_/
-        // scan_volume01_; a real hardware bug confirmed this previously
-        // added the raw, unattenuated source sample into mixed_l/r
-        // BEFORE that multiply, so it got hit by the same up-to-12x
-        // compensation a real (far quieter) grain signal needs, playing
-        // back extremely loud even after a first attempt to fix it by
-        // scaling down by grain_volume01_ alone -- nowhere near enough
-        // against a 12x multiplier. Added here instead, with its own
-        // small fixed gain completely independent of output_level_/pan/
-        // the filter (previewing the raw trim selection, not a filtered
-        // or panned version of it), so its loudness stays predictable
-        // regardless of how Output Level or Grain Volume happen to be
-        // set. Still runs through the pre-limiter tracking and tanhf()
-        // safety net just below, same as everything else.
-        constexpr float kPreviewGain = 0.5f;
-        if(preview_active_)
-        {
-            if(preview_pos_ < src_len_)
+            float fl = mixed_l, fr = mixed_r;
+            if(filter_mode_ != FilterMode::Off)
             {
-                fl += src_l_[preview_pos_] * kPreviewGain;
-                fr += src_r_[preview_pos_] * kPreviewGain;
-                preview_pos_++;
+                filter_l_.Process(mixed_l);
+                filter_r_.Process(mixed_r);
+                switch(filter_mode_)
+                {
+                    case FilterMode::LowPass: fl = filter_l_.Low(); fr = filter_r_.Low(); break;
+                    case FilterMode::HighPass: fl = filter_l_.High(); fr = filter_r_.High(); break;
+                    case FilterMode::BandPass: fl = filter_l_.Band(); fr = filter_r_.Band(); break;
+                    default: break;
+                }
             }
+
+            fl *= output_level_ * pan_l_gain_;
+            fr *= output_level_ * pan_r_gain_;
+
+            // Trim preview (see PlayTrimPreview()'s own comment), injected
+            // here -- AFTER output_level_/pan, not mixed into mixed_l/
+            // mixed_r earlier -- on purpose. output_level_ can scale up to
+            // 12x (see SetOutputLevel01()'s own comment), tuned to
+            // compensate for how quiet a REAL grain signal is after Hann-
+            // window overlap-gain division and grain_volume01_/
+            // scan_volume01_; a real hardware bug confirmed this previously
+            // added the raw, unattenuated source sample into mixed_l/r
+            // BEFORE that multiply, so it got hit by the same up-to-12x
+            // compensation a real (far quieter) grain signal needs, playing
+            // back extremely loud even after a first attempt to fix it by
+            // scaling down by grain_volume01_ alone -- nowhere near enough
+            // against a 12x multiplier. Added here instead, with its own
+            // small fixed gain completely independent of output_level_/pan/
+            // the filter (previewing the raw trim selection, not a filtered
+            // or panned version of it), so its loudness stays predictable
+            // regardless of how Output Level or Grain Volume happen to be
+            // set. Still runs through the pre-limiter tracking and tanhf()
+            // safety net just below, same as everything else.
+            constexpr float kPreviewGain = 0.5f;
+            if(preview_active_)
+            {
+                if(preview_pos_ < src_len_)
+                {
+                    fl += src_l_[preview_pos_] * kPreviewGain;
+                    fr += src_r_[preview_pos_] * kPreviewGain;
+                    preview_pos_++;
+                }
+                else
+                {
+                    preview_active_ = false;
+                }
+            }
+
+            // See IsLimiting()'s/GetPreLimiterLevel01()'s own comments --
+            // both read the PRE-limiter value specifically, since tanhf()
+            // below bounds its own output to (-1,1) no matter how hard
+            // this is driving it.
+            float pre_limiter_mag = fabsf(fl) > fabsf(fr) ? fabsf(fl) : fabsf(fr);
+            if(pre_limiter_mag > pre_limiter_level_)
+                pre_limiter_level_ = pre_limiter_mag;
             else
-            {
-                preview_active_ = false;
-            }
+                pre_limiter_level_
+                    -= pre_limiter_level_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
+            if(pre_limiter_mag >= kPreLimiterClipThreshold)
+                pre_limiter_clip_hold_ = kClipHoldSeconds;
+            else if(pre_limiter_clip_hold_ > 0.f)
+                pre_limiter_clip_hold_ -= 1.f / sample_rate_;
+
+            // Soft limiter -- output_level_'s own ceiling was raised well past
+            // unity (see SetOutputLevel01()'s comment) specifically so the
+            // Output Level knob has enough real headroom to compensate for
+            // this engine's own overlap-gain and center-pan attenuation, which
+            // Dexed/the loop layers don't have -- this is what makes pushing
+            // that knob all the way up loud instead of just clipping. tanhf()
+            // is near-transparent at normal levels and only compresses once a
+            // peak actually approaches/exceeds unity, same convention as
+            // DexedSynth::Process()'s own limiter.
+            fl = tanhf(fl);
+            fr = tanhf(fr);
+
+            out_l[i] = fl;
+            out_r[i] = fr;
+            reverb_send_l[i] += fl * reverb_send01_;
+            reverb_send_r[i] += fr * reverb_send01_;
+            delay_send_l[i] += fl * delay_send01_;
+            delay_send_r[i] += fr * delay_send01_;
         }
-
-        // See IsLimiting()'s/GetPreLimiterLevel01()'s own comments --
-        // both read the PRE-limiter value specifically, since tanhf()
-        // below bounds its own output to (-1,1) no matter how hard
-        // this is driving it.
-        float pre_limiter_mag = fabsf(fl) > fabsf(fr) ? fabsf(fl) : fabsf(fr);
-        if(pre_limiter_mag > pre_limiter_level_)
-            pre_limiter_level_ = pre_limiter_mag;
-        else
-            pre_limiter_level_
-                -= pre_limiter_level_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
-        if(pre_limiter_mag >= kPreLimiterClipThreshold)
-            pre_limiter_clip_hold_ = kClipHoldSeconds;
-        else if(pre_limiter_clip_hold_ > 0.f)
-            pre_limiter_clip_hold_ -= 1.f / sample_rate_;
-
-        // Soft limiter -- output_level_'s own ceiling was raised well past
-        // unity (see SetOutputLevel01()'s comment) specifically so the
-        // Output Level knob has enough real headroom to compensate for
-        // this engine's own overlap-gain and center-pan attenuation, which
-        // Dexed/the loop layers don't have -- this is what makes pushing
-        // that knob all the way up loud instead of just clipping. tanhf()
-        // is near-transparent at normal levels and only compresses once a
-        // peak actually approaches/exceeds unity, same convention as
-        // DexedSynth::Process()'s own limiter.
-        fl = tanhf(fl);
-        fr = tanhf(fr);
-
-        out_l[i] = fl;
-        out_r[i] = fr;
-        reverb_send_l[i] += fl * reverb_send01_;
-        reverb_send_r[i] += fr * reverb_send01_;
-        delay_send_l[i] += fl * delay_send01_;
-        delay_send_r[i] += fr * delay_send01_;
     }
 }
 
