@@ -45,6 +45,11 @@ clickable encoder.
 SMPDR and SMPVO share one underlying sample-playback engine and are
 mutually exclusive — enabling one disables the other.
 
+Each engine has its own voices — polyphony isn't shared, so a big Dexed
+chord never takes notes away from Ensemble or the Sampler, however many
+engines are playing. What they do share is the CPU — the meter in
+`Global:Mixer`'s footer shows how much is left (see **CPU tips** below).
+
 ## Hardware
 
 - **[Daisy Pod](https://daisy.audio/products/pod)** — two knobs, two
