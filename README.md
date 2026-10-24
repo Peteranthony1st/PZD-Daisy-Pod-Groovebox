@@ -223,6 +223,20 @@ https://github.com/user-attachments/assets/1c081390-e61f-4a1b-9088-a552860b9a5d
 full performance combining everything above at once:
 https://github.com/user-attachments/assets/025a71a1-f06f-424a-bb34-b3bdb560e121
 
+**Sound demos:**
+
+*Dexed — Flexatone preset:*
+https://github.com/user-attachments/assets/fb43b8bd-0961-47e8-9b8a-c146e5467c7b
+
+*Dexed — marimba with the DX-FX delay:*
+https://github.com/user-attachments/assets/e26f79ab-3f50-418c-a878-0a9233a4e0d5
+
+*Dexed — Clav Ens preset:*
+https://github.com/user-attachments/assets/ee4c3608-c0e0-40c6-aa30-00c4e3d72f9b
+
+*Grains:*
+https://github.com/user-attachments/assets/8aa7bd86-f749-4e34-a360-c5dd3af774d0
+
 **LEDs** — LED1 shows the looper's transport at a glance: green = any
 layer playing, blue = any layer paused, off = looper disabled or nothing
 playing/paused yet. LED2 lights red whenever something is actively
