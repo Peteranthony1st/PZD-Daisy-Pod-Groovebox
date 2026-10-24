@@ -216,35 +216,45 @@ control once it reaches that value.
 making the video). Also includes a WAV file of acoustic guitar input,
 MicroDexed Touch for drums, and testing using some headphones as a mic
 input (put the gain up to x4):
+
 https://github.com/user-attachments/assets/1c081390-e61f-4a1b-9088-a552860b9a5d
+
 [Headphones_as_mic.WAV](https://github.com/user-attachments/files/31609801/Headphones_as_mic.WAV)
 
 **4 layers with Dexed, Grains, PO-12 rhythm, and live mic input** — a
 full performance combining everything above at once:
+
 https://github.com/user-attachments/assets/025a71a1-f06f-424a-bb34-b3bdb560e121
 
 **Playing it live from a MIDI keyboard** (Akai), with the mixer scope on
 screen:
+
 https://github.com/user-attachments/assets/06309104-cfa7-48a7-a779-843a4013368b
 
 **Sound demos:**
 
 *Dexed — Flexatone preset:*
+
 https://github.com/user-attachments/assets/97224b5d-5bb5-43d6-b5bd-c86889a3bdcf
 
 *Dexed — marimba with the DX-FX delay:*
+
 https://github.com/user-attachments/assets/503eac2f-d13b-45ba-b6f8-a0e96201a33a
 
 *Dexed — Clav Ens preset:*
+
 https://github.com/user-attachments/assets/e36b5d1a-9d93-4104-a111-929924a4d059
 
 *Grains:*
+
 https://github.com/user-attachments/assets/e122daff-1afa-49e2-88ab-0b2763cc9b64
 
 *Grains — the Grain page:*
+
 https://github.com/user-attachments/assets/ad574fd1-3dca-4543-8e85-5edf645627ee
 
 *Global mixer, with the live CPU meter:*
+
 https://github.com/user-attachments/assets/2a0b04fc-17b1-4224-9207-e0b60eb56236
 
 **LEDs** — LED1 shows the looper's transport at a glance: green = any
