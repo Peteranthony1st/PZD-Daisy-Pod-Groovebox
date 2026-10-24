@@ -383,12 +383,22 @@ first time right after the bootloader install above):
 
 **Building from source**:
 
+Needs the [ARM GNU toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
+(`arm-none-eabi-gcc`) and `make`. The two libraries are built once, then
+the firmware:
+
 ```
-git clone --recurse-submodules <this repo's URL>
-cd src && make
+git clone --recurse-submodules https://github.com/Peteranthony1st/PZD-Daisy-Pod-Groovebox.git
+cd PZD-Daisy-Pod-Groovebox/src
+make -C libDaisy
+make -C DaisySP && make -C DaisySP/DaisySP-LGPL
+make
 ```
 
-`build/main.bin` is what you flash via either method above.
+`build/main.bin` is what you flash via either method above. After pulling
+changes that move `libDaisy` or `DaisySP` to a new commit, run
+`git submodule update` and rebuild that library (`make -C libDaisy clean
+&& make -C libDaisy`, likewise for DaisySP) before `make`.
 
 ## Thanks
 
