@@ -31,9 +31,9 @@ clickable encoder.
 - **Ensemble** — an 8-voice divide-down string-machine/ensemble organ in
   the ARP Solina lineage: 7 real drawbars, built-in chorus, pitch bend,
   and a mod wheel.
-- **Sample Drum (SMPDR)** — a multi-pad one-shot drum sampler, up to 24
-  slices per Kit, with live re-slicing and direct import of real OP-1
-  drum packs.
+- **Sample Drum (SMPDR)** — a multi-pad one-shot drum sampler for Kits
+  and Breaks, up to 24 slices each, with live re-slicing and direct
+  import of real OP-1 drum packs.
 - **Sample Sound (SMPVO)** — a melodic, chromatic sampler for one
   captured or imported sound at a time, with its own Capture/Trim/Tune
   workflow and direct import of real OP-1 instrument packs.
@@ -96,24 +96,32 @@ categories (Performances, Grains/Dexed/Ensemble presets, and
 SampleSynth's Captures/Kits/Voice User/Drum User presets) — duplicate
 or delete any file directly on the device, no computer needed.
 
+**Sample library on the card** — SampleSynth content lives in numbered
+folders of up to 32 items under `SAMPLES/`: `SOUNDS1`, `CAPTURED1`,
+`KITS1`, `BREAKS1`, … When one fills up, the next is created
+automatically, so the library grows with the card. Each Kit or Break has
+its own folder holding its pad sounds. The Preset page browses folder
+first, then item.
+
 ### Importing real OP-1 sample packs
 
 The actual licensed OP-1 packs aren't bundled with this firmware, but
 you can download your own from [op1fun](https://op1.fun/) (or export one
 from the OP-1 pack builder) as `.aif` files and convert them yourself:
 
-1. Drop drum-pack `.aif` files into `DRUM PACK IMPORT/`, and sampler/
-   instrument-pack `.aif` files into `SOUND PACK IMPORT/` (both already
-   exist at the card's root).
-2. On the Pod: `Global:SMPDR` for a drum pack, or `Global:SMPVO` for a
-   sampler pack → **Import** page. Button 1 cycles what to convert (Kit/
-   Sound/All); hold Button 2 to run the conversion.
-3. A drum pack becomes a new Kit with each real splice point mapped to
-   its own key; a sampler pack becomes a new Sound already tuned to its
-   real recorded pitch — both read straight from the pack's own
-   metadata, no manual trimming needed.
-4. Converted files move into their own `Done/` subfolder automatically,
-   so running Import again only picks up what's new.
+1. Drop `.aif`/`.aiff` files into the staging folders at the card's
+   root:
+   - `DRUM PACK IMPORT/` — drum packs. Each becomes a **Kit**, or a
+     **Break** if its typical slice is a second or longer.
+   - `BREAK PACK IMPORT/` — always imported as Breaks.
+   - `SOUND PACK IMPORT/` — instrument packs, each becoming a **Sound**.
+2. On the Pod: `Global:SMPDR` or `Global:SMPVO` → **Import** page.
+   Button 1 cycles the target (Drums/Sounds/All); hold Button 2 to
+   import.
+3. One press imports every file, however many. Splice points and pitch
+   come straight from the pack's own metadata — no manual trimming.
+4. Imported files move into `Done/`. A file that fails is retried, then
+   left in place for the next press.
 
 **Recording Dexed, Ensemble, Grains, or SampleSynth into a loop layer**
 — playing any instrument while a layer is recording/overdubbing captures
@@ -201,7 +209,7 @@ capture in progress.
 | Global: RevTone | PreDelay / DecayDiffusion | PreFilter / Damping | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
 | Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
 | Global: File | Choosing Save: Overwrite/Save New; Browsing Load: scroll files | — | Save / Select file list (Load) / Back | Hold 800ms = Save or Load, whichever's open |
-| Global: SD Mgmt | Scroll (category grid or file list) | — | Tap = drill in/back, Hold 800ms = Duplicate | Hold 1500ms = Delete |
+| Global: SD Mgmt | Scroll (category grid, folder list, or file list) | — | Tap = drill in/back, Hold 400ms = Duplicate | Tap = open folder (Captures/Kits), Hold 1500ms = Delete |
 | Global: Export | — | — | Tap = Export, native 48kHz ("Studio") | Tap = Export, 44.1kHz for MicroDexed ("CD") |
 | Global: Dexed | — | — | Toggle Dexed on/off (off by default) | — (push encoder to enter Screen::Dexed) |
 | Global: Ensemble | — | — | Toggle Ensemble on/off (off by default) | — (push encoder to enter Screen::Ensemble) |
@@ -300,8 +308,8 @@ Shared by both:
 | Mix | Output level | Pan | — | — |
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Target Reverb | Target Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
-| Import | — | — | Cycle target (Kit/Sound/All) | Hold 800ms = Import |
-| Preset | SMPVO: Sounds/Captured category → files. SMPDR: Kits flat list | — | — (Back while browsing) | Select/Open, Hold 800ms = Load |
+| Import | — | — | Cycle target (Drums/Sounds/All) | Hold 800ms = Import |
+| Preset | Folder (SMPVO: Sounds n/Captured n, SMPDR: Kits n/Breaks n) → item | — | — (Back while browsing) | Select/Open, Hold 800ms = Load |
 | User | — | — | Save (Overwrite/New, Idle) / Back | Select/Open, Hold 800ms = Load/Save |
 
 SMPVO-only:

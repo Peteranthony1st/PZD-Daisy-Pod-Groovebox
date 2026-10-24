@@ -1,6 +1,6 @@
 SampleSynth's own SMPDR (Drum) User presets live here (PRES001.DAT,
-PRES002.DAT, ...) -- each one is a reference to a Kit (not a copy of
-its audio) plus a full settings snapshot (Filter/Env/Mix/FX, Break
+PRES002.DAT, ...) -- each one is a reference to a Kit or Break (by its
+folder, not a copy of its audio) plus a full settings snapshot (Filter/Env/Mix/FX, Break
 Divide/Tune), saved/loaded from Screen::SampleSynth (Drum mode) -> User
 page.
 

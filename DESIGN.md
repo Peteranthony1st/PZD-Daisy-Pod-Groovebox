@@ -2711,6 +2711,9 @@ universal rule.
 
 ## SD card management (Global:SdMgmt)
 
+*The Captures and Kits boxes now browse numbered bank folders rather than
+numbered slots — see* Sample banks *below.*
+
 Lets you browse every real user-save category on the card — currently
 **8**: Performances, Grains Presets, Dexed Presets, Ensemble Presets,
 and SampleSynth's own Captures, Kits, Voice User presets, and Drum User
@@ -3951,6 +3954,10 @@ identical OP-1 import feature and every fix described above.
 
 ## SD card folder renaming
 
+*The `SAMPLES/` layout described here (`SOUNDS/`, `CAPTURED1`/`2`,
+`DRUM KITS/`) was later replaced by numbered banks — see* Sample banks
+*below.*
+
 Direct report: the card's own folder names were "not named or organised
 in a logical way" — cryptic 4-letter engine codes (`DEXP`, `ENSP`,
 `GRNP`, `PERF`) sitting alongside full-word folders (`SAMPLES`,
@@ -4062,3 +4069,107 @@ folder_)`) rather than being 8 separate hardcoded strings. SampleSynth
 Kits/Sounds and Captures were left untouched — they already show a
 real name or filename, never a bare number, so there was nothing to
 prefix.
+
+## Sample banks: numbered folders, one folder per kit
+
+The request: SD cards are huge, so Sounds and Captures shouldn't stop at
+one folder's worth, and Drum content needed real structure — "we can't
+have these loose kit samples in one place, each kit needs their own
+folder", with breaks kept apart from kits.
+
+**What it replaced.** Sounds were one flat `SAMPLES/SOUNDS/` folder whose
+browser listed at most 64 files (anything past that was silently
+invisible); Captures were exactly two folders, `CAPTURED1`/`CAPTURED2`
+(64 total, then "Captured full"); Kits were numbered `KIT001-099.DAT`
+manifests in `SAMPLES/DRUM KITS/`, with every imported slice dumped
+loose into `SAMPLES/` as `K001_00.wav`… And a real bug fell out of the
+numbering: deleting a kit compacts the numbers above it, so every Drum
+User preset pointing at a later kit silently switched to a different one.
+
+**Layout now** (`PerformanceStore::SampleBank`):
+```
+SAMPLES/SOUNDS1, SOUNDS2, …     .wav/.snd files       (Voice)
+SAMPLES/CAPTURED1, …            CAPnnn.wav            (Voice)
+SAMPLES/KITS1, …/<kit name>/    KIT.DAT 01.wav 02.wav (Drum)
+SAMPLES/BREAKS1, …/<name>/      same as a kit         (Drum)
+```
+- Banks hold up to 32 items (`kSampleBankCapacity`), up to 99 per type.
+  `FindSampleBankWithSpace()` returns the lowest bank with room and
+  creates the next number once all are full — saves, captures and
+  imports all go through it. Every folder is numbered from 1, renaming
+  `SOUNDS` to `SOUNDS1` (an explicit choice, cheapest while nothing was
+  released; Voice User presets saved with category `SOUNDS` are mapped to
+  `SOUNDS1` on load).
+- A kit is identified by its folder (`kit_ref`, e.g. `KITS1/lofi2-4071`),
+  never a number, so deletes can't renumber anything. Folders are named
+  after the pack, made unique with " 2", " 3"…, and trimmed of trailing
+  spaces/dots (FAT strips those, which would leave `kit_ref` pointing at
+  nothing). Pad filenames in `KIT.DAT` are relative to the kit's folder.
+  `SampleSynthDrumUserPreset` stores `kit_ref` (file version 2; v1
+  presets referenced numbered kits and are a clean reject).
+- Both faces' Preset page browse bank first, then item ("Sounds 2",
+  "Kits 1", …), so no list ever needs more than one bank's worth. SdMgmt's
+  Captures and Kits boxes do the same (Button2 tap opens a bank); deleting
+  a kit removes its whole folder, duplicating copies it as "<name> 2".
+  SdMgmt keeps its own bank/item arrays rather than sharing the Preset
+  browser's, so neither view can leave the other on a stale list.
+
+**Kit or Break.** Slice count can't tell them apart — the user's own
+example: break packs come with 1, 3 or more slices. Typical slice length
+can. Measured on the real packs: kits had median slices of 0.1–0.4 s;
+`rare-drums-one-4500` (3 slices, 2.9–4.6 s) and `Amenbreak` (one 7 s
+slice) were breaks. Rule: **median slice ≥ 1 s → Break**
+(`kSampleBreakMinMedianSeconds`) — one 4/4 bar is 1 s even at 240 BPM,
+and the median stops a single long crash in a kit tipping it. The 1 s
+cut-off (rather than a suggested 0.6 s that would also catch half-bar
+chops) was the user's call. A break already chopped into single hits is
+indistinguishable from a kit by length, so `BREAK PACK IMPORT/` forces
+Break; the user's two evenly-chopped `patch` packs went there. A plain
+recording with no op-1 drum data now imports as one whole-file slice,
+classified the same way, instead of "Not a drum pack".
+
+**Import.** One press used to handle at most 32 files per folder, and a
+failed file was never moved, so it was retried every press and could
+block everything behind it. Now `TriggerSampleSynthPackImport()` re-lists
+until nothing unprocessed is left; a failure is retried once straight
+away (the user had seen files skip and then import on a second press),
+then left in place for the next press, with `ListAifFiles()`'s
+`skip_first` stepping past it. `.aiff` is accepted alongside `.aif` — a
+real `.aiff` pack had simply never been listed. A slice that won't write
+after three tries fails the whole pack and removes its folder, rather
+than saving a kit with a hole in it.
+
+### The SD driver was shifting unaligned DMA transfers
+
+Testing the new import, `patch (1)` (16 equal slices) always came out
+with 15 pads, every pad after the 8th one key too low — identically on
+every run, with no error. Correlating each written pad against the
+source showed slice 8 missing and everything else exact. The firmware's
+own `ParseOp1Json()` and slicing code, compiled on the Mac and fed the
+same file, found all 16 — so the device was *reading different bytes*.
+
+The cause is in libDaisy's `sd_diskio.c`. FatFs passes the caller's own
+buffer straight to the driver for whole-sector transfers, at
+`buff + (bytes taken by the partial first sector)`. The SDMMC's internal
+DMA ignores the low two bits of its address, so an unaligned
+destination lands shifted: the sector is written up to 3 bytes early.
+`ReadOp1AifInfo()`'s `json_buf` sat at `0x2404540C`; the direct sector
+started at `json_buf + 462 = 0x240455DA`, 2 bytes off. `end[8]`
+("894813259") straddled that boundary, lost two digits to the shifted
+sector, parsed as 8948159 — less than its start — and was dropped as an
+empty slice; everything after it was merely shifted and still parsed.
+The cache maintenance libDaisy does is correct; alignment was the gap.
+ST's own `sd_diskio_dma_template.c` handles it with a scratch buffer
+(`ENABLE_SCRATCH_BUFFER`); libDaisy's version left that out.
+
+Fix (in the project's libDaisy fork): `SD_read()`/`SD_write()` keep the
+direct multi-sector path for 4-byte-aligned buffers and send unaligned
+ones one sector at a time through a 32-byte-aligned scratch sector. This
+was never specific to import — any `f_read()`/`f_write()` of 512+ bytes
+starting at an awkward file offset could be hit, depending only on where
+the data sat. It had already cost `lofi2-4071` a slice (21 pads; 22
+after the fix). After a full re-import, every pad and Sound was checked
+window by window against its source: all match.
+
+Cost: SRAM 95.4% → 96.9% (SdMgmt's own item list and two kit-folder
+name buffers), one 512-byte scratch sector in libDaisy.

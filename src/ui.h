@@ -426,21 +426,19 @@ class Ui
         EnsemblePresets,  // row0 col3
         // SampleSynth's own Captures (SampleSynthParamPage::Trim's B2
         // hold-to-save, see TriggerSaveSampleSynthCapture()) -- NOT
-        // Kits, NOT ordinary Sounds, just the CAPTURED1/CAPTURED2
-        // category files. Presented as one combined 1-64 list here
-        // (1-32 = CAPTURED1, 33-64 = CAPTURED2+32) even though the real
-        // files underneath are two separate 1-32 numbered folders --
-        // see sd_mgmt_captures_numbers_'s own comment.
+        // Kits, NOT ordinary Sounds, just the CAPTUREDn bank files.
+        // Browsed bank first, then file -- see SdMgmtIsBankFolder().
         SampleSynthCaptures,       // row1 col0
-        // SampleSynth's own Drum Kits (SAMPLES/DRUM KITS/) -- every Kit
-        // today only ever gets created via Pack Import, but once saved
+        // SampleSynth's own Kits and Breaks (SAMPLES/KITSn/, BREAKSn/,
+        // one folder per kit) -- every one today is created by Pack
+        // Import or Duplicate, but once saved
         // it's the persisted thing a user loads and keeps, same
         // "manageable saved result, not raw import-staging material"
         // status as a Dexed preset created via SysEx import.
         SampleSynthKits,           // row1 col1
         // SampleSynth's own SMPVO User presets (SAMPLES/VOICE PRESETS/)
         // -- deliberately its own box, not combined with Drum User the
-        // way Captures combines CAPTURED1/CAPTURED2, since these two
+        // way Kits combines KITSn/BREAKSn, since these two
         // are a different engine *mode* each, not two halves of one
         // thing.
         SampleSynthVoiceUserPresets, // row1 col2
@@ -698,7 +696,7 @@ class Ui
         // Sound file (TriggerSaveSampleSynthCapture()) -- unlike Grains,
         // which saves a whole self-contained preset on a separate page,
         // a captured Sound here becomes an ordinary file under
-        // SAMPLES/CAPTURED1 or 2, ready to browse/favorite/use in a Kit
+        // the lowest SAMPLES/CAPTUREDn with room, ready to browse/load
         // like anything else.
         Trim,
         // K1 = Tune, same +-24 semitone range/quantization and dead-
@@ -724,8 +722,8 @@ class Ui
         // full mechanism. Positioned right before Preset since that's
         // "where the results show up."
         Import,
-        // Load a pre-made kit -- LOAD-ONLY for now, see
-        // sample_synth_kit_numbers_'s own doc comment in this header.
+        // Load a Sound (Voice) or a Kit/Break (Drum) -- LOAD-ONLY, see
+        // sample_synth_kit_cursor_'s own doc comment in this header.
         Preset,
         // Real Save/Load presets, one list per face -- SMPVO's own
         // references a Sound (see PerformanceStore::
@@ -1207,25 +1205,36 @@ class Ui
     // --- SD MGMT (Global:SdMgmt page) ------------------------------------
     // Returns whichever of file_slots_/granular_preset_user_slots_/
     // dexed_preset_user_slots_/ensemble_preset_user_slots_/
-    // sd_mgmt_captures_numbers_/sample_synth_kit_numbers_/
     // sample_synth_voice_user_numbers_/sample_synth_drum_user_numbers_
     // applies to sd_mgmt_folder_ (refreshing it first if that folder's
     // own dirty flag is set) and writes its count to *out_count.
+    // nullptr/0 for the two bank-based boxes (Captures, Kits) -- see
+    // SdMgmtIsBankFolder().
     const int* SdMgmtSlots(int* out_count);
-    // Rebuilds sd_mgmt_captures_numbers_ -- see that field's own
-    // comment. Called from SdMgmtSlots() when sd_mgmt_captures_dirty_
-    // is set, same "refresh on demand, not every frame" convention as
-    // RefreshGranularPresetSlots() etc.
-    void RefreshSdMgmtCaptures();
-    // These 3 share their dirty flag/arrays with
-    // SampleSynthParamPage::Preset/User's own inline refresh (ui.cpp's
+    // Captures and Kits hold named items in numbered bank folders
+    // (CAPTUREDn, KITSn/BREAKSn), not numbered slots, so inside those
+    // two boxes SdMgmt first picks a bank (sd_mgmt_bank_ < 0), then an
+    // item within it -- same two-level shape as the Sampler's own Preset
+    // browser. These keep that view's own lists current.
+    bool SdMgmtIsBankFolder() const
+    {
+        return sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures
+               || sd_mgmt_folder_ == SdMgmtFolder::SampleSynthKits;
+    }
+    // Item count at whichever level SdMgmt is on inside a bank box.
+    int  SdMgmtBankLevelCount();
+    // Bank-box (Captures/Kits) halves of TriggerSdMgmtDuplicate()/Delete().
+    void TriggerSdMgmtBankDuplicate();
+    void TriggerSdMgmtBankDelete();
+    void RefreshSdMgmtBanks();
+    void RefreshSdMgmtItems();
+    // These 2 share their dirty flag/arrays with
+    // SampleSynthParamPage::User's own inline refresh (ui.cpp's
     // DrawSampleSynthScreen()) -- same "whichever call runs first wins,
-    // both consumers trust the same flag" convention sd_mgmt_captures_
-    // itself doesn't need since it has no second consumer. Replicated
-    // here (not just the bare List* call) so the dirty flag's contract
-    // -- including the Kit name cache and each page's own cursor clamp
-    // -- stays identical no matter which page actually triggers it.
-    void RefreshSampleSynthKitSlots();
+    // both consumers trust the same flag" convention. Replicated here
+    // (not just the bare List* call) so the dirty flag's contract --
+    // including each page's own cursor clamp -- stays identical no
+    // matter which page actually triggers it.
     void RefreshSampleSynthVoiceUserSlots();
     void RefreshSampleSynthDrumUserSlots();
     // Button1 hold (800ms) while browsing a folder's files: duplicates
@@ -1709,16 +1718,6 @@ class Ui
     bool         sd_mgmt_in_folder_ = false; // false = picking a folder, true = browsing its files
     int          sd_mgmt_cursor_    = 0;     // index into the current folder's own slot list
     char         sd_mgmt_status_[24] = {};   // last duplicate/delete result
-    // SdMgmtFolder::SampleSynthCaptures' own combined view -- 1-32 are
-    // CAPTURED1's own real numbers as-is, 33-64 are CAPTURED2's own
-    // real numbers +32 (see RefreshSdMgmtCaptures()). The underlying
-    // PerformanceStore::*SampleSynthCapture() calls only ever see one
-    // real category + its own 1-32 number; this virtual range is purely
-    // this page's own presentation so 2 real folders show up as ONE
-    // SdMgmtFolder entry.
-    int  sd_mgmt_captures_numbers_[64] = {};
-    int  sd_mgmt_captures_count_       = 0;
-    bool sd_mgmt_captures_dirty_       = true; // forces one RefreshSdMgmtCaptures() on entry
 
     // --- WAV export (Global:Export page) ------------------------------
     bool export_op_in_progress_     = false; // true only while inside ExportWav()
@@ -2018,26 +2017,19 @@ class Ui
     // nothing meaningful to Save back yet. Button2's short tap jumps
     // straight to BrowsingLoad (skipping Grains' own "Files vs New"
     // top-level chooser -- there's no "New" concept for a kit either).
-    int  sample_synth_kit_numbers_[PerformanceStore::kMaxSampleSynthKits] = {};
-    char sample_synth_kit_names_[PerformanceStore::kMaxSampleSynthKits]
-                                 [PerformanceStore::kMaxSampleSynthKitNameLen + 1] = {};
-    int  sample_synth_kit_count_       = 0;
-    bool sample_synth_kits_dirty_      = true; // re-scan on first entry
+    // Item cursor within the open bank -- shared by both faces' lists
+    // (Sounds/Captured files in Voice, Kits/Breaks folders in Drum).
     int  sample_synth_kit_cursor_      = 0;
-    // No category level for Kits -- SAMP/KITxxx.DAT's own flat
-    // numbering is browsed directly (unlike Sounds, see
-    // sample_synth_sound_category_'s own comment just below, Kits
-    // never had enough real categories to need one even before the
-    // licensed-pack categories were removed).
-    int  sample_synth_loaded_kit_slot_ = -1;
+    // The resident kit's folder (PerformanceStore::kMaxSampleSynthKitRefLen),
+    // empty while a single Sound or nothing is loaded.
+    char sample_synth_loaded_kit_ref_[PerformanceStore::kMaxSampleSynthKitRefLen] = {};
     char sample_synth_loaded_kit_name_[PerformanceStore::kMaxSampleSynthKitNameLen + 1] = {};
     char sample_synth_kit_status_[24]  = {};
     void TriggerLoadSampleSynthKit();
-    // Shared by TriggerLoadSampleSynthKit() (resolves slot from the
-    // browse cursor first) and SwitchSampleSynthMode() (already has a
-    // raw remembered slot number, no cursor/list involved) -- the real
-    // load logic, parameterized by slot directly.
-    bool LoadSampleSynthKitBySlot(int slot);
+    // Shared by TriggerLoadSampleSynthKit() (resolves the kit from the
+    // browse cursor first), SwitchSampleSynthMode() and Drum User preset
+    // loads (already have a remembered kit_ref) -- the real load logic.
+    bool LoadSampleSynthKitByRef(const char* kit_ref);
     // The ORIGINAL per-pad manifest and combined arena span from the
     // most recent Kit load -- cached (not just a local in
     // TriggerLoadSampleSynthKit()) because Setup's own Button2 confirm
@@ -2092,31 +2084,63 @@ class Ui
     // are left exactly as they are (unlike a kit load, which restores
     // its own saved settings), since this is "quickly audition a
     // sound," not "recall a whole configuration."
-    // 64, not 32 -- large enough to hold the "Captured" category's own
-    // combined CAPTURED1+CAPTURED2 listing (up to 32 each, see
-    // sample_synth_sound_category_'s own comment below) as well as the
-    // plain "Sounds" category's own 32-item cap.
+    // Items listed from one bank -- saves/imports fill a bank to 32
+    // (PerformanceStore::kSampleBankCapacity); the headroom covers
+    // files someone copied in by hand.
     static constexpr int kMaxSampleSynthSoundsListed = 64;
+    // Both faces' banks together never exceed two types' worth.
+    static constexpr int kMaxListedSampleBanks = 2 * PerformanceStore::kMaxSampleBanks;
+    struct SampleBankEntry
+    {
+        PerformanceStore::SampleBank type = PerformanceStore::SampleBank::Sounds;
+        uint8_t                      number = 1;
+    };
+    // "SOUNDS2" etc. -- the real folder under SAMPLES/.
+    static void SampleBankEntryFolder(const SampleBankEntry& e, char* out, size_t out_size);
+    // "Sounds 2", "Captured 1", "Kits 3", "Breaks 1" -- what the screen shows.
+    static void SampleBankEntryLabel(const SampleBankEntry& e, char* out, size_t out_size);
+    // Fills out[] with Voice's banks (every SOUNDSn then CAPTUREDn) or
+    // Drum's (KITSn then BREAKSn), each type ascending.
+    static int ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out);
+    // Marks every SampleSynth bank/item listing stale (Preset browser and
+    // SdMgmt alike) -- after anything that adds/removes content.
+    void MarkSampleSynthListsDirty();
     // Follows sample_synth_mode_ directly now (true for Voice, false
     // for Drum) -- no longer a user-facing toggle (SMPVO only ever has
     // Sounds to browse, SMPDR only ever has Kits), see
     // SwitchSampleSynthMode() for where this gets kept in sync. The
     // default here matches sample_synth_mode_'s own default (Voice).
     bool sample_synth_preset_mode_sounds_ = true;
-    bool sample_synth_sounds_dirty_       = true; // re-scan on first entry into Sounds mode
+    bool sample_synth_sounds_dirty_       = true; // re-scan the open bank's items on next draw
+    // The open bank's items -- file names (Voice) or kit folder names
+    // (Drum).
     char sample_synth_sound_names_[kMaxSampleSynthSoundsListed]
                                    [PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
     int  sample_synth_sound_count_      = 0;
-    // Only meaningful when sample_synth_sound_category_==1 (Captured) --
-    // how many of sample_synth_sound_names_'s first entries came from
-    // CAPTURED1 (the rest, up to sample_synth_sound_count_, are
-    // CAPTURED2) -- see LoadSampleSynthFileIntoEngine()'s own call site
-    // in TriggerLoadSampleSynthSound() for why this split needs tracking
-    // (the two live in separate real folders on the card).
-    int  sample_synth_sound_captured1_count_ = 0;
+    // The current face's banks -- see ListFaceSampleBanks().
+    // sample_synth_banks_drum_ records which face they were listed for.
+    SampleBankEntry sample_synth_banks_[kMaxListedSampleBanks] = {};
+    int             sample_synth_bank_count_  = 0;
+    bool            sample_synth_banks_dirty_ = true;
+    bool            sample_synth_banks_drum_  = false;
+
+    // --- Global:SdMgmt's own bank-box view (declared here, after
+    // SampleBankEntry, rather than with the rest of SdMgmt's state).
+    // Bank-box state (Captures/Kits only, see SdMgmtIsBankFolder()):
+    // which bank is open (-1 = picking one), the banks on offer, and the
+    // open bank's items. Its own arrays, not the Preset browser's, so
+    // neither view can leave the other pointing at a stale list.
+    int             sd_mgmt_bank_ = -1;
+    SampleBankEntry sd_mgmt_banks_[kMaxListedSampleBanks] = {};
+    int             sd_mgmt_bank_count_  = 0;
+    bool            sd_mgmt_banks_dirty_ = true;
+    char            sd_mgmt_item_names_[kMaxSampleSynthSoundsListed]
+                                [PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
+    int             sd_mgmt_item_count_  = 0;
+    bool            sd_mgmt_items_dirty_ = true;
     char sample_synth_loaded_sound_name_[PerformanceStore::kMaxSampleSynthWavNameLen + 1] = {};
     // The real SD folder sample_synth_loaded_sound_name_ came from
-    // ("SOUNDS", "CAPTURED1", or "CAPTURED2") -- empty when nothing's
+    // (a SOUNDSn or CAPTUREDn bank) -- empty when nothing's
     // loaded (or a Kit is loaded instead of an individual Sound). Only
     // tracked for display/status only now -- sample_synth_voice_sound_
     // name_/_category_ (its own comment) is the one Save/mode-switch
@@ -2162,23 +2186,17 @@ class Ui
     void TriggerSaveSampleSynthDrumUserPreset(bool force_new);
     void TriggerLoadSampleSynthDrumUserPreset();
 
-    // Sounds has exactly 2 fixed categories -- "Sounds" (0, plain
-    // imported/dropped-in files in SAMPLES/SOUNDS/) and "Captured" (1,
-    // Trim's own "Hold=Save" output in SAMPLES/CAPTURED1/2, see
-    // TriggerSaveSampleSynthCapture()'s own comment -- kept as its own
-    // category rather than merged in, since Capture/Trim is a distinct
-    // workflow from importing a pack and the user asked for them to
-    // stay visibly separate). -1 = still at category-select (encoder
-    // scrolls sample_synth_sound_category_cursor_ between the two);
-    // 0 or 1 = drilled into that category's own file list (encoder now
-    // scrolls sample_synth_kit_cursor_ as before). Encoder CLICK
-    // toggles between the two levels -- same "click drills into a
-    // sub-list" convention Dexed's own Advanced page and the
-    // Performances/Grains "Files" chooser already use elsewhere in
-    // this file. Resets to -1 whenever Button1 (re)enters Sounds mode,
+    // Both faces browse in two levels: first a bank (index into
+    // sample_synth_banks_ -- "Sounds 1", "Captured 2" in Voice; "Kits 1",
+    // "Breaks 1" in Drum), then that bank's items. Captured stays its own
+    // bank type rather than merged into Sounds, since Capture/Trim is a
+    // distinct workflow from importing a pack and the user asked for them
+    // to stay visibly separate; Breaks likewise. -1 = still at bank-select
+    // (Knob1 scrolls sample_synth_sound_category_cursor_); >= 0 = drilled
+    // into that bank's items (Knob1 scrolls sample_synth_kit_cursor_).
+    // Button2's short tap drills in. Resets to -1 on every fresh entry,
     // same "start over at the top" reasoning sample_synth_kit_cursor_'s
-    // own reset already follows. Kits have no equivalent -- see
-    // sample_synth_kit_count_'s own comment above.
+    // own reset already follows.
     int sample_synth_sound_category_        = -1;
     int sample_synth_sound_category_cursor_ = 0;
 
@@ -2293,9 +2311,9 @@ class Ui
     // should come back to.
     char sample_synth_voice_sound_name_[PerformanceStore::kMaxSampleSynthWavNameLen + 1]     = {};
     char sample_synth_voice_sound_category_[12] = {};
-    // Same idea for Drum mode's own last-known Kit slot -- separate
-    // from sample_synth_loaded_kit_slot_ for the same reason.
-    int sample_synth_drum_kit_slot_ = -1;
+    // Same idea for Drum mode's own last-known Kit -- separate from
+    // sample_synth_loaded_kit_ref_ for the same reason. Empty = none.
+    char sample_synth_drum_kit_ref_[PerformanceStore::kMaxSampleSynthKitRefLen] = {};
     // Drum's own Setup state (Break Divide count + Tune), snapshotted
     // when LEAVING Drum mode and re-applied after the Kit itself
     // reloads when RETURNING -- otherwise LoadSampleSynthKitBySlot()'s

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cctype>
+#include <strings.h>
 #include <cstddef>
 #include <cstdlib>
 #include <math.h>
@@ -1986,50 +1987,206 @@ int ListImportWavFiles(char out_names[][kMaxImportWavNameLen + 1], int max_out)
     return count;
 }
 
-int ListSampleSynthFiles(char out_names[][kMaxSampleSynthWavNameLen + 1], int max_out,
-                          const char* subfolder)
+const char* SampleBankPrefix(SampleBank b)
 {
-    if(!card_ready)
+    switch(b)
+    {
+        case SampleBank::Sounds: return "SOUNDS";
+        case SampleBank::Captured: return "CAPTURED";
+        case SampleBank::Kits: return "KITS";
+        case SampleBank::Breaks: return "BREAKS";
+    }
+    return "SOUNDS";
+}
+
+void SampleBankFolder(SampleBank b, int n, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "%s%d", SampleBankPrefix(b), n);
+}
+
+namespace
+{
+// "KITS12" -> 12 for prefix "KITS"; 0 if name isn't prefix + 1..99.
+// Exact prefix match only, so "SOUNDS" never claims a "SOUNDSX" folder.
+int ParseSampleBankNumber(const char* name, const char* prefix)
+{
+    size_t plen = strlen(prefix);
+    if(strncmp(name, prefix, plen) != 0)
         return 0;
-    char path[40];
-    if(subfolder && subfolder[0] != '\0')
-        snprintf(path, sizeof(path), "%s/%s", kSampleSynthFolder, subfolder);
-    else
-        snprintf(path, sizeof(path), "%s", kSampleSynthFolder);
+    const char* d = name + plen;
+    if(d[0] < '1' || d[0] > '9')
+        return 0; // also rejects leading zeros ("KITS01")
+    int n = 0;
+    for(; *d; d++)
+    {
+        if(*d < '0' || *d > '9')
+            return 0;
+        n = n * 10 + (*d - '0');
+        if(n > kMaxSampleBanks)
+            return 0;
+    }
+    return n;
+}
+
+bool IsSampleBankFileItem(SampleBank b, const char* fname)
+{
+    size_t len = strlen(fname);
+    if(len < 4)
+        return false; // too short for a ".wav"/".snd" extension
+    char ext[5];
+    for(int i = 0; i < 4; i++)
+        ext[i] = (char)tolower((unsigned char)fname[len - 4 + i]);
+    ext[4] = '\0';
+    // ".snd" is a multi-sample manifest (see LoadSampleSynthSound()'s own
+    // doc comment) listed right alongside plain .wav files -- Ui tells
+    // them apart by this same extension check when one is picked.
+    if(strcmp(ext, ".wav") == 0)
+        return true;
+    return b == SampleBank::Sounds && strcmp(ext, ".snd") == 0;
+}
+
+// Insertion sort -- lists here are at most a few dozen names, sorted
+// once per (re)scan, so nothing fancier is worth it.
+void SortNames(char names[][kMaxSampleSynthWavNameLen + 1], int count)
+{
+    static char tmp[kMaxSampleSynthWavNameLen + 1];
+    for(int i = 1; i < count; i++)
+    {
+        memcpy(tmp, names[i], sizeof(tmp));
+        int j = i - 1;
+        while(j >= 0 && strcasecmp(names[j], tmp) > 0)
+        {
+            memcpy(names[j + 1], names[j], sizeof(tmp));
+            j--;
+        }
+        memcpy(names[j + 1], tmp, sizeof(tmp));
+    }
+}
+
+// Items in a bank folder without collecting names -- what
+// FindSampleBankWithSpace() needs, cheaper than a full listing.
+int CountSampleBankItems(SampleBank b, int n)
+{
+    char path[24];
+    char folder[16];
+    SampleBankFolder(b, n, folder, sizeof(folder));
+    snprintf(path, sizeof(path), "%s/%s", kSampleSynthFolder, folder);
+    static DIR dir; // see the DTCMRAM/DMA comment on Save() above
+    if(f_opendir(&dir, path) != FR_OK)
+        return 0;
+    bool           kit_type = b == SampleBank::Kits || b == SampleBank::Breaks;
+    int            count    = 0;
+    static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
+    while(f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0)
+    {
+        if(fno.fname[0] == '.')
+            continue; // AppleDouble sidecars, hidden folders
+        bool is_dir = (fno.fattrib & AM_DIR) != 0;
+        if(kit_type ? is_dir : (!is_dir && IsSampleBankFileItem(b, fno.fname)))
+            count++;
+    }
+    f_closedir(&dir);
+    return count;
+}
+} // namespace
+
+int ListSampleBanks(SampleBank b, uint8_t* out_numbers, int max_out)
+{
+    if(!card_ready || !out_numbers)
+        return 0;
+    static DIR dir; // see the DTCMRAM/DMA comment on Save() above
+    if(f_opendir(&dir, kSampleSynthFolder) != FR_OK)
+        return 0;
+    const char*    prefix = SampleBankPrefix(b);
+    int            count  = 0;
+    static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
+    while(count < max_out && f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0)
+    {
+        if(!(fno.fattrib & AM_DIR))
+            continue;
+        int n = ParseSampleBankNumber(fno.fname, prefix);
+        if(n == 0)
+            continue;
+        // Insert in ascending order (directory order is creation order).
+        int j = count - 1;
+        while(j >= 0 && out_numbers[j] > n)
+        {
+            out_numbers[j + 1] = out_numbers[j];
+            j--;
+        }
+        out_numbers[j + 1] = (uint8_t)n;
+        count++;
+    }
+    f_closedir(&dir);
+    return count;
+}
+
+int ListSampleBankItems(SampleBank b, int n, char out_names[][kMaxSampleSynthWavNameLen + 1],
+                        int max_out)
+{
+    if(!card_ready || !out_names)
+        return 0;
+    char folder[16];
+    SampleBankFolder(b, n, folder, sizeof(folder));
+    char path[24];
+    snprintf(path, sizeof(path), "%s/%s", kSampleSynthFolder, folder);
     static DIR dir; // see the DTCMRAM/DMA comment on Save() above
     if(f_opendir(&dir, path) != FR_OK)
         return 0; // no such folder yet -- not an error, just nothing to list
 
-    int            count = 0;
+    bool           kit_type = b == SampleBank::Kits || b == SampleBank::Breaks;
+    int            count    = 0;
     static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
     while(count < max_out)
     {
         if(f_readdir(&dir, &fno) != FR_OK || fno.fname[0] == 0)
             break; // error or end of directory
-        if(fno.fattrib & AM_DIR)
-            continue;
-        if(fno.fname[0] == '.' && fno.fname[1] == '_')
+        if(fno.fname[0] == '.')
             continue; // macOS AppleDouble sidecar file, see ListImportWavFiles()'s own comment
-        size_t len = strlen(fno.fname);
-        if(len < 4)
-            continue; // too short for a ".wav"/".snd" extension
-        char ext[5];
-        for(int i = 0; i < 4; i++)
-            ext[i] = (char)tolower((unsigned char)fno.fname[len - 4 + i]);
-        ext[4] = '\0';
-        // ".snd" is a multi-sample manifest (see LoadSampleSynthSound()'s
-        // own doc comment) listed right alongside plain .wav files --
-        // Ui::TriggerLoadSampleSynthSound() tells them apart by this same
-        // extension check when the user actually picks one.
-        if(strcmp(ext, ".wav") != 0 && strcmp(ext, ".snd") != 0)
+        bool is_dir = (fno.fattrib & AM_DIR) != 0;
+        if(kit_type ? !is_dir : (is_dir || !IsSampleBankFileItem(b, fno.fname)))
             continue;
-        if(len > kMaxSampleSynthWavNameLen)
+        if(strlen(fno.fname) > kMaxSampleSynthWavNameLen)
             continue; // skip, don't truncate -- see ListImportWavFiles()'s own comment
         snprintf(out_names[count], kMaxSampleSynthWavNameLen + 1, "%s", fno.fname);
         count++;
     }
     f_closedir(&dir);
+    SortNames(out_names, count);
     return count;
+}
+
+int FindSampleBankWithSpace(SampleBank b)
+{
+    if(!card_ready)
+        return -1;
+    f_mkdir(kSampleSynthFolder); // harmless if it already exists
+    static uint8_t numbers[kMaxSampleBanks];
+    int            count = ListSampleBanks(b, numbers, kMaxSampleBanks);
+    for(int i = 0; i < count; i++)
+        if(CountSampleBankItems(b, numbers[i]) < kSampleBankCapacity)
+            return numbers[i];
+    // Every existing bank is full -- create the lowest unused number.
+    for(int n = 1; n <= kMaxSampleBanks; n++)
+    {
+        bool used = false;
+        for(int i = 0; i < count; i++)
+            used = used || numbers[i] == n;
+        if(used)
+            continue;
+        char folder[16], path[24];
+        SampleBankFolder(b, n, folder, sizeof(folder));
+        snprintf(path, sizeof(path), "%s/%s", kSampleSynthFolder, folder);
+        FRESULT fr = f_mkdir(path);
+        if(fr != FR_OK && fr != FR_EXIST)
+        {
+            SetError("mkdir", fr);
+            return -1;
+        }
+        return n;
+    }
+    SetError("banksfull", FR_OK);
+    return -1;
 }
 
 bool ParseNoteNameFromFilename(const char* filename, uint8_t* out_note)
@@ -2098,16 +2255,25 @@ bool ParseNoteNameFromFilename(const char* filename, uint8_t* out_note)
     return true;
 }
 
-// Nested under kSampleSynthFolder ("SAMPLES/DRUM KITS/"), not a sibling
-// folder -- the old "SAMP/" sat right next to "SAMPLES/" at the SD root,
-// two near-identical names where one held nicely organized subfolders
-// (Captured1/2, Sounds) and the other just bare KITxxx.DAT files with
-// nothing legible about what they were. See this file's own SD-layout
-// rename comment on SlotFilename() above.
-void SampleSynthKitFilename(int slot, char* out, size_t out_size)
+void SampleSynthKitDir(const char* kit_ref, char* out, size_t out_size)
 {
-    snprintf(out, out_size, "%s/DRUM KITS/KIT%03d.DAT", kSampleSynthFolder, slot);
+    snprintf(out, out_size, "%s/%s", kSampleSynthFolder, kit_ref);
 }
+
+SampleBank SampleSynthKitBank(const char* kit_ref)
+{
+    const char* prefix = SampleBankPrefix(SampleBank::Breaks);
+    return strncmp(kit_ref, prefix, strlen(prefix)) == 0 ? SampleBank::Breaks : SampleBank::Kits;
+}
+
+namespace
+{
+// Each kit's own folder holds exactly one of these, next to its pad WAVs.
+void SampleSynthKitFilename(const char* kit_ref, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "%s/%s/KIT.DAT", kSampleSynthFolder, kit_ref);
+}
+} // namespace
 
 namespace
 {
@@ -2138,25 +2304,15 @@ constexpr size_t   kSampleSynthKitDataV2Size
     = offsetof(SampleSynth::SampleSynthPresetData, mono_choke);
 } // namespace
 
-bool SaveSampleSynthKit(int slot, const char* name,
+bool SaveSampleSynthKit(const char* kit_ref, const char* name,
                          const SampleSynth::SampleSynthPresetData& params,
                          const SampleSynthKitSlot slots[kMaxSampleSynthSlots])
 {
-    if(!card_ready || slot < 1 || slot > kMaxSampleSynthKits)
+    if(!card_ready || !kit_ref || kit_ref[0] == '\0')
         return false;
 
-    f_mkdir(kSampleSynthFolder); // harmless if it already exists, same as every other f_mkdir() call here
-    char kits_dir[32];
-    snprintf(kits_dir, sizeof(kits_dir), "%s/DRUM KITS", kSampleSynthFolder);
-    FRESULT mkdir_res = f_mkdir(kits_dir);
-    if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
-    {
-        SetError("mkdir", mkdir_res);
-        return false;
-    }
-
-    char fname[36];
-    SampleSynthKitFilename(slot, fname, sizeof(fname));
+    char fname[64];
+    SampleSynthKitFilename(kit_ref, fname, sizeof(fname));
 
     ClearError();
     static FIL file; // see the DTCMRAM/DMA comment on Save() above
@@ -2210,20 +2366,19 @@ bool SaveSampleSynthKit(int slot, const char* name,
     return ok && close_res == FR_OK;
 }
 
-// Shared by LoadSampleSynthKit()/PeekSampleSynthKitName() -- opens the
-// file, validates magic/version, reads just the name field, and
-// (unless peek_only) leaves the file open positioned right after the
-// name for the caller to keep reading params/slots. Returns the open
+// Used by LoadSampleSynthKit() -- opens the file, validates
+// magic/version, reads just the name field, and leaves the file open
+// positioned right after the name for the caller to keep reading
+// params/slots. Returns the open
 // FIL* on success (caller must f_close() it), nullptr on failure
 // (error already set). out_version is optional -- LoadSampleSynthKit()
 // needs it to know how much of SampleSynthPresetData a v2 file
-// actually has on disk; PeekSampleSynthKitName() never reads params at
-// all, so it just passes nullptr.
-FIL* OpenSampleSynthKitAndReadName(int slot, char* out_name, size_t out_name_size,
+// actually has on disk.
+FIL* OpenSampleSynthKitAndReadName(const char* kit_ref, char* out_name, size_t out_name_size,
                                      uint32_t* out_version = nullptr)
 {
-    char fname[36];
-    SampleSynthKitFilename(slot, fname, sizeof(fname));
+    char fname[64];
+    SampleSynthKitFilename(kit_ref, fname, sizeof(fname));
 
     ClearError();
     static FIL file;
@@ -2274,11 +2429,11 @@ FIL* OpenSampleSynthKitAndReadName(int slot, char* out_name, size_t out_name_siz
     return &file;
 }
 
-bool LoadSampleSynthKit(int slot, char* out_name, size_t out_name_size,
+bool LoadSampleSynthKit(const char* kit_ref, char* out_name, size_t out_name_size,
                          SampleSynth::SampleSynthPresetData* out_params,
                          SampleSynthKitSlot out_slots[kMaxSampleSynthSlots])
 {
-    if(slot < 1 || slot > kMaxSampleSynthKits || !out_params || !out_slots)
+    if(!kit_ref || kit_ref[0] == '\0' || !out_params || !out_slots)
         return false;
     if(!card_ready)
         return false;
@@ -2290,7 +2445,7 @@ bool LoadSampleSynthKit(int slot, char* out_name, size_t out_name_size,
         slot_data[i] = SampleSynthKitSlot{};
 
     uint32_t version = kSampleSynthKitFileVersion;
-    FIL*     file    = OpenSampleSynthKitAndReadName(slot, out_name, out_name_size, &version);
+    FIL*     file    = OpenSampleSynthKitAndReadName(kit_ref, out_name, out_name_size, &version);
     if(!file)
         return false;
 
@@ -2326,37 +2481,6 @@ bool LoadSampleSynthKit(int slot, char* out_name, size_t out_name_size,
     if(close_res != FR_OK)
         SetError("close", close_res);
     return ok && close_res == FR_OK;
-}
-
-bool PeekSampleSynthKitName(int slot, char* out_name, size_t out_name_size)
-{
-    if(slot < 1 || slot > kMaxSampleSynthKits || !out_name)
-        return false;
-    if(!card_ready)
-        return false;
-    FIL* file = OpenSampleSynthKitAndReadName(slot, out_name, out_name_size);
-    if(!file)
-        return false;
-    FRESULT close_res = f_close(file);
-    if(close_res != FR_OK)
-        SetError("close", close_res);
-    return close_res == FR_OK;
-}
-
-int ListSampleSynthKits(int* out_numbers, int max_out)
-{
-    if(!card_ready)
-        return 0;
-    int count = 0;
-    for(int slot = 1; slot <= kMaxSampleSynthKits && count < max_out; slot++)
-    {
-        char    fname[36];
-        FILINFO fno;
-        SampleSynthKitFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) == FR_OK)
-            out_numbers[count++] = slot;
-    }
-    return count;
 }
 
 namespace
@@ -2455,7 +2579,10 @@ struct SampleSynthDrumUserPresetFileHeader
     char     magic[4]; // "SDUP"
     uint32_t version;
 };
-constexpr uint32_t kSampleSynthDrumUserPresetFileVersion = 1;
+// 2: kit_slot (a number) replaced by kit_ref (the kit's folder) -- v1
+// presets pointed at numbered kits that no longer exist, so they're a
+// clean reject rather than a migration.
+constexpr uint32_t kSampleSynthDrumUserPresetFileVersion = 2;
 } // namespace
 
 bool SaveSampleSynthVoiceUserPreset(int slot, const SampleSynthVoiceUserPreset& preset)
@@ -2928,38 +3055,6 @@ void SampleSynthCaptureFilename(const char* category_folder, int n, char* out, s
     snprintf(out, out_size, "%s/%s/CAP%03d.wav", kSampleSynthFolder, category_folder, n);
 }
 
-namespace
-{
-// CompactSlotsAfterDelete()'s filename_fn is a fixed 2-arg function
-// pointer (int, char*, size_t) -- no room for a category string -- so
-// these two trivial wrappers each close over one fixed category purely
-// so that generic helper can be reused as-is for Captures too.
-void SampleSynthCaptured1Filename(int n, char* out, size_t out_size)
-{
-    SampleSynthCaptureFilename("CAPTURED1", n, out, out_size);
-}
-void SampleSynthCaptured2Filename(int n, char* out, size_t out_size)
-{
-    SampleSynthCaptureFilename("CAPTURED2", n, out, out_size);
-}
-} // namespace
-
-int ListSampleSynthCapturesInCategory(const char* category_folder, int* out_numbers, int max_out)
-{
-    if(!card_ready || !category_folder || !out_numbers)
-        return 0;
-    int count = 0;
-    for(int n = 1; n <= 32 && count < max_out; n++)
-    {
-        char fname[48];
-        SampleSynthCaptureFilename(category_folder, n, fname, sizeof(fname));
-        FILINFO fno;
-        if(f_stat(fname, &fno) == FR_OK)
-            out_numbers[count++] = n;
-    }
-    return count;
-}
-
 bool DeleteSampleSynthCapture(const char* category_folder, int n)
 {
     if(!card_ready || !category_folder || n < 1 || n > 32)
@@ -2968,9 +3063,21 @@ bool DeleteSampleSynthCapture(const char* category_folder, int n)
     SampleSynthCaptureFilename(category_folder, n, fname, sizeof(fname));
     if(!DeleteFileGeneric(fname))
         return false;
-    bool is_cat1 = strcmp(category_folder, "CAPTURED1") == 0;
-    CompactSlotsAfterDelete(
-        n, 32, is_cat1 ? SampleSynthCaptured1Filename : SampleSynthCaptured2Filename, nullptr);
+    // Same gap-closing compaction as CompactSlotsAfterDelete(), inlined
+    // because the filename depends on which CAPTUREDn bank this is.
+    int target = n;
+    for(int src = n + 1; src <= kSampleBankCapacity; src++)
+    {
+        char    src_name[48];
+        FILINFO fno;
+        SampleSynthCaptureFilename(category_folder, src, src_name, sizeof(src_name));
+        if(f_stat(src_name, &fno) != FR_OK)
+            continue;
+        char dst_name[48];
+        SampleSynthCaptureFilename(category_folder, target, dst_name, sizeof(dst_name));
+        f_rename(src_name, dst_name);
+        target++;
+    }
     return true;
 }
 
@@ -3014,7 +3121,8 @@ bool DuplicateSampleSynthCapture(const char* category_folder, int n, int* out_ne
     return true;
 }
 
-int ListAifFiles(const char* folder, char out_names[][kMaxSampleSynthWavNameLen + 1], int max_out)
+int ListAifFiles(const char* folder, char out_names[][kMaxSampleSynthWavNameLen + 1], int max_out,
+                 int skip_first)
 {
     if(!card_ready || !folder)
         return 0;
@@ -3033,16 +3141,19 @@ int ListAifFiles(const char* folder, char out_names[][kMaxSampleSynthWavNameLen 
         if(fno.fname[0] == '.' && fno.fname[1] == '_')
             continue; // macOS AppleDouble sidecar file, see ListImportWavFiles()'s own comment
         size_t len = strlen(fno.fname);
-        if(len < 4)
-            continue; // too short for a ".aif" extension
-        char ext[5];
-        for(int i = 0; i < 4; i++)
-            ext[i] = (char)tolower((unsigned char)fno.fname[len - 4 + i]);
-        ext[4] = '\0';
-        if(strcmp(ext, ".aif") != 0)
+        // ".aif" and ".aiff" both -- the same AIFF container, and real
+        // packs ship with either spelling.
+        bool is_aif = (len >= 4 && strcasecmp(fno.fname + len - 4, ".aif") == 0)
+                      || (len >= 5 && strcasecmp(fno.fname + len - 5, ".aiff") == 0);
+        if(!is_aif)
             continue;
         if(len > kMaxSampleSynthWavNameLen)
             continue; // skip, don't truncate -- see ListImportWavFiles()'s own comment
+        if(skip_first > 0)
+        {
+            skip_first--;
+            continue;
+        }
         snprintf(out_names[count], kMaxSampleSynthWavNameLen + 1, "%s", fno.fname);
         count++;
     }
@@ -3585,65 +3696,175 @@ bool ImportAif(const char* filename, float* out_l, float* out_r, size_t audio_ca
     return ok && close_res == FR_OK;
 }
 
-int NextFreeSampleSynthKitSlot()
+namespace
 {
-    if(!card_ready)
-        return -1;
-    for(int slot = 1; slot <= kMaxSampleSynthKits; slot++)
-    {
-        char    fname[36];
-        FILINFO fno;
-        SampleSynthKitFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) != FR_OK)
-            return slot;
-    }
-    return -1;
+// Drops a trailing ".aif"/".aiff" (any case) in place.
+void StripAifExtension(char* name)
+{
+    size_t len = strlen(name);
+    if(len > 5 && strcasecmp(name + len - 5, ".aiff") == 0)
+        name[len - 5] = '\0';
+    else if(len > 4 && strcasecmp(name + len - 4, ".aif") == 0)
+        name[len - 4] = '\0';
 }
 
-// No factory tier to protect (every Kit slot is user content) -- same
-// shape as DeleteGranularPreset()/DuplicateGranularPreset() above, just
-// a different Filename()/NextFreeSlot() pair. Global:SdMgmt's own
-// Delete/Duplicate on the Kits box.
-bool DeleteSampleSynthKit(int slot, int* loaded_slot_inout)
+// Removes every file in dir_path, then dir_path itself -- a kit folder
+// only ever holds plain files (KIT.DAT + pad WAVs), so one level is all
+// this needs. Carries on past a file it can't remove; the final folder
+// removal then fails and reports it.
+bool DeleteFolderAndFiles(const char* dir_path)
 {
-    if(!card_ready || slot < 1 || slot > kMaxSampleSynthKits)
+    static DIR     dir; // see the DTCMRAM/DMA comment on Save() above
+    static FILINFO fno;
+    static char    names[kMaxSampleSynthSlots + 8][kMaxSampleSynthWavNameLen + 1];
+    // Collect first, delete after -- unlinking while f_readdir() is still
+    // walking the same directory isn't safe in FatFs.
+    for(;;)
+    {
+        if(f_opendir(&dir, dir_path) != FR_OK)
+            break;
+        int count = 0;
+        while(count < (int)(sizeof(names) / sizeof(names[0])) && f_readdir(&dir, &fno) == FR_OK
+              && fno.fname[0] != 0)
+        {
+            if(fno.fattrib & AM_DIR)
+                continue;
+            snprintf(names[count++], sizeof(names[0]), "%s", fno.fname);
+        }
+        f_closedir(&dir);
+        if(count == 0)
+            break;
+        bool removed_any = false;
+        for(int i = 0; i < count; i++)
+        {
+            char path[128];
+            snprintf(path, sizeof(path), "%s/%s", dir_path, names[i]);
+            removed_any = f_unlink(path) == FR_OK || removed_any;
+        }
+        if(!removed_any)
+            break; // nothing more we can remove -- don't loop forever
+    }
+    return DeleteFileGeneric(dir_path);
+}
+
+// "<name>", "<name> 2", "<name> 3", ... -- the first that doesn't already
+// exist under bank_path, truncated so the result stays a short kit name.
+// Returns false only if 99 variants all exist.
+bool MakeUniqueKitFolderName(const char* bank_path, const char* base, char* out, size_t out_size)
+{
+    for(int k = 1; k < 100; k++)
+    {
+        char candidate[kMaxSampleSynthKitNameLen + 1];
+        if(k == 1)
+            snprintf(candidate, sizeof(candidate), "%s", base);
+        else
+        {
+            char suffix[4];
+            snprintf(suffix, sizeof(suffix), " %d", k);
+            int keep = (int)sizeof(candidate) - 1 - (int)strlen(suffix);
+            snprintf(candidate, sizeof(candidate), "%.*s%s", keep, base, suffix);
+        }
+        char    path[96];
+        FILINFO fno;
+        snprintf(path, sizeof(path), "%s/%s", bank_path, candidate);
+        if(f_stat(path, &fno) != FR_OK)
+        {
+            snprintf(out, out_size, "%s", candidate);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Creates a new, uniquely-named kit folder in the lowest bank of type b
+// with space and returns its kit_ref ("KITS1/name"). False (error set)
+// if every bank is full or the folder can't be created.
+bool CreateKitFolder(SampleBank b, const char* base_name, char* out_ref, size_t out_ref_size)
+{
+    int n = FindSampleBankWithSpace(b);
+    if(n < 0)
         return false;
-    char fname[36];
-    SampleSynthKitFilename(slot, fname, sizeof(fname));
-    if(!DeleteFileGeneric(fname))
+    char bank_folder[16], bank_path[24];
+    SampleBankFolder(b, n, bank_folder, sizeof(bank_folder));
+    snprintf(bank_path, sizeof(bank_path), "%s/%s", kSampleSynthFolder, bank_folder);
+    char kit_folder[kMaxSampleSynthKitNameLen + 1];
+    if(!MakeUniqueKitFolderName(bank_path, base_name, kit_folder, sizeof(kit_folder)))
+    {
+        SetError("kitname", FR_EXIST);
         return false;
-    if(loaded_slot_inout && *loaded_slot_inout == slot)
-        *loaded_slot_inout = -1;
-    CompactSlotsAfterDelete(slot, kMaxSampleSynthKits, SampleSynthKitFilename, loaded_slot_inout);
+    }
+    snprintf(out_ref, out_ref_size, "%s/%s", bank_folder, kit_folder);
+    char dir[64];
+    SampleSynthKitDir(out_ref, dir, sizeof(dir));
+    FRESULT fr = f_mkdir(dir);
+    if(fr != FR_OK)
+    {
+        SetError("mkdir", fr);
+        return false;
+    }
     return true;
 }
+} // namespace
 
-bool DuplicateSampleSynthKit(int slot, int* out_new_slot, ProgressFn on_progress)
+bool DeleteSampleSynthKit(const char* kit_ref)
 {
-    if(!out_new_slot)
+    if(!card_ready || !kit_ref || kit_ref[0] == '\0')
         return false;
-    *out_new_slot = -1;
-    if(!card_ready || slot < 1 || slot > kMaxSampleSynthKits)
+    char dir[64];
+    SampleSynthKitDir(kit_ref, dir, sizeof(dir));
+    return DeleteFolderAndFiles(dir);
+}
+
+bool DuplicateSampleSynthKit(const char* kit_ref, char* out_new_ref, size_t out_new_ref_size,
+                              ProgressFn on_progress)
+{
+    if(!out_new_ref || out_new_ref_size == 0)
         return false;
-    char    src[36];
-    FILINFO fno;
-    SampleSynthKitFilename(slot, src, sizeof(src));
-    if(f_stat(src, &fno) != FR_OK)
+    out_new_ref[0] = '\0';
+    if(!card_ready || !kit_ref || kit_ref[0] == '\0')
+        return false;
+
+    char src_dir[64];
+    SampleSynthKitDir(kit_ref, src_dir, sizeof(src_dir));
+    static DIR     dir; // see the DTCMRAM/DMA comment on Save() above
+    static FILINFO fno;
+    static char    names[kMaxSampleSynthSlots + 8][kMaxSampleSynthWavNameLen + 1];
+    if(f_opendir(&dir, src_dir) != FR_OK)
     {
-        SetError("dupsrc", FR_NO_FILE);
+        SetError("dupsrc", FR_NO_PATH);
         return false;
     }
-    int new_slot = NextFreeSampleSynthKitSlot();
-    if(new_slot < 0)
+    int count = 0;
+    while(count < (int)(sizeof(names) / sizeof(names[0])) && f_readdir(&dir, &fno) == FR_OK
+          && fno.fname[0] != 0)
     {
-        SetError("dupslot", FR_OK);
-        return false;
+        if(!(fno.fattrib & AM_DIR) && fno.fname[0] != '.')
+            snprintf(names[count++], sizeof(names[0]), "%s", fno.fname);
     }
-    char dst[36];
-    SampleSynthKitFilename(new_slot, dst, sizeof(dst));
-    if(!CopyFileChunked(src, dst, on_progress))
+    f_closedir(&dir);
+
+    const char* slash = strrchr(kit_ref, '/');
+    const char* base  = slash ? slash + 1 : kit_ref;
+    char        new_ref[kMaxSampleSynthKitRefLen];
+    if(!CreateKitFolder(SampleSynthKitBank(kit_ref), base, new_ref, sizeof(new_ref)))
         return false;
-    *out_new_slot = new_slot;
+    char dst_dir[64];
+    SampleSynthKitDir(new_ref, dst_dir, sizeof(dst_dir));
+
+    for(int i = 0; i < count; i++)
+    {
+        char src[128], dst[128];
+        snprintf(src, sizeof(src), "%s/%s", src_dir, names[i]);
+        snprintf(dst, sizeof(dst), "%s/%s", dst_dir, names[i]);
+        if(!CopyFileChunked(src, dst, nullptr))
+        {
+            DeleteFolderAndFiles(dst_dir); // don't leave half a kit behind
+            return false;
+        }
+        if(on_progress)
+            on_progress((float)(i + 1) / (float)count);
+    }
+    snprintf(out_new_ref, out_new_ref_size, "%s", new_ref);
     return true;
 }
 
@@ -3713,9 +3934,9 @@ bool WriteSliceWav(const char* path, const float* buf_l, const float* buf_r, siz
 }
 } // namespace
 
-bool ImportAifDrumPack(const char* filename, const char* folder, float* scratch_l,
-                        float* scratch_r, size_t scratch_capacity, char* out_status,
-                        size_t out_status_size, ProgressFn progress_cb)
+bool ImportAifDrumPack(const char* filename, const char* folder, bool force_break,
+                        float* scratch_l, float* scratch_r, size_t scratch_capacity,
+                        char* out_status, size_t out_status_size, ProgressFn progress_cb)
 {
     if(!filename || !folder || !scratch_l || !scratch_r || !out_status)
         return false;
@@ -3723,19 +3944,12 @@ bool ImportAifDrumPack(const char* filename, const char* folder, float* scratch_
     char path[80];
     snprintf(path, sizeof(path), "%s/%s", folder, filename);
 
+    // No op-1 drum data (a plain recording, or a sampler patch dropped in
+    // here) isn't a reason to refuse it any more -- it imports as a
+    // single whole-file slice and is classified by length like any pack.
     Op1AifInfo info;
-    if(!ReadOp1AifInfo(path, &info) || !info.have_op1 || strcmp(info.type, "drum") != 0)
-    {
-        snprintf(out_status, out_status_size, "Not a drum pack");
-        return false;
-    }
-
-    int new_slot = NextFreeSampleSynthKitSlot();
-    if(new_slot < 0)
-    {
-        snprintf(out_status, out_status_size, "Kits full");
-        return false;
-    }
+    bool       has_slices
+        = ReadOp1AifInfo(path, &info) && info.have_op1 && strcmp(info.type, "drum") == 0;
 
     size_t total_len = 0;
     if(!ImportAif(filename, scratch_l, scratch_r, scratch_capacity, &total_len, folder)
@@ -3791,15 +4005,17 @@ bool ImportAifDrumPack(const char* filename, const char* folder, float* scratch_
     // still turn this off per kit afterward (SampleSynth's own Mix
     // page).
     params.mono_choke = true;
-    SampleSynthKitSlot slots[kMaxSampleSynthSlots];
-    int real_slices = 0;
-    for(int i = 0; i < kMaxSampleSynthSlots; i++)
+    // Pass 1: where each real slice sits in the decoded buffer.
+    size_t slice_start[kMaxSampleSynthSlots], slice_len[kMaxSampleSynthSlots];
+    int    real_slices = 0;
+    if(!has_slices)
     {
-        // First statement in the loop, before any continue below --
-        // see this function's own progress_cb doc comment for why
-        // every slot (real or skipped) gets a turn to move the bar.
-        if(progress_cb)
-            progress_cb((float)(i + 1) / (float)kMaxSampleSynthSlots);
+        slice_start[0] = 0;
+        slice_len[0]   = total_len;
+        real_slices    = 1;
+    }
+    for(int i = 0; has_slices && i < kMaxSampleSynthSlots; i++)
+    {
         // A slot is padding -- not a real slice -- when its (start,end)
         // pair exactly repeats the immediately preceding one (confirmed
         // against real files: the first occurrence of a repeated pair
@@ -3808,52 +4024,112 @@ bool ImportAifDrumPack(const char* filename, const char* folder, float* scratch_
             = i > 0 && info.start[i] == info.start[i - 1] && info.end[i] == info.end[i - 1];
         if(is_padding || info.end[i] <= info.start[i])
             continue;
-        size_t slice_start = op1_time_to_buffer_frame(info.start[i]);
-        size_t slice_end   = op1_time_to_buffer_frame(info.end[i]);
-        if(slice_end > total_len)
-            slice_end = total_len;
-        if(slice_end <= slice_start)
+        size_t start = op1_time_to_buffer_frame(info.start[i]);
+        size_t end   = op1_time_to_buffer_frame(info.end[i]);
+        if(end > total_len)
+            end = total_len;
+        if(end <= start)
             continue;
-        size_t slice_len = slice_end - slice_start;
-
-        char slice_name[24];
-        snprintf(slice_name, sizeof(slice_name), "K%03d_%02d.wav", new_slot, i);
-        char slice_path[48];
-        snprintf(slice_path, sizeof(slice_path), "%s/%s", kSampleSynthFolder, slice_name);
-        if(!WriteSliceWav(slice_path, scratch_l + slice_start, scratch_r + slice_start,
-                            slice_len))
-            continue; // one bad slice doesn't fail the whole kit
-
-        snprintf(slots[real_slices].filename, sizeof(slots[real_slices].filename), "%s",
-                  slice_name);
-        slots[real_slices].chromatic = false;
-        slots[real_slices].low_note  = (uint8_t)(kBaseKey + real_slices);
-        slots[real_slices].high_note = (uint8_t)(kBaseKey + real_slices);
-        slots[real_slices].root_note = (uint8_t)(kBaseKey + real_slices);
-        slots[real_slices].volume01  = 0.8f;
+        slice_start[real_slices] = start;
+        slice_len[real_slices]   = end - start;
         real_slices++;
     }
-    for(int i = real_slices; i < kMaxSampleSynthSlots; i++)
-        slots[i] = SampleSynthKitSlot{};
-
     if(real_slices == 0)
     {
         snprintf(out_status, out_status_size, "No real slices");
         return false;
     }
 
-    char kit_name[kMaxSampleSynthKitNameLen + 1];
-    snprintf(kit_name, sizeof(kit_name), "%s", filename);
-    size_t nlen = strlen(kit_name);
-    if(nlen > 4 && strcmp(kit_name + nlen - 4, ".aif") == 0)
-        kit_name[nlen - 4] = '\0';
+    // Kit or Break? A break pack can have one slice or several (whole
+    // bars/phrases), so slice count can't tell -- typical slice length
+    // can: the median (so one long crash in a kit doesn't tip it).
+    size_t sorted[kMaxSampleSynthSlots];
+    for(int i = 0; i < real_slices; i++)
+    {
+        int j = i - 1;
+        while(j >= 0 && sorted[j] > slice_len[i])
+        {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = slice_len[i];
+    }
+    size_t median_len = real_slices % 2 ? sorted[real_slices / 2]
+                                        : (sorted[real_slices / 2 - 1] + sorted[real_slices / 2]) / 2;
+    bool is_break = force_break || (float)median_len >= kSampleBreakMinMedianSeconds * 48000.f;
 
-    if(!SaveSampleSynthKit(new_slot, kit_name, params, slots))
+    // Kit name = pack filename without ".aif", stripped BEFORE truncating
+    // so a long name can't lose the extension but keep its dot, then
+    // trailing spaces/dots dropped (FAT silently strips those from a
+    // folder name, which would leave kit_ref not matching the folder).
+    char kit_name[kMaxSampleSynthWavNameLen + 1];
+    snprintf(kit_name, sizeof(kit_name), "%s", filename);
+    StripAifExtension(kit_name);
+    size_t nlen;
+    kit_name[kMaxSampleSynthKitNameLen] = '\0';
+    for(nlen = strlen(kit_name); nlen > 0 && (kit_name[nlen - 1] == ' ' || kit_name[nlen - 1] == '.');
+        nlen--)
+        kit_name[nlen - 1] = '\0';
+    if(kit_name[0] == '\0')
+        snprintf(kit_name, sizeof(kit_name), "Kit");
+
+    char kit_ref[kMaxSampleSynthKitRefLen];
+    if(!CreateKitFolder(is_break ? SampleBank::Breaks : SampleBank::Kits, kit_name, kit_ref,
+                        sizeof(kit_ref)))
     {
         snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
         return false;
     }
-    snprintf(out_status, out_status_size, "Kit %d (%d pads)", new_slot, real_slices);
+    char kit_dir[64];
+    SampleSynthKitDir(kit_ref, kit_dir, sizeof(kit_dir));
+
+    // Pass 2: write each slice as 01.wav, 02.wav, ... inside the kit's
+    // own folder -- slot filenames are relative to it.
+    SampleSynthKitSlot slots[kMaxSampleSynthSlots];
+    int written = 0;
+    for(int i = 0; i < real_slices; i++)
+    {
+        if(progress_cb)
+            progress_cb((float)(i + 1) / (float)real_slices);
+        char slice_name[16];
+        snprintf(slice_name, sizeof(slice_name), "%02d.wav", written + 1);
+        char slice_path[96];
+        snprintf(slice_path, sizeof(slice_path), "%s/%s", kit_dir, slice_name);
+        // SD writes occasionally fail transiently (seen on real hardware:
+        // one slice of a 16-slice pack missing, every later pad shifted
+        // down a key). Retry a few times; if it still won't write, fail
+        // the whole pack rather than save one with a hole in it -- the
+        // folder is removed below and the source file stays put for
+        // Import to retry.
+        bool slice_ok = false;
+        for(int attempt = 0; attempt < 3 && !slice_ok; attempt++)
+            slice_ok = WriteSliceWav(slice_path, scratch_l + slice_start[i],
+                                     scratch_r + slice_start[i], slice_len[i]);
+        if(!slice_ok)
+        {
+            snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
+            DeleteFolderAndFiles(kit_dir);
+            return false;
+        }
+        snprintf(slots[written].filename, sizeof(slots[written].filename), "%s", slice_name);
+        slots[written].chromatic = false;
+        slots[written].low_note  = (uint8_t)(kBaseKey + written);
+        slots[written].high_note = (uint8_t)(kBaseKey + written);
+        slots[written].root_note = (uint8_t)(kBaseKey + written);
+        slots[written].volume01  = 0.8f;
+        written++;
+    }
+    for(int i = written; i < kMaxSampleSynthSlots; i++)
+        slots[i] = SampleSynthKitSlot{};
+
+    if(written == 0 || !SaveSampleSynthKit(kit_ref, kit_name, params, slots))
+    {
+        snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
+        DeleteFolderAndFiles(kit_dir); // don't leave a half-written kit behind
+        return false;
+    }
+    snprintf(out_status, out_status_size, "%s %s (%d)", is_break ? "Break" : "Kit", kit_name,
+             written);
     return true;
 }
 
@@ -3906,9 +4182,7 @@ bool ImportAifSamplerPack(const char* filename, const char* folder, float* scrat
 
     char base_name[kMaxSampleSynthWavNameLen + 1];
     snprintf(base_name, sizeof(base_name), "%s", filename);
-    size_t nlen = strlen(base_name);
-    if(nlen > 4 && strcmp(base_name + nlen - 4, ".aif") == 0)
-        base_name[nlen - 4] = '\0';
+    StripAifExtension(base_name);
     // Bake the real note into the output filename, same convention
     // ParseNoteNameFromFilename() already reads back at load time (see
     // Ui::LoadSampleSynthFileIntoEngine()'s own plain-.wav branch) --
@@ -3921,16 +4195,25 @@ bool ImportAifSamplerPack(const char* filename, const char* folder, float* scrat
     char out_name[kMaxSampleSynthWavNameLen + 1];
     snprintf(out_name, sizeof(out_name), "%s %s%d.wav", base_name, kNoteNames[note_idx], octave);
 
-    FRESULT mkdir_res = f_mkdir(kSampleSynthFolder);
-    (void)mkdir_res; // harmless if it already exists, same as every other f_mkdir() call here
+    int bank = FindSampleBankWithSpace(SampleBank::Sounds);
+    if(bank < 0)
+    {
+        snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
+        return false;
+    }
+    char bank_folder[16];
+    SampleBankFolder(SampleBank::Sounds, bank, bank_folder, sizeof(bank_folder));
     char dest_dir[48];
-    snprintf(dest_dir, sizeof(dest_dir), "%s/%s", kSampleSynthFolder, kSampleSynthSoundsFolder);
-    f_mkdir(dest_dir);
-    char dest_path[80];
+    snprintf(dest_dir, sizeof(dest_dir), "%s/%s", kSampleSynthFolder, bank_folder);
+    char dest_path[112];
     snprintf(dest_path, sizeof(dest_path), "%s/%s", dest_dir, out_name);
 
-    if(!WriteSliceWav(dest_path, scratch_l, scratch_r, total_len))
+    bool write_ok = false;
+    for(int attempt = 0; attempt < 3 && !write_ok; attempt++) // see ImportAifDrumPack()'s own retry
+        write_ok = WriteSliceWav(dest_path, scratch_l, scratch_r, total_len);
+    if(!write_ok)
     {
+        f_unlink(dest_path); // no half-written Sound left behind
         snprintf(out_status, out_status_size, "Fail:%s", GetLastError());
         return false;
     }
