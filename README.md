@@ -1,4 +1,4 @@
-<img height="220" alt="IMG_20260829_153832" src="https://github.com/user-attachments/assets/2b5ef4e8-39c5-4f6e-b0f3-ebab1151912c" /><img height="220" alt="IMG_20260829_153742" src="https://github.com/user-attachments/assets/c5dccf4c-f985-4fb2-90eb-8b50f2cbe780" /><img height="220" alt="IMG_20260829_153938" src="https://github.com/user-attachments/assets/f0e90580-c2f8-4c6a-9800-b38b15a6b568" />
+<img height="170" alt="Home screen" src="images/home.jpg" /><img height="170" alt="Global mixer" src="images/global-mixer.jpg" /><img height="170" alt="Mixer scope" src="images/mixer-scope.jpg" /><img height="170" alt="Mixer bypass channel" src="images/mixer-bypass.jpg" /><img height="170" alt="SD card management" src="images/global-sd-mgmt.jpg" />
 
 Video and looper generated WAV file below!
 
@@ -21,26 +21,44 @@ clickable encoder.
   overdub, undo, per-layer filter/character effect/reverb send, and
   project-wide vari-speed with Scrub/Freeze transport modes.
   *Polyphony: n/a — 4 loop layers playing together.*
+
+  <img height="160" alt="Looper layer status" src="images/layer-1-status.jpg" />
+
 - **Dexed** — a real 6-operator DX7 clone built on Google's own
   **msfa** emulation core. 3129 factory presets across 54 folders, SysEx
   import for your own banks, a real algorithm diagram, and a full
   per-operator advanced editor. *Polyphony: 10 voices.*
+
+  <img height="160" alt="Dexed algorithm page" src="images/dexed-algo.jpg" />
+
 - **Grains** — a granular instrument: a fixed-position grain
   cloud plus an independent sweeping scan layer, rhythmic grain
   patterns, and audio-inclusive presets. Capture live input, pull from a
   loop layer, or import a WAV. *Polyphony: monophonic (one note at a
   time, up to 16 + 10 overlapping grains).*
+
+  <img height="160" alt="Grains grain page" src="images/grains-grain.jpg" />
+
 - **Ensemble** — a divide-down string-machine/ensemble organ in the ARP
   Solina lineage: 7 real drawbars, built-in chorus, pitch bend, and a mod
   wheel. *Polyphony: 8 voices.*
+
+  <img height="160" alt="Ensemble registration page" src="images/ensemble-regist.jpg" />
+
 - **Sample Drum (SMPDR)** — a multi-pad one-shot drum sampler for Kits
   and Breaks, up to 24 slices each, with live re-slicing and direct
   import of real OP-1 drum packs. *Polyphony: 10 voices (optional choke
   so each new pad cuts the last).*
+
+  <img height="160" alt="SMPDR setup page" src="images/smpdr-setup.jpg" />
+
 - **Sample Sound (SMPVO)** — a melodic, chromatic sampler for one
   captured or imported sound at a time, with its own Capture/Trim/Tune
   workflow and direct import of real OP-1 instrument packs. *Polyphony:
   10 voices, or monophonic via its Mono/Poly switch.*
+
+  <img height="160" alt="SMPVO capture page" src="images/smpvo-capture.jpg" /><img height="160" alt="SMPVO preset browser" src="images/smpvo-preset.jpg" />
+
 
 SMPDR and SMPVO share one underlying sample-playback engine and are
 mutually exclusive — enabling one disables the other.
