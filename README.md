@@ -20,23 +20,27 @@ clickable encoder.
   length (the first layer recorded sets it for the rest). Record,
   overdub, undo, per-layer filter/character effect/reverb send, and
   project-wide vari-speed with Scrub/Freeze transport modes.
-- **Dexed** — a real 6-operator, 10-voice DX7 clone built on Google's own
+  *Polyphony: n/a — 4 loop layers playing together.*
+- **Dexed** — a real 6-operator DX7 clone built on Google's own
   **msfa** emulation core. 3129 factory presets across 54 folders, SysEx
   import for your own banks, a real algorithm diagram, and a full
-  per-operator advanced editor.
-- **Grains** — a monophonic granular instrument: a fixed-position grain
+  per-operator advanced editor. *Polyphony: 10 voices.*
+- **Grains** — a granular instrument: a fixed-position grain
   cloud plus an independent sweeping scan layer, rhythmic grain
   patterns, and audio-inclusive presets. Capture live input, pull from a
-  loop layer, or import a WAV.
-- **Ensemble** — an 8-voice divide-down string-machine/ensemble organ in
-  the ARP Solina lineage: 7 real drawbars, built-in chorus, pitch bend,
-  and a mod wheel.
+  loop layer, or import a WAV. *Polyphony: monophonic (one note at a
+  time, up to 16 + 10 overlapping grains).*
+- **Ensemble** — a divide-down string-machine/ensemble organ in the ARP
+  Solina lineage: 7 real drawbars, built-in chorus, pitch bend, and a mod
+  wheel. *Polyphony: 8 voices.*
 - **Sample Drum (SMPDR)** — a multi-pad one-shot drum sampler for Kits
   and Breaks, up to 24 slices each, with live re-slicing and direct
-  import of real OP-1 drum packs.
+  import of real OP-1 drum packs. *Polyphony: 10 voices (optional choke
+  so each new pad cuts the last).*
 - **Sample Sound (SMPVO)** — a melodic, chromatic sampler for one
   captured or imported sound at a time, with its own Capture/Trim/Tune
-  workflow and direct import of real OP-1 instrument packs.
+  workflow and direct import of real OP-1 instrument packs. *Polyphony:
+  10 voices, or monophonic via its Mono/Poly switch.*
 
 SMPDR and SMPVO share one underlying sample-playback engine and are
 mutually exclusive — enabling one disables the other.
