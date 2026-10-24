@@ -1,4 +1,15 @@
-<img height="170" alt="Home screen" src="images/home.jpg" /><img height="170" alt="Global mixer" src="images/global-mixer.jpg" /><img height="170" alt="Mixer scope" src="images/mixer-scope.jpg" /><img height="170" alt="Mixer bypass channel" src="images/mixer-bypass.jpg" /><img height="170" alt="SD card management" src="images/global-sd-mgmt.jpg" />
+<p align="center">
+  <img width="30%" alt="Home screen" src="images/home.jpg" />
+  &nbsp;
+  <img width="30%" alt="Global mixer" src="images/global-mixer.jpg" />
+  &nbsp;
+  <img width="30%" alt="SD card management" src="images/global-sd-mgmt.jpg" />
+</p>
+<p align="center">
+  <img width="30%" alt="Mixer scope" src="images/mixer-scope.jpg" />
+  &nbsp;
+  <img width="30%" alt="Mixer bypass channel" src="images/mixer-bypass.jpg" />
+</p>
 
 Video and looper generated WAV file below!
 
