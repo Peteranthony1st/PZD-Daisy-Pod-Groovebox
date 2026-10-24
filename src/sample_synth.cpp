@@ -67,18 +67,27 @@ int SampleSynth::FindVoiceForNote(uint8_t note)
         if(voices_[i].held_note == (int)note)
             return i;
 
-    int  best_free    = -1;
-    bool best_is_idle = false;
+    // A voice that isn't rendering anything (slot < 0) is free to take
+    // outright. Idle can't mean "ADSR stopped": a one-shot holds its gate
+    // open for its whole life and frees itself at the sample's end
+    // (slot = -1) with the ADSR still in sustain, so once every voice had
+    // played a drum pad none ever looked idle again -- and the first
+    // non-held voice got stolen, cutting off whatever pad was still
+    // ringing in it (confirmed on hardware: two quick hits on a Poly
+    // kit, the second cut the first short).
+    for(int i = 0; i < kMaxVoices; i++)
+        if(voices_[i].slot < 0)
+            return i;
+
+    // Every voice is sounding: steal the oldest released one (a chromatic
+    // release tail, or a one-shot whose key is up), else the oldest overall.
+    int best_free = -1;
     for(int i = 0; i < kMaxVoices; i++)
     {
         if(voices_[i].held_note != -1)
             continue;
-        bool idle = !voices_[i].adsr.IsRunning();
-        if(best_free < 0 || (idle && !best_is_idle))
-        {
-            best_free    = i;
-            best_is_idle = idle;
-        }
+        if(best_free < 0 || voices_[i].triggered_at < voices_[best_free].triggered_at)
+            best_free = i;
     }
     if(best_free >= 0)
         return best_free;
