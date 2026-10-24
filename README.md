@@ -11,6 +11,14 @@
   <img width="30%" alt="Mixer bypass channel" src="images/mixer-bypass.jpg" />
 </p>
 
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=ENl2P4_RopY">
+    <img width="62%" alt="Watch the PZD Groovebox v3.0.0 video on YouTube" src="images/youtube-v3.jpg" />
+  </a>
+  <br />
+  <b><a href="https://www.youtube.com/watch?v=ENl2P4_RopY">▶ Watch the v3.0.0 overview on YouTube</a></b>
+</p>
+
 Video and looper generated WAV file below!
 
 # PZD-Daisy-Pod-Groovebox
