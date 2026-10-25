@@ -189,26 +189,38 @@ daisysp::Svf fx_master_filter_l, fx_master_filter_r;
 // big internal buffer of its own) to live in ordinary SRAM -- it doesn't
 // own the captured audio, just points at whichever buffer holds one (see
 // g_granular_source_l/r below).
-GranularEngine granular;
+GranularEngine DSY_DTCM_BSS granular;
 
 // The MIDI-played 6-operator/10-voice DX7 clone (see dexed_synth.h --
 // real msfa engine underneath, own oldest-note-steal voice pool). Small
 // enough (Dx7Note is ~700 bytes/voice per Synth_Dexed's own build) to
 // live in ordinary SRAM.
-DexedSynth dexed;
+DexedSynth DSY_DTCM_BSS dexed;
 
 // A divide-down string-machine/ensemble-organ instrument (see
 // ensemble_synth.h -- daisysp::OscillatorBank per voice, Dexed's own
 // voice-stealing pattern). Measured on real hardware at ~22-23% peak CPU
 // for 8 voices + the shared Chorus, well within budget alongside
 // Dexed/Grains/the looper.
-EnsembleSynth ensemble;
+EnsembleSynth DSY_DTCM_BSS ensemble;
 
 // A 10-voice polyphonic sample player (see sample_synth.h -- combines
 // DexedSynth's own voice-stealing pattern with GranularEngine's
 // pitch-tracking/clamp-at-ends buffer read). Ported from the `optimise`
 // branch, where it was originally built alongside Dexed/Grains.
-SampleSynth sample_synth;
+SampleSynth DSY_DTCM_BSS sample_synth;
+
+// The engines above (and Dexed's FM lookup tables, see msfa/synth.h's
+// TABLE_MEM) live in DTCMRAM -- see DSY_DTCM_BSS in itcm.h. Startup only
+// zeroes ordinary .bss, so clear that section here, as the very first
+// constructor (priority 101 runs before every default-priority global
+// constructor), so every object there starts exactly as it would in .bss.
+extern "C" uint32_t _sdtcmram_bss, _edtcmram_bss;
+__attribute__((constructor(101))) static void ZeroDtcmBss()
+{
+    memset(&_sdtcmram_bss, 0,
+           (size_t)((char*)&_edtcmram_bss - (char*)&_sdtcmram_bss));
+}
 
 // See audio_engine.h.
 volatile bool g_audio_suspended = false;

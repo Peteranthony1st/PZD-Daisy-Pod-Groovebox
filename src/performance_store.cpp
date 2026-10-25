@@ -584,35 +584,104 @@ bool IsCardPresent()
     return card_ready;
 }
 
-int ListSlots(int* out_slots, int max_out)
+namespace
 {
-    if(!card_ready)
+// Which numbered save slots exist in one folder ("<prefix>NNN.DAT",
+// e.g. PERFORMANCES/PERF013.DAT), from ONE directory scan into used[]
+// (indexed by slot number, sized max_slot+1). Replaces the old
+// f_stat()-per-slot loops, which had two real problems: up to 99+
+// separate SD lookups per listing, and -- worse -- any failed SD read
+// counted as "no file there", so a real save could vanish from a list
+// (reported: PERF1/PERF13 missing, only PERF2 shown) and, through the
+// matching NextFree*() loop, even be picked as "free" and overwritten by
+// Save New. Here a read error retries the whole scan; if it still fails
+// this returns false with the error set, and callers report it instead
+// of guessing. A missing folder isn't an error -- just no saves yet.
+static uint8_t slot_used[kMaxDexedPresets + 1]; // largest range of any caller
+
+bool ScanSlotFolder(const char* folder, const char* prefix, int max_slot)
+{
+    size_t plen = strlen(prefix);
+    for(int attempt = 0; attempt < 3; attempt++)
+    {
+        memset(slot_used, 0, (size_t)max_slot + 1);
+        static DIR dir; // see the DTCMRAM/DMA comment on Save() below
+        FRESULT    fr = f_opendir(&dir, folder);
+        if(fr == FR_NO_PATH || fr == FR_NO_FILE)
+            return true;
+        if(fr != FR_OK)
+        {
+            SetError("dir", fr);
+            continue;
+        }
+        static FILINFO fno; // see the DTCMRAM/DMA comment on Save() below
+        bool           failed = false;
+        while(true)
+        {
+            fr = f_readdir(&dir, &fno);
+            if(fr != FR_OK)
+            {
+                SetError("dir", fr);
+                failed = true;
+                break;
+            }
+            if(fno.fname[0] == 0)
+                break; // end of directory
+            if((fno.fattrib & AM_DIR) || strncasecmp(fno.fname, prefix, plen) != 0)
+                continue;
+            int slot = 0, used_chars = 0;
+            if(sscanf(fno.fname + plen, "%d%n", &slot, &used_chars) != 1
+               || strcasecmp(fno.fname + plen + used_chars, ".DAT") != 0)
+                continue; // not a real save file (stray/foreign), skip
+            if(slot >= 1 && slot <= max_slot)
+                slot_used[slot] = 1;
+        }
+        f_closedir(&dir);
+        if(!failed)
+        {
+            ClearError();
+            return true;
+        }
+    }
+    return false;
+}
+
+// Ascending list of existing slots in min_slot..max_slot. 0 (error set)
+// if the folder couldn't be read -- see ScanSlotFolder().
+int ListSlotFolder(const char* folder, const char* prefix, int min_slot, int max_slot,
+                   int* out, int max_out)
+{
+    if(!card_ready || !ScanSlotFolder(folder, prefix, max_slot))
         return 0;
     int count = 0;
-    for(int slot = 1; slot <= kMaxSlots && count < max_out; slot++)
-    {
-        char    fname[32];
-        FILINFO fno;
-        SlotFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) == FR_OK)
-            out_slots[count++] = slot;
-    }
+    for(int slot = min_slot; slot <= max_slot && count < max_out; slot++)
+        if(slot_used[slot])
+            out[count++] = slot;
     return count;
+}
+
+// Lowest free slot in min_slot..max_slot, or -1 when full -- or when the
+// folder couldn't be read (error set), so Save New never overwrites a
+// save it simply failed to see.
+int NextFreeSlotFolder(const char* folder, const char* prefix, int min_slot, int max_slot)
+{
+    if(!card_ready || !ScanSlotFolder(folder, prefix, max_slot))
+        return -1;
+    for(int slot = min_slot; slot <= max_slot; slot++)
+        if(!slot_used[slot])
+            return slot;
+    return -1;
+}
+} // namespace
+
+int ListSlots(int* out_slots, int max_out)
+{
+    return ListSlotFolder("PERFORMANCES", "PERF", 1, kMaxSlots, out_slots, max_out);
 }
 
 int NextFreeSlot()
 {
-    if(!card_ready)
-        return -1;
-    for(int slot = 1; slot <= kMaxSlots; slot++)
-    {
-        char    fname[32];
-        FILINFO fno;
-        SlotFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) != FR_OK)
-            return slot;
-    }
-    return -1;
+    return NextFreeSlotFolder("PERFORMANCES", "PERF", 1, kMaxSlots);
 }
 
 // -- SD MGMT: generic delete/duplicate, shared by every category below --
@@ -1460,33 +1529,12 @@ bool LoadGranularPresetFile(const char*                         fname,
 
 int ListGranularPresets(int* out_numbers, int max_out)
 {
-    if(!card_ready)
-        return 0;
-    int count = 0;
-    for(int slot = 1; slot <= kMaxGranularPresets && count < max_out; slot++)
-    {
-        char    fname[24];
-        FILINFO fno;
-        GranularPresetFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) == FR_OK)
-            out_numbers[count++] = slot;
-    }
-    return count;
+    return ListSlotFolder("GRAINS", "PRES", 1, kMaxGranularPresets, out_numbers, max_out);
 }
 
 int NextFreeGranularPresetSlot()
 {
-    if(!card_ready)
-        return -1;
-    for(int slot = 1; slot <= kMaxGranularPresets; slot++)
-    {
-        char    fname[24];
-        FILINFO fno;
-        GranularPresetFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) != FR_OK)
-            return slot;
-    }
-    return -1;
+    return NextFreeSlotFolder("GRAINS", "PRES", 1, kMaxGranularPresets);
 }
 
 bool DeleteGranularPreset(int slot, int* loaded_slot_inout)
@@ -1905,119 +1953,20 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
 
 int ListDexedPresets(int* out_numbers, int max_out)
 {
-    if(!card_ready)
-        return 0;
-    // One real directory scan (f_readdir(), same pattern as
-    // ListImportWavFiles() above) instead of the ~370 individual
-    // f_stat() calls (one per possible slot from GetNumFactoryPresets()
-    // up to kMaxDexedPresets=3500) this used to do -- each f_stat() is
-    // a real, separate SD filesystem lookup with its own real latency,
-    // same per-call overhead class diagnosed and fixed for bulk audio
-    // streaming elsewhere in this file (see kChunkSamples's own doc
-    // comment), just never applied here before. Confirmed as the real
-    // cause of a genuinely slow, audible-on-hardware delay entering
-    // Dexed's Preset page (RefreshDexedPresetSlots()) -- Grains' own
-    // equivalent (ListGranularPresets()) has the same f_stat()-loop
-    // shape but only scans up to kMaxGranularPresets=99, ~4x fewer
-    // calls, which was fast/quiet enough never to be noticed.
-    static DIR dir; // see the DTCMRAM/DMA comment on Save() above
-    if(f_opendir(&dir, "DEXED") != FR_OK)
-        return 0; // no DEXED/ folder yet -- not an error, just nothing to list
-
-    int first_user_slot = DexedSynth::GetNumFactoryPresets() + 1;
-    int count            = 0;
-    static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
-    while(count < max_out)
-    {
-        if(f_readdir(&dir, &fno) != FR_OK || fno.fname[0] == 0)
-            break; // error or end of directory
-        if(fno.fattrib & AM_DIR)
-            continue;
-        int slot = 0;
-        if(sscanf(fno.fname, "PRES%d.DAT", &slot) != 1)
-            continue; // not a real preset file (stray/foreign), skip
-        if(slot < first_user_slot || slot > kMaxDexedPresets)
-            continue; // guard against a corrupt/out-of-range name
-        out_numbers[count++] = slot;
-    }
-    f_closedir(&dir);
-
-    // f_readdir() returns entries in whatever order the FAT directory
-    // itself stores them (creation order, not numeric) -- the old
-    // f_stat()-loop version always produced ascending slot order by
-    // construction, and callers (the Preset browser) expect that same
-    // ordering, so sort before returning. count is always small (at
-    // most max_out, itself bounded well under kMaxDexedPresets), so a
-    // plain insertion sort is plenty.
-    for(int i = 1; i < count; i++)
-    {
-        int key = out_numbers[i];
-        int j   = i - 1;
-        while(j >= 0 && out_numbers[j] > key)
-        {
-            out_numbers[j + 1] = out_numbers[j];
-            j--;
-        }
-        out_numbers[j + 1] = key;
-    }
-
-    return count;
+    // One directory scan (see ScanSlotFolder()) instead of the ~370
+    // f_stat() calls (one per possible user slot up to
+    // kMaxDexedPresets=3500) this once did -- confirmed on hardware as
+    // the cause of a slow, audible delay entering Dexed's Preset page.
+    return ListSlotFolder("DEXED", "PRES", DexedSynth::GetNumFactoryPresets() + 1,
+                          kMaxDexedPresets, out_numbers, max_out);
 }
 
 int NextFreeDexedPresetSlot(int search_from)
 {
-    if(!card_ready)
-        return -1;
     int first = DexedSynth::GetNumFactoryPresets() + 1;
     if(search_from > first)
         first = search_from;
-
-    // One real directory scan (same fix/reasoning as ListDexedPresets()
-    // above) instead of this function's own former f_stat()-per-slot
-    // loop -- same bug class, just less exercised there (the old loop
-    // usually found a free slot, and stopped, quickly in the common
-    // case of mostly-contiguous saves; it only paid its full per-slot
-    // cost in a less common case -- many scattered gaps, or saving
-    // right after deleting a whole block of old presets). Marks every
-    // existing file's own bit in a packed bitmap, indexed directly by
-    // its slot number, rather than reusing ListDexedPresets() itself:
-    // that function caps its own output at max_out, and f_readdir()'s
-    // directory order has no relationship to slot number order, so a
-    // capped call could miss a real gap below a slot it happened not
-    // to enumerate yet. A full-range bitmap has no such cap -- every
-    // entry found sets its own precise bit, in any order, and
-    // kMaxDexedPresets=3500 packs into (3500+8)/8 = ~438 bytes, far
-    // cheaper than a plain int array over the same range.
-    static uint8_t used[(kMaxDexedPresets + 8) / 8];
-    memset(used, 0, sizeof(used));
-
-    static DIR dir;
-    if(f_opendir(&dir, "DEXED") == FR_OK)
-    {
-        static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
-        while(true)
-        {
-            if(f_readdir(&dir, &fno) != FR_OK || fno.fname[0] == 0)
-                break; // error or end of directory
-            if(fno.fattrib & AM_DIR)
-                continue;
-            int slot = 0;
-            if(sscanf(fno.fname, "PRES%d.DAT", &slot) != 1)
-                continue; // not a real preset file (stray/foreign), skip
-            if(slot < 1 || slot > kMaxDexedPresets)
-                continue; // guard against a corrupt/out-of-range name
-            used[slot / 8] |= (uint8_t)(1u << (slot % 8));
-        }
-        f_closedir(&dir);
-    }
-    // No DEXED/ folder at all yet -- every slot is free, used[] stays
-    // all-zero from the memset above, same as the loop below finding
-    // nothing taken.
-
-    for(int slot = first; slot <= kMaxDexedPresets; slot++)
-        if(!(used[slot / 8] & (1u << (slot % 8))))
-            return slot;
-    return -1;
+    return NextFreeSlotFolder("DEXED", "PRES", first, kMaxDexedPresets);
 }
 
 bool DeleteDexedPreset(int slot, int* loaded_slot_inout)
@@ -2171,35 +2120,14 @@ bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
 
 int ListEnsemblePresets(int* out_numbers, int max_out)
 {
-    if(!card_ready)
-        return 0;
-    int count            = 0;
-    int first_user_slot  = EnsembleSynth::GetNumFactoryPresets() + 1;
-    for(int slot = first_user_slot; slot <= kMaxEnsemblePresets && count < max_out; slot++)
-    {
-        char    fname[24];
-        FILINFO fno;
-        EnsemblePresetFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) == FR_OK)
-            out_numbers[count++] = slot;
-    }
-    return count;
+    return ListSlotFolder("ENSEMBLE", "PRES", EnsembleSynth::GetNumFactoryPresets() + 1,
+                          kMaxEnsemblePresets, out_numbers, max_out);
 }
 
 int NextFreeEnsemblePresetSlot()
 {
-    if(!card_ready)
-        return -1;
-    int first = EnsembleSynth::GetNumFactoryPresets() + 1;
-    for(int slot = first; slot <= kMaxEnsemblePresets; slot++)
-    {
-        char    fname[24];
-        FILINFO fno;
-        EnsemblePresetFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) != FR_OK)
-            return slot;
-    }
-    return -1;
+    return NextFreeSlotFolder("ENSEMBLE", "PRES", EnsembleSynth::GetNumFactoryPresets() + 1,
+                              kMaxEnsemblePresets);
 }
 
 bool DeleteEnsemblePreset(int slot, int* loaded_slot_inout)
@@ -2985,33 +2913,14 @@ bool LoadSampleSynthVoiceUserPreset(int slot, SampleSynthVoiceUserPreset* out_pr
 
 int ListSampleSynthVoiceUserPresets(int* out_numbers, int max_out)
 {
-    if(!card_ready)
-        return 0;
-    int count = 0;
-    for(int slot = 1; slot <= kMaxSampleSynthVoiceUserPresets && count < max_out; slot++)
-    {
-        char    fname[40];
-        FILINFO fno;
-        SampleSynthVoiceUserPresetFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) == FR_OK)
-            out_numbers[count++] = slot;
-    }
-    return count;
+    return ListSlotFolder("SAMPLES/VOICE PRESETS", "PRES", 1, kMaxSampleSynthVoiceUserPresets,
+                          out_numbers, max_out);
 }
 
 int NextFreeSampleSynthVoiceUserPresetSlot()
 {
-    if(!card_ready)
-        return -1;
-    for(int slot = 1; slot <= kMaxSampleSynthVoiceUserPresets; slot++)
-    {
-        char    fname[40];
-        FILINFO fno;
-        SampleSynthVoiceUserPresetFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) != FR_OK)
-            return slot;
-    }
-    return -1;
+    return NextFreeSlotFolder("SAMPLES/VOICE PRESETS", "PRES", 1,
+                              kMaxSampleSynthVoiceUserPresets);
 }
 
 // No factory tier (every slot is a user save) -- same shape as
@@ -3167,33 +3076,13 @@ bool LoadSampleSynthDrumUserPreset(int slot, SampleSynthDrumUserPreset* out_pres
 
 int ListSampleSynthDrumUserPresets(int* out_numbers, int max_out)
 {
-    if(!card_ready)
-        return 0;
-    int count = 0;
-    for(int slot = 1; slot <= kMaxSampleSynthDrumUserPresets && count < max_out; slot++)
-    {
-        char    fname[40];
-        FILINFO fno;
-        SampleSynthDrumUserPresetFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) == FR_OK)
-            out_numbers[count++] = slot;
-    }
-    return count;
+    return ListSlotFolder("SAMPLES/DRUM PRESETS", "PRES", 1, kMaxSampleSynthDrumUserPresets,
+                          out_numbers, max_out);
 }
 
 int NextFreeSampleSynthDrumUserPresetSlot()
 {
-    if(!card_ready)
-        return -1;
-    for(int slot = 1; slot <= kMaxSampleSynthDrumUserPresets; slot++)
-    {
-        char    fname[40];
-        FILINFO fno;
-        SampleSynthDrumUserPresetFilename(slot, fname, sizeof(fname));
-        if(f_stat(fname, &fno) != FR_OK)
-            return slot;
-    }
-    return -1;
+    return NextFreeSlotFolder("SAMPLES/DRUM PRESETS", "PRES", 1, kMaxSampleSynthDrumUserPresets);
 }
 
 // No factory tier (every slot is a user save) -- same shape as

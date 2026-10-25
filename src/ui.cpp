@@ -4904,6 +4904,11 @@ void Ui::DrawFileScreen()
         }
         disp_->SetCursor(0, 24);
         WriteUpper(line);
+        if(file_status_[0] != '\0')
+        {
+            disp_->SetCursor(0, 36);
+            WriteUpper(file_status_);
+        }
     }
     else
     {
@@ -8284,6 +8289,11 @@ void Ui::DrawOscilloscope(int top, int bottom, const float* buf, size_t capacity
 void Ui::RefreshFileSlots()
 {
     file_slot_count_ = PerformanceStore::ListSlots(file_slots_, kMaxFileSlots);
+    // A card read error now shows here rather than as a shorter list
+    // (see PerformanceStore::ScanSlotFolder()).
+    if(PerformanceStore::GetLastError()[0] != '\0')
+        snprintf(file_status_, sizeof(file_status_), "Read fail:%s",
+                  PerformanceStore::GetLastError());
     if(file_cursor_ > file_slot_count_)
         file_cursor_ = file_slot_count_; // index 0 is "New"
     file_slots_dirty_ = false;

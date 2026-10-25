@@ -14,3 +14,15 @@
 // Reserve this for the real-time call graph only (AudioCallback() and
 // everything it calls) -- ITCMRAM is a fixed 64KB, shared by all of it.
 #define DSY_ITCM_TEXT __attribute__((section(".itcm_text")))
+
+// Places a zero-initialized variable in DTCMRAM -- the CPU's own 128KB of
+// zero-wait data memory, read without going through the 16KB data cache,
+// so per-sample engine state can't be evicted by the loop audio streaming
+// in from SDRAM. Same idea as DSY_ITCM_TEXT, for data. Two rules:
+//   - Startup code only zeroes ordinary .bss, so main.cpp's
+//     ZeroDtcmBss() clears this section before any constructor runs.
+//   - DMA can't reach DTCM: never put SD/audio/ADC transfer buffers here
+//     (see PerformanceStore's own static FIL/DIR comments).
+// The stack also lives in DTCMRAM (growing down from the top), so keep
+// what goes here to the hot real-time state only.
+#define DSY_DTCM_BSS __attribute__((section(".dtcmram_bss")))

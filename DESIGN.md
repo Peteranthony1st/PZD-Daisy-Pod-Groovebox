@@ -779,6 +779,26 @@ is kept as cheap insurance against this exact failure shape for any
 current or future SDRAM-placed effect, not just the one that first
 surfaced it.
 
+### Engine state and Dexed's tables in DTCM
+
+DTCM (128 KB of zero-wait data RAM, read without going through the 16 KB
+data cache) used to hold only the stack. The four engines' objects
+(Ensemble 21 KB, Dexed 9 KB, Grains 8 KB, Sampler 1.5 KB) and Dexed's
+FM lookup tables (`sintab`, `exp2tab`, `lut`, `Porta::rates`, 20.5 KB —
+via `TABLE_MEM` in `msfa/synth.h`) now live there (`DSY_DTCM_BSS` in
+`itcm.h`). In AXI SRAM they shared the data cache with the loop audio
+streaming in from SDRAM, which could evict them mid-callback. Measured on
+hardware with every engine playing chords plus a 4-bar, 4-layer loop, all
+with reverb/delay: **76% average / 89% peak → 73% / 85%**. It also freed
+~60 KB of AXI SRAM (from ~12 KB free to ~72 KB).
+
+Two rules come with it. Startup code only zeroes ordinary `.bss`, so
+`ZeroDtcmBss()` in `main.cpp` (a `constructor(101)`, which runs before
+every default-priority global constructor) clears the section first. And
+the SDMMC DMA can't reach DTCM, so nothing that's an SD/audio/ADC
+transfer buffer may go there. About 68 KB is left for the stack, which
+also lives in DTCM; the largest stack arrays in the code are ~2–3 KB.
+
 ### Swapping memory tiers: the reverb's big buffers into SRAM, Export/Import's scratch buffers into SDRAM
 
 The single biggest CPU win measured this session, bigger than the
@@ -1682,6 +1702,15 @@ only while Grains is actually producing output — rather than a fixed
 array size; not yet implemented.
 
 ### Preset directory listing: one real scan instead of hundreds of f_stat() calls
+
+*Since generalised: every numbered user-save list (Performances, Grains,
+Dexed, Ensemble, SMPVO/SMPDR User) now goes through one shared
+`ScanSlotFolder()`. The old `f_stat()`-per-slot loops treated any failed
+SD read as "no file", so a save could silently drop out of a list — and
+the matching `NextFree*()` loop could then pick that slot as free and
+overwrite it with Save New. The scan retries on a read error and, if it
+still fails, reports it (Global:Perf shows "Read fail:…") and Save New
+refuses rather than guessing.*
 
 A real hardware report ("slow to get to the Dexed save/load screen,
 and makes a quiet electrical sound — also happens loading

@@ -61,7 +61,10 @@
 #include <WProgram.h> // for DMAMEM definition
 #define TABLE_MEM DMAMEM
 #else
-#define TABLE_MEM
+// Daisy: DTCMRAM (see DSY_DTCM_BSS in ../itcm.h) -- read every sample by
+// the FM render loop. Filled in code at init, so the section's zeroing
+// doesn't matter to them either way.
+#define TABLE_MEM __attribute__((section(".dtcmram_bss")))
 #endif // defined(TEENSYDUINO)
 
 #define MIDI_CONTROLLER_MODE_MAX 2
