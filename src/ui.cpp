@@ -1178,30 +1178,21 @@ void Ui::HandleButton2(const UiControlEvents& events)
         // sitting at that level there's nothing to hold-load yet
         // (active_count=0 below), only something to drill into, which
         // this function's own short-press branch handles further down.
+        // Shared browse convention (every engine's Preset/User page): a
+        // tap opens a folder, a tap on a sound LOADS it and stays in the
+        // folder so the next sound is one K2 turn + tap away. No hold.
         bool at_category_select = sample_synth_sound_category_ < 0;
-        int  active_count       = at_category_select ? 0 : sample_synth_sound_count_;
-        bool can_confirm_load
-            = save_load_mode_ == SaveLoadMode::BrowsingLoad && active_count > 0;
-        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_load)
-        {
-            button2_long_fired_ = true;
-            if(sample_synth_preset_mode_sounds_)
-                TriggerLoadSampleSynthSound();
-            else
-                TriggerLoadSampleSynthKit();
-            save_load_mode_ = SaveLoadMode::Idle;
-        }
         if(events.btn2_released)
         {
-            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm_load)
+            if(save_load_mode_ == SaveLoadMode::BrowsingLoad && !at_category_select
+               && sample_synth_sound_count_ > 0)
             {
                 if(sample_synth_preset_mode_sounds_)
                     TriggerLoadSampleSynthSound();
                 else
                     TriggerLoadSampleSynthKit();
-                save_load_mode_ = SaveLoadMode::Idle;
             }
-            else if(!button2_long_fired_ && at_category_select
+            else if(at_category_select
                     && save_load_mode_ == SaveLoadMode::BrowsingLoad
                     && sample_synth_bank_count_ > 0)
             {
@@ -1213,7 +1204,7 @@ void Ui::HandleButton2(const UiControlEvents& events)
                 sample_synth_sounds_dirty_   = true; // re-scan this category
                 sample_synth_kit_cursor_     = 0;
             }
-            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
+            else if(save_load_mode_ == SaveLoadMode::Idle)
             {
                 if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
@@ -1237,48 +1228,32 @@ void Ui::HandleButton2(const UiControlEvents& events)
         bool  is_voice = sample_synth_mode_ == SampleSynthMode::Voice;
         int   count    = is_voice ? sample_synth_voice_user_count_ : sample_synth_drum_user_count_;
         char* status   = is_voice ? sample_synth_voice_user_status_ : sample_synth_drum_user_status_;
+        // Saving still needs an 800 ms hold (it can overwrite a file);
+        // loading follows the shared browse convention -- a tap loads and
+        // stays in the list.
         bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
-        bool can_confirm_load = save_load_mode_ == SaveLoadMode::BrowsingLoad && count > 0;
-        bool can_confirm      = can_confirm_save || can_confirm_load;
-        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm)
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_save)
         {
             button2_long_fired_ = true;
-            if(can_confirm_save)
+            if(is_voice)
+                TriggerSaveSampleSynthVoiceUserPreset(save_as_new_);
+            else
+                TriggerSaveSampleSynthDrumUserPreset(save_as_new_);
+            save_load_mode_ = SaveLoadMode::Idle;
+        }
+        if(events.btn2_released)
+        {
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm_save)
             {
                 if(is_voice)
                     TriggerSaveSampleSynthVoiceUserPreset(save_as_new_);
                 else
                     TriggerSaveSampleSynthDrumUserPreset(save_as_new_);
-            }
-            else if(is_voice)
-                TriggerLoadSampleSynthVoiceUserPreset();
-            else
-                TriggerLoadSampleSynthDrumUserPreset();
-            save_load_mode_ = SaveLoadMode::Idle;
-        }
-        if(events.btn2_released)
-        {
-            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm)
-            {
-                if(can_confirm_save)
-                {
-                    if(is_voice)
-                        TriggerSaveSampleSynthVoiceUserPreset(save_as_new_);
-                    else
-                        TriggerSaveSampleSynthDrumUserPreset(save_as_new_);
-                }
-                else if(is_voice)
-                    TriggerLoadSampleSynthVoiceUserPreset();
-                else
-                    TriggerLoadSampleSynthDrumUserPreset();
                 save_load_mode_ = SaveLoadMode::Idle;
             }
             else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad
                      && count > 0)
             {
-                // Short tap while browsing -- preview immediately
-                // (apply to the live engine) without leaving the
-                // browser, same idiom Ensemble's own Preset page uses.
                 if(is_voice)
                     TriggerLoadSampleSynthVoiceUserPreset();
                 else
@@ -1930,12 +1905,13 @@ void Ui::OnButton1Short()
             {
                 if(save_load_mode_ != SaveLoadMode::Idle)
                 {
-                    save_load_mode_ = SaveLoadMode::Idle; // Back, same as Global:File
-                    // Collapses straight past the bank level
-                    // too -- this is the blunt "give up entirely"
-                    // (Button2's own short-press at category-select is
-                    // the fine-grained "drill in" the other direction).
-                    sample_synth_sound_category_ = -1;
+                    // Back one level: a folder's sounds -> the folder
+                    // list (K1 still where it was, so the same folder
+                    // stays highlighted) -> out of the browser.
+                    if(sample_synth_sound_category_ >= 0)
+                        sample_synth_sound_category_ = -1;
+                    else
+                        save_load_mode_ = SaveLoadMode::Idle;
                 }
                 else if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
@@ -3788,10 +3764,12 @@ void Ui::ApplyKnobs()
                         }
                         break;
                     }
+                    // Inside a folder K2 scrolls the sounds and K1 is left
+                    // alone, so it still points at this folder on Back.
                     int total = sample_synth_sound_count_;
                     if(total > 0)
                     {
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * total);
+                        int idx = (int)(Clampf(k2, 0.f, 1.f) * total);
                         if(idx >= total)
                             idx = total - 1;
                         if(idx != sample_synth_kit_cursor_)
@@ -3813,9 +3791,17 @@ void Ui::ApplyKnobs()
                                              : sample_synth_drum_user_count_;
                     char* status = is_voice ? sample_synth_voice_user_status_
                                               : sample_synth_drum_user_status_;
-                    if(count > 0)
+                    if(save_load_mode_ == SaveLoadMode::ChoosingSave)
                     {
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * count);
+                        // K1 picks Overwrite / Save New, same as every other
+                        // engine's save choice (Overwrite needs a loaded slot).
+                        int loaded = is_voice ? sample_synth_voice_user_loaded_slot_
+                                              : sample_synth_drum_user_loaded_slot_;
+                        save_as_new_ = loaded <= 0 ? true : k1 >= 0.5f;
+                    }
+                    if(count > 0 && save_load_mode_ == SaveLoadMode::BrowsingLoad)
+                    {
+                        int idx = (int)(Clampf(k2, 0.f, 1.f) * count);
                         if(idx >= count)
                             idx = count - 1;
                         if(idx != cursor)
@@ -7049,6 +7035,54 @@ void Ui::DrawEnsembleScreen()
     }
 }
 
+void Ui::DrawPageTitle(const char* title, bool unsaved)
+{
+    disp_->SetCursor(0, 0);
+    WriteUpper(title);
+    if(unsaved)
+        TomThumbDrawText(disp_, (int)strlen(title) * 6 + 1, 5, "*", true);
+}
+
+Ui::EditSnapshot Ui::SampleSynthSnapshot() const
+{
+    EditSnapshot s;
+    if(!sample_synth_)
+        return s;
+    SampleSynth::SampleSynthPresetData p = sample_synth_->CapturePreset();
+    s.Add(p.attack01); s.Add(p.decay01); s.Add(p.sustain01); s.Add(p.release01);
+    s.Add(p.filter_mode); s.Add(p.filter_cutoff01); s.Add(p.filter_res01);
+    s.Add(p.output_level01); s.Add(p.pan01); s.Add(p.reverb_send01); s.Add(p.delay_send01);
+    s.Add(p.mono_choke);
+    if(sample_synth_mode_ == SampleSynthMode::Voice)
+    {
+        s.Add(sample_synth_imp_tune_semis_);
+        s.Add(sample_synth_imp_mono_);
+    }
+    else
+    {
+        s.Add(sample_synth_setup_applied_slices_);
+        s.Add(sample_synth_setup_tune_semis_);
+    }
+    return s;
+}
+
+void Ui::MarkSampleSynthClean()
+{
+    if(sample_synth_mode_ == SampleSynthMode::Voice)
+        sample_synth_voice_baseline_ = SampleSynthSnapshot();
+    else
+        sample_synth_drum_baseline_ = SampleSynthSnapshot();
+}
+
+bool Ui::SampleSynthUnsaved() const
+{
+    bool voice = sample_synth_mode_ == SampleSynthMode::Voice;
+    if(voice && sample_synth_capture_unsaved_)
+        return true;
+    const EditSnapshot& base = voice ? sample_synth_voice_baseline_ : sample_synth_drum_baseline_;
+    return base.len > 0 && !(SampleSynthSnapshot() == base);
+}
+
 void Ui::DrawSampleSynthScreen()
 {
     if(!sample_synth_)
@@ -7074,8 +7108,7 @@ void Ui::DrawSampleSynthScreen()
     char title[24];
     snprintf(title, sizeof(title), "%s:%s",
               sample_synth_mode_ == SampleSynthMode::Voice ? "SMPVO" : "SMPDR", page_name);
-    disp_->SetCursor(0, 0);
-    WriteUpper(title);
+    DrawPageTitle(title, SampleSynthUnsaved());
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
     disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
@@ -7505,21 +7538,7 @@ void Ui::DrawSampleSynthScreen()
 
             int  total = at_category_select ? 0 : sample_synth_sound_count_;
             bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
-            bool can_hold_load = browsing_load && total > 0 && !at_category_select;
-
-            if(pod_->button2.Pressed() && can_hold_load)
-            {
-                float       held = pod_->button2.TimeHeldMs();
-                int         w = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                disp_->SetCursor(0, 20);
-                WriteUpper("Hold: Load...");
-                disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
-                if(w > 0)
-                    disp_->DrawRect(1, 31, w, 33, true, true);
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
-                break;
-            }
+            bool in_folder     = browsing_load && !at_category_select;
 
             // Which face's content, and once drilled in, which bank.
             char mode_line[24];
@@ -7538,8 +7557,16 @@ void Ui::DrawSampleSynthScreen()
                     SampleBankEntryLabel(sample_synth_banks_[sample_synth_sound_category_cursor_],
                                          line2, sizeof(line2));
                 else if(!at_category_select && total > 0)
-                    snprintf(line2, sizeof(line2), "%s",
-                              sample_synth_sound_names_[sample_synth_kit_cursor_]);
+                {
+                    // "> " marks the sound that's loaded right now -- you stay
+                    // in the folder after loading, so it's worth showing.
+                    const char* nm  = sample_synth_sound_names_[sample_synth_kit_cursor_];
+                    const char* ref = sample_synth_loaded_kit_ref_;
+                    const char* sl  = strrchr(ref, '/');
+                    bool loaded = drum_face ? (sl && strcmp(sl + 1, nm) == 0)
+                                            : strcmp(sample_synth_loaded_sound_name_, nm) == 0;
+                    snprintf(line2, sizeof(line2), "%s%s", loaded ? "> " : "", nm);
+                }
                 else
                     snprintf(line2, sizeof(line2), "(none on card)");
                 disp_->SetCursor(0, 20);
@@ -7564,16 +7591,18 @@ void Ui::DrawSampleSynthScreen()
                 }
             }
 
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, browsing_load ? "Scroll" : "",
-                             "", "", "");
+            // Shared browse convention: K1 scrolls folders, K2 scrolls the
+            // sounds inside one, B1 backs out a level, B2 opens/loads.
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
+                             browsing_load && at_category_select ? "Scroll" : "", "", "",
+                             in_folder ? "Scroll" : "");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
-                             save_load_mode_ == SaveLoadMode::Idle ? "" : "Back", "",
-                             "",
+                             save_load_mode_ == SaveLoadMode::Idle ? "" : "Back", "", "",
                              save_load_mode_ == SaveLoadMode::Idle
-                                 ? "Open"
+                                 ? "Load"
                                  : (at_category_select
                                         ? (sample_synth_bank_count_ > 0 ? "Open" : "")
-                                        : (can_hold_load ? "Hold=Load" : "")));
+                                        : (total > 0 ? "Load" : "")));
             break;
         }
         case SampleSynthParamPage::User:
@@ -7625,15 +7654,13 @@ void Ui::DrawSampleSynthScreen()
 
             bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
             bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
-            bool can_hold_load = browsing_load && count > 0;
 
-            // Same "Button2 hold takes over the whole display" idiom
-            // every other Preset page here uses.
-            if(pod_->button2.Pressed() && (choosing_save || can_hold_load))
+            // Saving keeps its hold-to-confirm bar; loading is a plain tap.
+            if(pod_->button2.Pressed() && choosing_save)
             {
                 float       held     = pod_->button2.TimeHeldMs();
                 int         w        = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                const char* hold_msg = choosing_save ? "Hold: Save..." : "Hold: Load...";
+                const char* hold_msg = "Hold: Save...";
                 disp_->SetCursor(0, 20);
                 WriteUpper(hold_msg);
                 disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
@@ -7665,8 +7692,8 @@ void Ui::DrawSampleSynthScreen()
                 // GRAINS/DEXED/ENSM's own sites above.
                 char line2[24];
                 if(count > 0)
-                    snprintf(line2, sizeof(line2), "Load: %s%d", is_voice ? "SMPVO" : "SMPDR",
-                              numbers[cursor]);
+                    snprintf(line2, sizeof(line2), "%s%s%d", numbers[cursor] == loaded_slot ? "> " : "",
+                              is_voice ? "SMPVO" : "SMPDR", numbers[cursor]);
                 else
                     snprintf(line2, sizeof(line2), "(none saved yet)");
                 disp_->SetCursor(0, 24);
@@ -7689,14 +7716,14 @@ void Ui::DrawSampleSynthScreen()
                 }
             }
 
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, browsing_load ? "Scroll" : "",
-                             "", "", "");
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "",
+                             browsing_load ? "Scroll" : "");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
                              save_load_mode_ == SaveLoadMode::Idle ? "Save" : "Back", "", "",
                              save_load_mode_ == SaveLoadMode::Idle
-                                 ? "Open"
-                                 : (can_hold_load ? "Hold=Load"
-                                                    : (choosing_save ? "Hold=Save" : "")));
+                                 ? "Load"
+                                 : (browsing_load ? (count > 0 ? "Load" : "")
+                                                  : (choosing_save ? "Hold=Save" : "")));
             break;
         }
         default: break;
@@ -8996,6 +9023,17 @@ void Ui::SwitchSampleSynthMode(SampleSynthMode target)
 {
     if(!sample_synth_ || target == sample_synth_mode_)
         return;
+    // Switching faces reloads that face's Kit/Sound, which would reset its
+    // unsaved-changes baseline -- keep both as they were.
+    const EditSnapshot keep_voice = sample_synth_voice_baseline_;
+    const EditSnapshot keep_drum  = sample_synth_drum_baseline_;
+    SwitchSampleSynthModeImpl(target);
+    sample_synth_voice_baseline_ = keep_voice;
+    sample_synth_drum_baseline_  = keep_drum;
+}
+
+void Ui::SwitchSampleSynthModeImpl(SampleSynthMode target)
+{
 
     // Snapshot whatever's currently live into the bank for the face
     // being LEFT, so it comes back exactly as left when revisited --
@@ -9211,6 +9249,7 @@ void Ui::TriggerSampleSynthImport()
 
 void Ui::OnNewSampleSynthCapture(size_t full_len)
 {
+    sample_synth_capture_unsaved_ = true; // until Trim's own Hold=Save writes it out
     sample_synth_capture_full_len_ = full_len;
     sample_synth_trim_start01_     = 0.f;
     sample_synth_trim_end01_       = 1.f;
@@ -9309,6 +9348,7 @@ void Ui::TriggerSaveSampleSynthCapture()
     {
         snprintf(sample_synth_capture_status_, sizeof(sample_synth_capture_status_), "Saved %s",
                   filename);
+        sample_synth_capture_unsaved_ = false;
         MarkSampleSynthListsDirty(); // re-scan so it shows up in the browser immediately
     }
     else
@@ -9587,6 +9627,7 @@ void Ui::OnSampleSynthContentLoaded(int applied_slices, int8_t tune_semis)
     // has a real Break Divide shows what's really active, not a reset
     // suggestion (see sample_synth_setup_pending_slices_'s own comment).
     sample_synth_setup_pending_slices_ = applied_slices > 0 ? applied_slices : 16;
+    MarkSampleSynthClean(); // a freshly loaded Kit/Sound has nothing unsaved yet
 }
 
 void Ui::ApplySampleSynthBreakDivide(int divide_count, int8_t tune_semis)
@@ -9849,6 +9890,7 @@ void Ui::TriggerLoadSampleSynthSound()
     char category_folder[16];
     SampleBankEntryFolder(sample_synth_banks_[sample_synth_sound_category_], category_folder,
                           sizeof(category_folder));
+    sample_synth_capture_unsaved_ = false; // the capture is being replaced
     LoadSampleSynthFileIntoEngine(category_folder,
                                     sample_synth_sound_names_[sample_synth_kit_cursor_]);
 }
@@ -9893,6 +9935,7 @@ void Ui::TriggerSaveSampleSynthVoiceUserPreset(bool force_new)
         sample_synth_voice_user_loaded_slot_ = slot;
         snprintf(sample_synth_voice_user_status_, sizeof(sample_synth_voice_user_status_),
                   "Saved %d", slot);
+        MarkSampleSynthClean();
         sample_synth_voice_user_dirty_ = true; // a new slot may now exist
     }
     else
@@ -9925,6 +9968,7 @@ void Ui::TriggerLoadSampleSynthVoiceUserPreset()
     // what's now SOUNDS1.
     if(strcmp(preset.category, "SOUNDS") == 0)
         snprintf(preset.category, sizeof(preset.category), "SOUNDS1");
+    sample_synth_capture_unsaved_ = false; // the capture is being replaced
     LoadSampleSynthFileIntoEngine(preset.category, preset.filename);
     sample_synth_->ApplyPreset(preset.params);
     sample_synth_->SetChromaticMono(preset.mono);
@@ -9936,6 +9980,7 @@ void Ui::TriggerLoadSampleSynthVoiceUserPreset()
     sample_synth_voice_user_loaded_slot_ = slot;
     snprintf(sample_synth_voice_user_status_, sizeof(sample_synth_voice_user_status_),
               "Loaded SMPVO%d", slot);
+    MarkSampleSynthClean();
 }
 
 void Ui::TriggerSaveSampleSynthDrumUserPreset(bool force_new)
@@ -9972,6 +10017,7 @@ void Ui::TriggerSaveSampleSynthDrumUserPreset(bool force_new)
         sample_synth_drum_user_loaded_slot_ = slot;
         snprintf(sample_synth_drum_user_status_, sizeof(sample_synth_drum_user_status_), "Saved %d",
                   slot);
+        MarkSampleSynthClean();
         sample_synth_drum_user_dirty_ = true;
     }
     else
@@ -10015,6 +10061,7 @@ void Ui::TriggerLoadSampleSynthDrumUserPreset()
     sample_synth_drum_user_loaded_slot_       = slot;
     snprintf(sample_synth_drum_user_status_, sizeof(sample_synth_drum_user_status_),
               "Loaded SMPDR%d", slot);
+    MarkSampleSynthClean();
 }
 
 void Ui::RefreshGranularPresetSlots()

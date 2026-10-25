@@ -2090,6 +2090,42 @@ class Ui
     static constexpr int kMaxSampleSynthSoundsListed = 64;
     // Both faces' banks together never exceed two types' worth.
     static constexpr int kMaxListedSampleBanks = 2 * PerformanceStore::kMaxSampleBanks;
+    // "Unsaved changes" tracking -- each engine snapshots the settings a
+    // load/save would capture, and the page title shows a small "*" while
+    // the live sound differs from the snapshot taken at the last load or
+    // save. Fields are appended explicitly (not memcpy'd structs) so
+    // padding bytes can never make two equal sounds look different.
+    struct EditSnapshot
+    {
+        uint8_t bytes[192];
+        int     len = 0;
+        template <typename T>
+        void Add(const T& v)
+        {
+            if(len + (int)sizeof(T) <= (int)sizeof(bytes))
+            {
+                memcpy(bytes + len, &v, sizeof(T));
+                len += (int)sizeof(T);
+            }
+        }
+        bool operator==(const EditSnapshot& o) const
+        {
+            return len == o.len && memcmp(bytes, o.bytes, len) == 0;
+        }
+    };
+    // Draws the title at the page's usual spot, plus a Tom Thumb "*" right
+    // after it when `unsaved` -- shared by every engine's own Draw*Screen().
+    void DrawPageTitle(const char* title, bool unsaved);
+    // SMPVO/SMPDR: the live face's snapshot, its own baseline per face
+    // (Voice/Drum keep separate sounds), and whether a fresh capture
+    // hasn't been saved as a Sound yet.
+    EditSnapshot SampleSynthSnapshot() const;
+    void         MarkSampleSynthClean();
+    void         SwitchSampleSynthModeImpl(SampleSynthMode target);
+    bool         SampleSynthUnsaved() const;
+    EditSnapshot sample_synth_voice_baseline_ = {};
+    EditSnapshot sample_synth_drum_baseline_  = {};
+    bool         sample_synth_capture_unsaved_ = false;
     struct SampleBankEntry
     {
         PerformanceStore::SampleBank type = PerformanceStore::SampleBank::Sounds;
