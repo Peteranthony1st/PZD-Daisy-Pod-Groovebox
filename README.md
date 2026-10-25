@@ -282,7 +282,8 @@ https://github.com/user-attachments/assets/2a0b04fc-17b1-4224-9207-e0b60eb56236
 
 **LEDs** — LED1 shows the looper's transport at a glance: green = any
 layer playing, blue = any layer paused, off = looper disabled or nothing
-playing/paused yet. LED2 lights red whenever something is actively
+playing/paused yet. It flashes blue in time with the click during a
+record or overdub count-in. LED2 lights red whenever something is actively
 recording — a loop layer recording/overdubbing, or a Grains/SampleSynth
 capture in progress.
 

@@ -3891,7 +3891,7 @@ void Ui::UpdateLeds()
     // from each layer's own real LayerState, not a separate bookkeeping
     // flag -- correctly shows "off" when every layer is still Empty
     // (nothing recorded yet) instead of claiming "playing."
-    bool any_playing = false, any_paused = false;
+    bool any_playing = false, any_paused = false, any_count_in = false;
     for(int i = 0; i < num_layers_; i++)
     {
         LayerState s = layers_[i].GetState();
@@ -3899,11 +3899,37 @@ void Ui::UpdateLeds()
             any_playing = true;
         else if(s == LayerState::Paused)
             any_paused = true;
+        else if(s == LayerState::ArmedCountIn || s == LayerState::ArmedOverdubCountIn)
+            any_count_in = true;
     }
+    // Count-in (record or overdub armed, waiting for the bar): LED1
+    // flashes blue in time with the click, lit for the first half of each
+    // beat, taking priority over the playing/paused colour. Stops the
+    // moment recording starts, when LED2 takes over in red.
+    bool count_in_flash_on = false;
+    if(any_count_in)
+    {
+        int      beat = tempo_->GetBeatInBar();
+        uint32_t now  = System::GetNow();
+        if(beat != led_count_in_beat_)
+        {
+            led_count_in_beat_    = beat;
+            led_count_in_beat_ms_ = now;
+        }
+        float beat_ms     = 60000.f / tempo_->GetBpm();
+        count_in_flash_on = (float)(now - led_count_in_beat_ms_) < beat_ms * 0.5f;
+    }
+    else
+        led_count_in_beat_ = -1; // next count-in starts lit on its first beat
     if(!looper_enabled_)
     {
         led1_green_pwm_->Set(0.f);
         led1_blue_pwm_->Set(0.f);
+    }
+    else if(any_count_in)
+    {
+        led1_green_pwm_->Set(0.f);
+        led1_blue_pwm_->Set(count_in_flash_on ? kLedPwmLevel : 0.f);
     }
     else if(any_playing)
     {

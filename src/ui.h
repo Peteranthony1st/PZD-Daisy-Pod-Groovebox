@@ -1639,6 +1639,10 @@ class Ui
     daisy::PWMHandle::Channel* led1_green_pwm_ = nullptr;
     daisy::PWMHandle::Channel* led1_blue_pwm_  = nullptr;
     daisy::PWMHandle::Channel* led2_red_pwm_   = nullptr;
+    // Count-in flash on LED1 (see UpdateLeds()): the beat last seen and
+    // when it started, so each beat lights for its first half.
+    int      led_count_in_beat_    = -1;
+    uint32_t led_count_in_beat_ms_ = 0;
 
     // --- Per-engine on/off (see IsGranularEnabled()).
     bool granular_enabled_ = false;
