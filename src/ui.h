@@ -629,7 +629,8 @@ class Ui
         // category. Positioned last, same relative order as
         // DexedParamPage/GranularParamPage/SampleSynthParamPage's own
         // Preset.
-        Preset,
+        Preset, // the factory sounds -- load only
+        User,   // your own saves (+ New): save, overwrite, load
         kCount
     };
 
@@ -938,6 +939,7 @@ class Ui
         // Screen::Ensemble's own pages -- see EnsembleParamPage for what
         // each one's knobs do.
         EnsemblePreset, // browses a list directly, no pickup used
+        EnsembleUser,   // ditto -- the User page's own list / save choice
         EnsembleRegistration,
         // Env page's own Button1/Button2 toggle, same shape as
         // GranularEnvAD/GranularEnvSR above.
@@ -1409,20 +1411,15 @@ class Ui
     // ensemble_loaded_preset_slot_'s own 0-means-factory-or-none
     // comment), so this always writes to the User range.
     void TriggerSaveEnsemblePreset(bool force_new = false);
-    // Short tap while a preset is highlighted: applies it immediately to
-    // the live engine without leaving the browser (live preview), same
-    // "preview == commit" behavior as TriggerLoadDexedPreset(). Resolves
-    // ensemble_preset_cursor_ against the combined [factory][user] list
-    // (see ensemble_preset_user_slots_'s own comment) -- cursor <
-    // EnsembleSynth::GetNumFactoryPresets() means a factory preset
-    // (ApplyPreset() from the static table, no SD read, never sets
-    // ensemble_loaded_preset_slot_ to a real slot), otherwise a real SD
-    // user slot (PerformanceStore::LoadEnsemblePreset()).
-    void TriggerLoadEnsemblePreset();
-    // Load chooser confirmed with "New" highlighted -- resets every
-    // parameter to EnsembleSynth::EnsemblePresetData{}'s own defaults,
-    // same fresh-start convention as TriggerNewDexedPreset().
+    // User page's "New (blank)" entry -- resets every parameter to
+    // EnsembleSynth::EnsemblePresetData{}'s own defaults, same fresh-start
+    // convention as TriggerNewDexedPreset().
     void TriggerNewEnsemblePreset();
+    // Loads one preset by real slot number (1..factory count = factory,
+    // above that = a user save) -- shared by the Preset and User pages.
+    void LoadEnsembleSlot(int slot);
+    // User page list: index 0 is "New (blank)", 1.. are the user saves.
+    int ensemble_user_cursor_ = 0;
 
     // Two-row control legend, drawn at the bottom of every screen in
     // Tom Thumb (see font_tomthumb.h): a knob row (circle icon) and a
@@ -1986,9 +1983,7 @@ class Ui
     static constexpr int kMaxEnsemblePresetSlots = 99; // must match PerformanceStore::kMaxEnsemblePresets
     int  ensemble_preset_user_slots_[kMaxEnsemblePresetSlots] = {}; // SD user slots, ascending
     int  ensemble_preset_user_slot_count_                      = 0;
-    // Index into the combined [factory][user] list above, not a raw slot
-    // number -- see TriggerLoadEnsemblePreset()'s own comment for how
-    // it's resolved.
+    // Preset page cursor: index into the factory sounds (slot = index + 1).
     int  ensemble_preset_cursor_      = 0;
     bool ensemble_preset_slots_dirty_ = true; // forces one RefreshEnsemblePresetSlots() on entry
     // 0 = nothing loaded yet / a factory preset is loaded (never
@@ -2125,6 +2120,13 @@ class Ui
     bool         SampleSynthUnsaved() const;
     EditSnapshot sample_synth_voice_baseline_ = {};
     EditSnapshot sample_synth_drum_baseline_  = {};
+    EditSnapshot EnsembleSnapshot() const;
+    void         MarkEnsembleClean() { ensemble_baseline_ = EnsembleSnapshot(); }
+    bool         EnsembleUnsaved() const
+    {
+        return ensemble_baseline_.len > 0 && !(EnsembleSnapshot() == ensemble_baseline_);
+    }
+    EditSnapshot ensemble_baseline_ = {};
     bool         sample_synth_capture_unsaved_ = false;
     struct SampleBankEntry
     {

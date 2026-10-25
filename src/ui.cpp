@@ -396,8 +396,9 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             int n = (int)EnsembleParamPage::kCount;
             int p = (((int)ensemble_param_page_ + inc) % n + n) % n;
             EnsembleParamPage new_ensemble_page = (EnsembleParamPage)p;
-            if(new_ensemble_page == EnsembleParamPage::Preset
-               && ensemble_param_page_ != EnsembleParamPage::Preset)
+            if((new_ensemble_page == EnsembleParamPage::Preset
+                || new_ensemble_page == EnsembleParamPage::User)
+               && ensemble_param_page_ != new_ensemble_page)
                 ensemble_preset_slots_dirty_ = true; // re-scan the card on entry
             ensemble_param_page_ = new_ensemble_page;
             save_load_mode_      = SaveLoadMode::Idle; // same reset as Global:File above
@@ -995,53 +996,48 @@ void Ui::HandleButton2(const UiControlEvents& events)
     }
     else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::Preset)
     {
-        // Button2 confirms whichever of Save/Load is revealed -- same
-        // shared SaveLoadMode shape as Grains'/Dexed's own Preset page.
+        // Factory sounds, shared browse convention: tap to open the list,
+        // tap a sound to load it and stay in the list.
+        if(events.btn2_released)
+        {
+            if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
+                LoadEnsembleSlot(ensemble_preset_cursor_ + 1);
+            else
+                save_load_mode_ = SaveLoadMode::BrowsingLoad;
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::User)
+    {
+        // Saving keeps an 800 ms hold (it can overwrite); loading is a tap
+        // that stays in the list. Entry 0 of the list is "New (blank)".
         bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
-        bool can_confirm_load = save_load_mode_ == SaveLoadMode::BrowsingLoad
-                                 && (load_browsing_files_ || load_new_selected_);
-        bool can_confirm      = can_confirm_save || can_confirm_load;
-        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm)
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_save)
         {
             button2_long_fired_ = true;
-            if(can_confirm_save)
-                TriggerSaveEnsemblePreset(save_as_new_);
-            else
-                TriggerLoadEnsemblePreset();
+            TriggerSaveEnsemblePreset(save_as_new_);
             save_load_mode_ = SaveLoadMode::Idle;
         }
         if(events.btn2_released)
         {
-            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm)
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm_save)
             {
-                if(can_confirm_save)
-                    TriggerSaveEnsemblePreset(save_as_new_);
-                else
-                    TriggerLoadEnsemblePreset();
+                TriggerSaveEnsemblePreset(save_as_new_);
                 save_load_mode_ = SaveLoadMode::Idle;
             }
-            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad
-                     && load_browsing_files_)
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad)
             {
-                // Short tap while browsing the combined [factory][user]
-                // list -- preview it immediately (apply to the live
-                // engine) WITHOUT leaving the browser, same "preview ==
-                // commit, just without exiting" idiom as
-                // TriggerLoadDexedPreset()'s own short-tap behavior.
-                TriggerLoadEnsemblePreset();
+                if(ensemble_user_cursor_ == 0)
+                    TriggerNewEnsemblePreset();
+                else if(ensemble_user_cursor_ - 1 < ensemble_preset_user_slot_count_)
+                    LoadEnsembleSlot(ensemble_preset_user_slots_[ensemble_user_cursor_ - 1]);
             }
             else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
             {
-                // Short tap from Idle only: reveal the preset list to
-                // browse.
                 if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
                 else
-                {
-                    save_load_mode_      = SaveLoadMode::BrowsingLoad;
-                    load_new_selected_   = false;
-                    load_browsing_files_ = false;
-                }
+                    save_load_mode_ = SaveLoadMode::BrowsingLoad;
             }
             button2_long_fired_ = false;
         }
@@ -1778,31 +1774,19 @@ void Ui::OnButton1Short()
                 ensemble_->CycleModWheelTarget();
             else if(ensemble_param_page_ == EnsembleParamPage::Preset)
             {
-                if(save_load_mode_ == SaveLoadMode::BrowsingLoad && load_browsing_files_)
-                {
-                    // Back out of the numbered list to the Files/New
-                    // chooser -- see Global:File's own comment.
-                    load_browsing_files_ = false;
-                }
-                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && !load_new_selected_)
-                {
-                    // "Files" is highlighted -- drill into the combined
-                    // [factory][user] list (Knob1 now scrolls it directly).
-                    load_browsing_files_ = true;
-                }
-                else if(save_load_mode_ != SaveLoadMode::Idle)
-                {
-                    // Back -- Button2 confirms Save/Load (see
-                    // HandleButton2()), so this tap always just returns
-                    // to the page's own idle state, same as Global:File.
-                    save_load_mode_ = SaveLoadMode::Idle;
-                }
+                if(save_load_mode_ != SaveLoadMode::Idle)
+                    save_load_mode_ = SaveLoadMode::Idle; // Back
+            }
+            else if(ensemble_param_page_ == EnsembleParamPage::User)
+            {
+                if(save_load_mode_ != SaveLoadMode::Idle)
+                    save_load_mode_ = SaveLoadMode::Idle; // Back
                 else if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
                 else
                 {
-                    // Reveal the Overwrite/Save New choice -- Button2's
-                    // hold now confirms it (see HandleButton2()).
+                    // Reveal Overwrite / Save New -- K1 picks, holding
+                    // Button2 confirms (see HandleButton2()).
                     save_load_mode_ = SaveLoadMode::ChoosingSave;
                     save_as_new_
                         = ensemble_loaded_preset_slot_ <= EnsembleSynth::GetNumFactoryPresets();
@@ -2159,6 +2143,7 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                                                         : KnobContext::EnsembleFxReverb;
                 case EnsembleParamPage::MIDI: return KnobContext::EnsembleMidi;
                 case EnsembleParamPage::Preset: return KnobContext::EnsemblePreset;
+                case EnsembleParamPage::User: return KnobContext::EnsembleUser;
                 default: return KnobContext::EnsembleRegistration;
             }
         case Screen::SampleSynth:
@@ -2510,6 +2495,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 = Clampf(((float)(ensemble_midi_channel_ + 1) + 0.5f) / 16.99f, 0.f, 1.f);
             break;
         case KnobContext::EnsemblePreset: break; // browses a list directly, no pickup used
+        case KnobContext::EnsembleUser: break;   // ditto
         case KnobContext::SampleSynthFilter:
             if(sample_synth_)
             {
@@ -3548,42 +3534,38 @@ void Ui::ApplyKnobs()
                     break;
                 case EnsembleParamPage::Preset:
                 {
+                    // K2 scrolls the factory sounds (shared browse convention).
+                    int total = EnsembleSynth::GetNumFactoryPresets();
+                    if(save_load_mode_ == SaveLoadMode::BrowsingLoad && total > 0)
+                    {
+                        int idx = (int)(Clampf(k2, 0.f, 1.f) * total);
+                        if(idx >= total)
+                            idx = total - 1;
+                        if(idx != ensemble_preset_cursor_)
+                            ensemble_preset_status_[0] = '\0';
+                        ensemble_preset_cursor_ = idx;
+                    }
+                    break;
+                }
+                case EnsembleParamPage::User:
+                {
                     if(save_load_mode_ == SaveLoadMode::ChoosingSave)
                     {
-                        // Overwrite is only a real option once a real
-                        // user slot (not a factory one) is loaded -- same
-                        // idiom as DexedParamPage::Preset above.
+                        // Overwrite only makes sense once a user save is loaded.
                         save_as_new_
                             = ensemble_loaded_preset_slot_ <= EnsembleSynth::GetNumFactoryPresets()
                                   ? true
                                   : k1 >= 0.5f;
-                        break;
                     }
-                    if(save_load_mode_ != SaveLoadMode::BrowsingLoad)
-                        break;
-                    if(!load_browsing_files_)
+                    else if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
                     {
-                        // Top-level chooser -- Files is always a real
-                        // option here (the factory bank always exists,
-                        // unlike Grains' own Preset page), same reasoning
-                        // as Dexed's own top-level chooser.
-                        load_new_selected_ = k1 >= 0.5f;
-                        break;
-                    }
-                    // Drilled into the combined [factory][user] list --
-                    // see ensemble_preset_user_slots_'s own comment.
-                    {
-                        int total = EnsembleSynth::GetNumFactoryPresets()
-                                    + ensemble_preset_user_slot_count_;
-                        if(total > 0)
-                        {
-                            int idx = (int)(Clampf(k1, 0.f, 1.f) * total);
-                            if(idx >= total)
-                                idx = total - 1;
-                            if(idx != ensemble_preset_cursor_)
-                                ensemble_preset_status_[0] = '\0';
-                            ensemble_preset_cursor_ = idx;
-                        }
+                        int total = 1 + ensemble_preset_user_slot_count_; // "New" + saves
+                        int idx   = (int)(Clampf(k2, 0.f, 1.f) * total);
+                        if(idx >= total)
+                            idx = total - 1;
+                        if(idx != ensemble_user_cursor_)
+                            ensemble_preset_status_[0] = '\0';
+                        ensemble_user_cursor_ = idx;
                     }
                     break;
                 }
@@ -5348,7 +5330,7 @@ void Ui::DrawGranularScreen()
     // Gap/Scan header above it that these pages don't.
     const int kBandTop = 22, kBandBottom = 44;
     char title[24];
-    snprintf(title, sizeof(title), "Grains:%s", page_name);
+    snprintf(title, sizeof(title), "Gran:%s", page_name);
     disp_->SetCursor(0, 0);
     WriteUpper(title);
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
@@ -6245,7 +6227,7 @@ void Ui::DrawDexedScreen()
         default: break;
     }
     char title[24];
-    snprintf(title, sizeof(title), "Dexed:%s", page_name);
+    snprintf(title, sizeof(title), "Dxd:%s", page_name);
     disp_->SetCursor(0, 0);
     WriteUpper(title);
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
@@ -6735,12 +6717,12 @@ void Ui::DrawEnsembleScreen()
         case EnsembleParamPage::FX: page_name = "FX"; break;
         case EnsembleParamPage::MIDI: page_name = "MIDI"; break;
         case EnsembleParamPage::Preset: page_name = "Preset"; break;
+        case EnsembleParamPage::User: page_name = "User"; break;
         default: break;
     }
     char title[24];
     snprintf(title, sizeof(title), "Ensmbl:%s", page_name);
-    disp_->SetCursor(0, 0);
-    WriteUpper(title);
+    DrawPageTitle(title, EnsembleUnsaved());
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
     disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
@@ -6906,6 +6888,7 @@ void Ui::DrawEnsembleScreen()
             break;
         }
         case EnsembleParamPage::Preset:
+        case EnsembleParamPage::User:
         {
             if(!PerformanceStore::IsCardPresent())
             {
@@ -6916,26 +6899,25 @@ void Ui::DrawEnsembleScreen()
                 break;
             }
             if(ensemble_preset_slots_dirty_)
+            {
                 RefreshEnsemblePresetSlots();
+                if(ensemble_user_cursor_ > ensemble_preset_user_slot_count_)
+                    ensemble_user_cursor_ = ensemble_preset_user_slot_count_;
+            }
 
+            bool is_user       = ensemble_param_page_ == EnsembleParamPage::User;
             int  factory_count = EnsembleSynth::GetNumFactoryPresets();
+            int  loaded        = ensemble_loaded_preset_slot_;
             bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
             bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
-            bool load_chooser  = browsing_load && !load_browsing_files_;
-            bool can_hold_load = browsing_load && (load_browsing_files_ || load_new_selected_);
 
-            // Same "Button2 hold takes over the whole display" idiom as
-            // GranularParamPage::Preset -- Ensemble presets are a single
-            // small struct (no audio), so this never actually runs long,
-            // but the same shape keeps this in sync with every other
-            // Preset page.
-            if(pod_->button2.Pressed() && (choosing_save || can_hold_load))
+            // Saving keeps its hold-to-confirm bar; loading is a plain tap.
+            if(pod_->button2.Pressed() && choosing_save)
             {
-                float       held     = pod_->button2.TimeHeldMs();
-                int         w        = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                const char* hold_msg = choosing_save ? "Hold: Save..." : "Hold: Load...";
+                float held = pod_->button2.TimeHeldMs();
+                int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
                 disp_->SetCursor(0, 20);
-                WriteUpper(hold_msg);
+                WriteUpper("Hold: Save...");
                 disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
                 if(w > 0)
                     disp_->DrawRect(1, 31, w, 33, true, true);
@@ -6944,91 +6926,68 @@ void Ui::DrawEnsembleScreen()
                 break;
             }
 
+            TomThumbDrawText(disp_, 0, 15, is_user ? "User Presets" : "Factory Presets", true);
+
             if(choosing_save)
             {
-                bool can_overwrite = ensemble_loaded_preset_slot_ > factory_count;
+                bool can_overwrite = loaded > factory_count;
                 char line1[24], line2[16];
                 snprintf(line1, sizeof(line1), "%c Overwrite%s", !save_as_new_ ? '>' : ' ',
                           can_overwrite ? "" : " (n/a)");
                 snprintf(line2, sizeof(line2), "%c Save New", save_as_new_ ? '>' : ' ');
-                disp_->SetCursor(0, 16);
+                disp_->SetCursor(0, 24);
                 WriteUpper(line1);
-                disp_->SetCursor(0, 28);
-                WriteUpper(line2);
-            }
-            else if(load_chooser)
-            {
-                // Unlike Grains' own Preset page, Files is always a real
-                // option here (the 8-preset factory bank always exists).
-                char line1[24], line2[16];
-                snprintf(line1, sizeof(line1), "%c Files", !load_new_selected_ ? '>' : ' ');
-                snprintf(line2, sizeof(line2), "%c Load New", load_new_selected_ ? '>' : ' ');
-                disp_->SetCursor(0, 16);
-                WriteUpper(line1);
-                disp_->SetCursor(0, 28);
+                disp_->SetCursor(0, 34);
                 WriteUpper(line2);
             }
             else if(browsing_load)
             {
-                // Drilled into the combined [factory][user] list --
-                // cursor < factory_count shows the factory preset's real
-                // name, otherwise the real SD slot number.
-                char line2[24];
-                if(ensemble_preset_cursor_ < factory_count)
-                    snprintf(line2, sizeof(line2), "Load: %s",
+                // "> " marks the sound that's currently loaded. "ENSM"
+                // matches Global:SdMgmt's own short code for user saves.
+                char line[24];
+                if(!is_user)
+                {
+                    int slot = ensemble_preset_cursor_ + 1;
+                    snprintf(line, sizeof(line), "%s%s", slot == loaded ? "> " : "",
                               EnsembleSynth::GetFactoryPresetName(ensemble_preset_cursor_));
+                }
+                else if(ensemble_user_cursor_ == 0)
+                    snprintf(line, sizeof(line), "New (blank)");
                 else
-                    // "ENSM" matches Global:SdMgmt's own short code for
-                    // this category -- one shared vocabulary, see
-                    // GRAINS/DEXED's own sites above.
-                    snprintf(line2, sizeof(line2), "Load: ENSM%d",
-                              ensemble_preset_user_slots_[ensemble_preset_cursor_
-                                                           - factory_count]);
-                disp_->SetCursor(0, 20);
-                WriteUpper(line2);
+                {
+                    int slot = ensemble_preset_user_slots_[ensemble_user_cursor_ - 1];
+                    snprintf(line, sizeof(line), "%sENSM%d", slot == loaded ? "> " : "", slot);
+                }
+                disp_->SetCursor(0, 24);
+                WriteUpper(line);
             }
             else
             {
                 char line1[24];
-                if(ensemble_loaded_preset_slot_ <= 0)
-                    snprintf(line1, sizeof(line1), "Now: (custom)");
-                else if(ensemble_loaded_preset_slot_ <= factory_count)
+                if(loaded <= 0)
+                    snprintf(line1, sizeof(line1), "Now: (new)");
+                else if(loaded <= factory_count)
                     snprintf(line1, sizeof(line1), "Now: %s",
-                              EnsembleSynth::GetFactoryPresetName(ensemble_loaded_preset_slot_ - 1));
+                              EnsembleSynth::GetFactoryPresetName(loaded - 1));
                 else
-                    snprintf(line1, sizeof(line1), "Now: ENSM%d", ensemble_loaded_preset_slot_);
-                disp_->SetCursor(0, 20);
+                    snprintf(line1, sizeof(line1), "Now: ENSM%d", loaded);
+                disp_->SetCursor(0, 24);
                 WriteUpper(line1);
                 if(ensemble_preset_status_[0] != '\0')
                 {
-                    disp_->SetCursor(0, 32);
+                    disp_->SetCursor(0, 36);
                     WriteUpper(ensemble_preset_status_);
                 }
             }
 
-            {
-                const char* b1_label;
-                if(save_load_mode_ == SaveLoadMode::Idle)
-                    b1_label = "Save";
-                else if(load_chooser && !load_new_selected_)
-                    b1_label = "Select";
-                else
-                    b1_label = "Back";
-                const char* b2_label;
-                if(save_load_mode_ == SaveLoadMode::Idle)
-                    b2_label = "Load";
-                else if(choosing_save)
-                    b2_label = "Hold=Save";
-                else if(can_hold_load)
-                    b2_label = "Hold=Load";
-                else
-                    b2_label = "";
-
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
-                                 (choosing_save || browsing_load) ? "Scroll" : "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1_label, "", "",
-                                 b2_label);
-            }
+            const char* b1_label = save_load_mode_ != SaveLoadMode::Idle ? "Back"
+                                   : is_user                             ? "Save"
+                                                                         : "";
+            const char* b2_label = choosing_save ? "Hold=Save" : "Load";
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, choosing_save ? "Select" : "",
+                             "", "", browsing_load ? "Scroll" : "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1_label, "", "",
+                             b2_label);
             break;
         }
         default: break;
@@ -10506,6 +10465,7 @@ void Ui::TriggerSaveEnsemblePreset(bool force_new)
     {
         ensemble_loaded_preset_slot_ = slot;
         snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Saved %d", slot);
+        MarkEnsembleClean();
         ensemble_preset_slots_dirty_ = true; // a new slot may now exist
     }
     else
@@ -10522,32 +10482,14 @@ void Ui::TriggerNewEnsemblePreset()
     ensemble_->ApplyPreset(EnsembleSynth::EnsemblePresetData{});
     ensemble_loaded_preset_slot_ = 0;
     snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "New");
+    MarkEnsembleClean();
 }
 
-void Ui::TriggerLoadEnsemblePreset()
+void Ui::LoadEnsembleSlot(int slot)
 {
-    if(!ensemble_)
+    if(!ensemble_ || slot < 1)
         return;
-    // !load_browsing_files_ means the top-level chooser confirmed with
-    // "New" highlighted (can_confirm_load only allows a confirm here when
-    // that's the case -- see HandleButton2()).
-    if(!load_browsing_files_)
-    {
-        TriggerNewEnsemblePreset();
-        return;
-    }
     int factory_count = EnsembleSynth::GetNumFactoryPresets();
-    int total          = factory_count + ensemble_preset_user_slot_count_;
-    if(ensemble_preset_cursor_ < 0 || ensemble_preset_cursor_ >= total)
-        return;
-    // Resolve the combined [factory][user] list directly into a real
-    // slot number -- cursor < factory_count means a factory preset
-    // (slots are 1-based, matching PerformanceStore::LoadEnsemblePreset()'s
-    // own factory-range convention), otherwise a real SD user slot.
-    int slot = ensemble_preset_cursor_ < factory_count
-                   ? ensemble_preset_cursor_ + 1
-                   : ensemble_preset_user_slots_[ensemble_preset_cursor_ - factory_count];
-
     EnsembleSynth::EnsemblePresetData preset;
     bool ok = PerformanceStore::LoadEnsemblePreset(slot, &preset);
     if(ok)
@@ -10559,12 +10501,37 @@ void Ui::TriggerLoadEnsemblePreset()
                       EnsembleSynth::GetFactoryPresetName(slot - 1));
         else
             snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Loaded ENSM%d", slot);
+        MarkEnsembleClean();
     }
     else
     {
         snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Fail:%s",
                   PerformanceStore::GetLastError());
     }
+}
+
+Ui::EditSnapshot Ui::EnsembleSnapshot() const
+{
+    EditSnapshot s;
+    if(!ensemble_)
+        return s;
+    EnsembleSynth::EnsemblePresetData p = ensemble_->CapturePreset();
+    for(int i = 0; i < EnsembleSynth::kNumDrawbars; i++)
+        s.Add(p.drawbar_levels[i]);
+    s.Add(p.chorus_depth01);
+    s.Add(p.chorus_rate01);
+    s.Add(p.attack01);
+    s.Add(p.decay01);
+    s.Add(p.sustain01);
+    s.Add(p.release01);
+    s.Add(p.filter_mode);
+    s.Add(p.filter_cutoff01);
+    s.Add(p.filter_res01);
+    s.Add(p.output_level01);
+    s.Add(p.pan01);
+    s.Add(p.reverb_send01);
+    s.Add(p.delay_send01);
+    return s;
 }
 
 void Ui::TriggerSaveDefaults()
