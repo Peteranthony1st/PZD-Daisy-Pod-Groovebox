@@ -385,11 +385,17 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             int n = (int)DexedParamPage::kCount;
             int p = (((int)dexed_param_page_ + inc) % n + n) % n;
             DexedParamPage new_dexed_page = (DexedParamPage)p;
-            if(new_dexed_page == DexedParamPage::Preset
-               && dexed_param_page_ != DexedParamPage::Preset)
+            if(new_dexed_page != dexed_param_page_)
             {
-                dexed_preset_slots_dirty_ = true; // re-scan the card on entry
-                dexed_preset_folder_open_ = false; // always start at the folder list
+                // Re-scan the card on entry to any of the list pages.
+                if(new_dexed_page == DexedParamPage::Preset
+                   || new_dexed_page == DexedParamPage::User)
+                    dexed_preset_slots_dirty_ = true;
+                if(new_dexed_page == DexedParamPage::Import)
+                {
+                    dexed_import_files_dirty_ = true;
+                    dexed_preset_status_[0]   = '\0';
+                }
             }
             dexed_param_page_ = new_dexed_page;
             save_load_mode_   = SaveLoadMode::Idle; // same reset as Global:File above
@@ -935,98 +941,91 @@ void Ui::HandleButton2(const UiControlEvents& events)
     }
     else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::Preset)
     {
-        // Button2 confirms whichever of Save/Load is revealed -- see
-        // Global:File's own Button2 handling for the shared SaveLoadMode
-        // this mirrors.
-        bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
-        // Nothing concrete is highlighted while just browsing a group or
-        // folder list (names aren't presets) -- confirm only once "New"
-        // is picked at the top-level chooser, a folder has actually been
-        // opened onto a real preset (Roms/Dexed/Imports), the User group
-        // is open (it has no folder level of its own, see
-        // DexedFilesGroup's own comment), or a real .syx file is
-        // highlighted inside the Import list.
-        bool dexed_files_ready = load_browsing_files_ && dexed_files_group_open_
-                                   && (dexed_preset_folder_open_
-                                       || dexed_files_group_ == DexedFilesGroup::User);
-        bool can_confirm_load = save_load_mode_ == SaveLoadMode::BrowsingLoad
-                                 && (load_new_selected_ || dexed_files_ready
-                                     || (dexed_import_browsing_ && dexed_import_file_count_ > 0));
-        bool can_confirm      = can_confirm_save || can_confirm_load;
-        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm)
-        {
-            button2_long_fired_ = true;
-            if(can_confirm_save)
-                TriggerSaveDexedPreset(save_as_new_);
-            else
-                TriggerLoadDexedPreset();
-            save_load_mode_ = SaveLoadMode::Idle;
-        }
+        // Shared browse convention: tap opens the browser, then a group,
+        // then a folder; a tap on a preset loads it and stays in the
+        // folder. No hold.
         if(events.btn2_released)
         {
-            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm)
+            if(save_load_mode_ != SaveLoadMode::BrowsingLoad)
             {
-                if(can_confirm_save)
-                    TriggerSaveDexedPreset(save_as_new_);
-                else
-                    TriggerLoadDexedPreset();
-                save_load_mode_ = SaveLoadMode::Idle;
-            }
-            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad
-                     && dexed_files_ready)
-            {
-                // Short tap while a preset is highlighted (an open
-                // folder in Roms/Dexed/Imports, or anywhere in the flat
-                // User list) -- preview it immediately (apply to the
-                // live engine) WITHOUT leaving the browser, so scrolling
-                // K1 and tapping B2 auditions one preset after another
-                // without re-entering the whole Save/Load flow each
-                // time. Button2's hold gesture above still does the same
-                // load AND exits back to Idle, for once you've settled
-                // on one.
-                TriggerLoadDexedPreset();
-            }
-            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad
-                     && load_browsing_files_ && !dexed_files_ready)
-            {
-                // "Open" -- Button2's own role specifically at the group
-                // chooser and folder-list levels (Button1 is "Back"
-                // there instead, see OnButton1Short()) -- drills one
-                // level deeper, the same target state Button1 used to
-                // set directly before this Back/Open split.
-                if(!dexed_files_group_open_)
-                {
-                    dexed_files_group_open_     = true;
-                    dexed_preset_folder_open_   = false;
-                    dexed_preset_folder_cursor_ = 0;
-                    dexed_preset_cursor_        = 0;
-                    dexed_preset_slots_dirty_   = true;
-                }
-                else if(dexed_files_group_ != DexedFilesGroup::User
-                         && !dexed_preset_folder_open_)
-                {
-                    dexed_preset_folder_open_ = true;
-                    dexed_preset_cursor_      = 0;
-                }
-            }
-            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
-            {
-                // Short tap from Idle only: reveal the preset list to
-                // browse (Button2's own label becomes "Hold=Load" to
-                // commit).
                 if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
                 else
                 {
                     save_load_mode_           = SaveLoadMode::BrowsingLoad;
-                    load_new_selected_        = false;
-                    load_browsing_files_      = false;
-                    dexed_files_group_open_   = false; // always start at the group chooser
-                    dexed_files_group_        = DexedFilesGroup::Roms;
-                    dexed_preset_folder_open_ = false; // always start at the folder list
-                    dexed_import_selected_    = false;
-                    dexed_import_browsing_    = false;
+                    dexed_files_group_open_   = false; // always start at the group list
+                    dexed_preset_folder_open_ = false;
+                    dexed_preset_slots_dirty_ = true;
                 }
+            }
+            else if(!dexed_files_group_open_)
+            {
+                dexed_files_group_open_   = true;
+                dexed_preset_folder_open_ = false;
+                dexed_preset_slots_dirty_ = true;
+            }
+            else if(!dexed_preset_folder_open_)
+            {
+                dexed_preset_folder_open_ = true;
+                dexed_preset_cursor_      = 0;
+            }
+            else
+                LoadDexedSlot(ResolveDexedPresetSlot());
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::User)
+    {
+        // Saving keeps an 800 ms hold (it can overwrite); loading is a tap
+        // that stays in the list. Entry 0 of the list is "New".
+        bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_save)
+        {
+            button2_long_fired_ = true;
+            TriggerSaveDexedPreset(save_as_new_);
+            save_load_mode_ = SaveLoadMode::Idle;
+        }
+        if(events.btn2_released)
+        {
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm_save)
+            {
+                TriggerSaveDexedPreset(save_as_new_);
+                save_load_mode_ = SaveLoadMode::Idle;
+            }
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad)
+            {
+                if(dexed_user_cursor_ == 0)
+                    TriggerNewDexedPreset();
+                else if(dexed_user_cursor_ - 1 < dexed_preset_user_slot_count_)
+                    LoadDexedSlot(dexed_preset_user_slots_[dexed_user_cursor_ - 1]);
+            }
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
+            {
+                if(!PerformanceStore::IsCardPresent())
+                    PerformanceStore::Remount();
+                else
+                    save_load_mode_ = SaveLoadMode::BrowsingLoad;
+            }
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::Import)
+    {
+        // Hold-to-confirm, same as the Sampler's own Import page -- one
+        // .syx can write up to 32 new presets.
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_)
+        {
+            button2_long_fired_ = true;
+            TriggerDexedSyxImport();
+        }
+        if(events.btn2_released)
+        {
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f)
+                TriggerDexedSyxImport();
+            else if(!button2_long_fired_ && !PerformanceStore::IsCardPresent())
+            {
+                PerformanceStore::Remount();
+                dexed_import_files_dirty_ = true;
             }
             button2_long_fired_ = false;
         }
@@ -1651,81 +1650,34 @@ void Ui::OnButton1Short()
                 dexed_->CycleModWheelTarget();
             else if(dexed_param_page_ == DexedParamPage::Preset)
             {
-                if(save_load_mode_ == SaveLoadMode::BrowsingLoad && dexed_import_browsing_)
+                // Back one level: preset list -> folder list -> group list
+                // -> out of the browser. K1 hasn't moved, so the same
+                // folder/group stays highlighted.
+                if(save_load_mode_ == SaveLoadMode::Idle)
                 {
-                    // Back out of the flat .syx file list to the
-                    // top-level chooser -- one level only, unlike Files'
-                    // own several (see DexedFilesGroup's own comment).
-                    dexed_import_browsing_ = false;
+                    if(!PerformanceStore::IsCardPresent())
+                        PerformanceStore::Remount();
                 }
-                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && load_browsing_files_
-                         && dexed_files_group_open_ && dexed_preset_folder_open_)
-                {
-                    // Inside an open folder (Roms/Dexed/Imports), already
-                    // browsing its own presets -- back out to this
-                    // group's own folder list. Button2 is "Open" at
-                    // every other Files level (see HandleButton2()), but
-                    // this one has nothing further to open, so it keeps
-                    // its own separate, established job (Load preview/
-                    // hold-to-commit) instead.
+                else if(dexed_preset_folder_open_)
                     dexed_preset_folder_open_ = false;
-                }
-                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && load_browsing_files_
-                         && dexed_files_group_open_)
-                {
-                    // At a group's own folder list (Roms/Dexed/Imports),
-                    // or the User group's flat list (which has no folder
-                    // level of its own, see DexedFilesGroup's own
-                    // comment) -- Back, up to the group chooser. Button2
-                    // is "Open" at this level instead (drills into the
-                    // highlighted folder).
+                else if(dexed_files_group_open_)
                     dexed_files_group_open_ = false;
-                }
-                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && load_browsing_files_
-                         && !dexed_files_group_open_)
-                {
-                    // At the group chooser -- Back, up to the top
-                    // Files/Import/New chooser. Button2 is "Open" here
-                    // too (drills into whichever group is highlighted).
-                    load_browsing_files_ = false;
-                }
-                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && dexed_import_selected_)
-                {
-                    // "Import" is highlighted -- drill into the flat
-                    // DXIMPORT/ file list (Knob1 now scrolls
-                    // dexed_import_cursor_ directly), rescanning the
-                    // card fresh every time this is opened, same
-                    // "re-scan on entry" rule as Grains' own Import.
-                    dexed_import_browsing_    = true;
-                    dexed_import_files_dirty_ = true;
-                    dexed_import_cursor_      = 0;
-                }
-                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && !load_new_selected_)
-                {
-                    // "Files" is highlighted at the TOP chooser -- drill
-                    // into the group chooser (Knob1 now scrolls
-                    // dexed_files_group_), always starting fresh at Roms.
-                    load_browsing_files_       = true;
-                    dexed_files_group_open_    = false;
-                    dexed_files_group_         = DexedFilesGroup::Roms;
-                    dexed_preset_folder_open_  = false;
-                    dexed_preset_folder_cursor_ = 0;
-                }
-                else if(save_load_mode_ != SaveLoadMode::Idle)
-                {
-                    // Back -- Button2 confirms Save/Load (see
-                    // HandleButton2()), so this tap always just returns
-                    // to the page's own idle state, same as Global:File.
+                else
                     save_load_mode_ = SaveLoadMode::Idle;
-                }
+            }
+            else if(dexed_param_page_ == DexedParamPage::User)
+            {
+                if(save_load_mode_ != SaveLoadMode::Idle)
+                    save_load_mode_ = SaveLoadMode::Idle; // Back
                 else if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
                 else
                 {
-                    // Reveal the Overwrite/Save New choice -- Button2's
-                    // hold now confirms it (see HandleButton2()).
+                    // Reveal Overwrite / Save New -- K1 picks, holding
+                    // Button2 confirms (see HandleButton2()).
                     save_load_mode_ = SaveLoadMode::ChoosingSave;
-                    save_as_new_    = dexed_loaded_preset_slot_ <= DexedSynth::GetNumFactoryPresets();
+                    save_as_new_
+                        = dexed_loaded_preset_slot_ <= DexedSynth::GetNumFactoryPresets();
                 }
             }
             break;
@@ -2084,6 +2036,8 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case DexedParamPage::MIDI: return KnobContext::DexedMidi;
                 case DexedParamPage::Advanced: return KnobContext::DexedAdvanced;
                 case DexedParamPage::Preset: return KnobContext::DexedPreset;
+                case DexedParamPage::User: return KnobContext::DexedUser;
+                case DexedParamPage::Import: return KnobContext::DexedImport;
                 default: return KnobContext::DexedAlgo;
             }
         case Screen::DexedOperator:
@@ -2340,6 +2294,8 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             break;
         case KnobContext::DexedAdvanced: break; // entry point only -- see Screen::DexedOperator instead
         case KnobContext::DexedPreset: break; // browses a list directly, no pickup used
+        case KnobContext::DexedUser: break;   // ditto
+        case KnobContext::DexedImport: break; // ditto
         case KnobContext::DexedOpAlgo: break; // view-only here -- see its own comment
         case KnobContext::DexedOpRatioLevel:
             if(dexed_)
@@ -3297,78 +3253,24 @@ void Ui::ApplyKnobs()
                 case DexedParamPage::Advanced: break; // no knobs, encoder click drills in
                 case DexedParamPage::Preset:
                 {
-                    if(save_load_mode_ == SaveLoadMode::ChoosingSave)
-                    {
-                        // Overwrite is only a real option once a real
-                        // user slot (not a factory one) is loaded.
-                        save_as_new_
-                            = dexed_loaded_preset_slot_ <= DexedSynth::GetNumFactoryPresets()
-                                  ? true
-                                  : k1 >= 0.5f;
-                        break;
-                    }
+                    // K1 scrolls the group list and a group's folders;
+                    // inside a folder K2 scrolls the presets and K1 is
+                    // left alone, so it still points at this folder on Back.
                     if(save_load_mode_ != SaveLoadMode::BrowsingLoad)
                         break;
-                    if(dexed_import_browsing_)
-                    {
-                        // Flat .syx file list (DXIMPORT/) -- same
-                        // discretized "browse a list directly" idiom as
-                        // the folder-list/in-folder cases below, just one
-                        // level instead of two since there's no factory-
-                        // category structure for an arbitrary SD folder.
-                        int total = dexed_import_file_count_;
-                        if(total > 0)
-                        {
-                            int idx = (int)(Clampf(k1, 0.f, 1.f) * total);
-                            if(idx >= total)
-                                idx = total - 1;
-                            if(idx != dexed_import_cursor_)
-                                dexed_preset_status_[0] = '\0';
-                            dexed_import_cursor_ = idx;
-                        }
-                        break;
-                    }
-                    if(!load_browsing_files_)
-                    {
-                        // Top-level chooser (mirrors ChoosingSave's own
-                        // Overwrite/Save New pick above), now 3-way:
-                        // Files (factory presets always exist, so 0..1/3
-                        // is always a real option), Import (SD SysEx),
-                        // New.
-                        float k1c               = Clampf(k1, 0.f, 1.f);
-                        load_new_selected_       = k1c >= (2.f / 3.f);
-                        dexed_import_selected_   = !load_new_selected_ && k1c >= (1.f / 3.f);
-                        break;
-                    }
                     if(!dexed_files_group_open_)
                     {
-                        // Group chooser (see DexedFilesGroup's own
-                        // comment) -- Roms/Dexed/Imports/User.
+                        // Only the group list's own labels are drawn here --
+                        // no SD scan per group swept past (that was laggy);
+                        // the real refresh happens on Open.
                         int total = (int)DexedFilesGroup::kCount;
                         int idx   = (int)(Clampf(k1, 0.f, 1.f) * total);
                         if(idx >= total)
                             idx = total - 1;
-                        // Real bug, confirmed on hardware: marking
-                        // dexed_preset_slots_dirty_ here (this group
-                        // chooser's own display doesn't even show
-                        // folder counts, only a static Roms/Dexed/
-                        // Imports/User label list) forced a real SD
-                        // directory scan on every single group the knob
-                        // swept past, not just the one it settled on --
-                        // visibly laggy scrubbing through all 4 quickly.
-                        // The real refresh already happens on actually
-                        // opening a group (see HandleButton2()'s own
-                        // "Open" handling), which is the only point this
-                        // group's own preset/folder counts are needed.
                         dexed_files_group_ = (DexedFilesGroup)idx;
                         break;
                     }
-                    // User has no folder level of its own (see
-                    // DexedFilesGroup's own comment) -- only
-                    // Roms/Dexed/Imports get this extra level, K1
-                    // scrolling dexed_preset_folder_cursor_ across
-                    // whichever this group's own folder list holds.
-                    if(dexed_files_group_ != DexedFilesGroup::User && !dexed_preset_folder_open_)
+                    if(!dexed_preset_folder_open_)
                     {
                         int total;
                         switch(dexed_files_group_)
@@ -3387,39 +3289,64 @@ void Ui::ApplyKnobs()
                         dexed_preset_folder_cursor_ = idx;
                         break;
                     }
+                    int total;
+                    if(dexed_files_group_ == DexedFilesGroup::Imports)
                     {
-                        // Deepest level -- either inside a Roms/Dexed
-                        // factory folder, inside one Imports bank's own
-                        // slot range, or (User) the flat, import-filtered
-                        // slot list directly.
-                        int total;
-                        if(dexed_files_group_ == DexedFilesGroup::User)
-                            total = dexed_preset_user_slot_count_;
-                        else if(dexed_files_group_ == DexedFilesGroup::Imports)
-                        {
-                            total = (dexed_preset_folder_cursor_ >= 0
-                                     && dexed_preset_folder_cursor_ < dexed_import_folder_count_)
-                                        ? dexed_import_folders_[dexed_preset_folder_cursor_].last_slot
-                                              - dexed_import_folders_[dexed_preset_folder_cursor_]
-                                                    .first_slot
-                                              + 1
-                                        : 0;
-                        }
-                        else
-                            total = DexedSynth::GetFactoryCategoryCount(ResolveDexedRealCategory());
-                        if(total <= 0)
-                            break;
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * total);
+                        total = (dexed_preset_folder_cursor_ >= 0
+                                 && dexed_preset_folder_cursor_ < dexed_import_folder_count_)
+                                    ? dexed_import_folders_[dexed_preset_folder_cursor_].last_slot
+                                          - dexed_import_folders_[dexed_preset_folder_cursor_]
+                                                .first_slot
+                                          + 1
+                                    : 0;
+                    }
+                    else
+                        total = DexedSynth::GetFactoryCategoryCount(ResolveDexedRealCategory());
+                    if(total <= 0)
+                        break;
+                    int idx = (int)(Clampf(k2, 0.f, 1.f) * total);
+                    if(idx >= total)
+                        idx = total - 1;
+                    if(idx != dexed_preset_cursor_)
+                        dexed_preset_status_[0] = '\0';
+                    dexed_preset_cursor_ = idx;
+                    break;
+                }
+                case DexedParamPage::User:
+                {
+                    if(save_load_mode_ == SaveLoadMode::ChoosingSave)
+                    {
+                        // Overwrite only makes sense once a user save is loaded.
+                        save_as_new_
+                            = dexed_loaded_preset_slot_ <= DexedSynth::GetNumFactoryPresets()
+                                  ? true
+                                  : k1 >= 0.5f;
+                    }
+                    else if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
+                    {
+                        int total = 1 + dexed_preset_user_slot_count_; // "New" + saves
+                        int idx   = (int)(Clampf(k2, 0.f, 1.f) * total);
                         if(idx >= total)
                             idx = total - 1;
-                        // Browsing again -- clear the last save/load
-                        // result so the "Load:" line (which shows what
-                        // the knob is actually pointing at right now)
-                        // comes back instead of staying stuck on a
-                        // status message that never otherwise clears.
-                        if(idx != dexed_preset_cursor_)
+                        if(idx != dexed_user_cursor_)
                             dexed_preset_status_[0] = '\0';
-                        dexed_preset_cursor_ = idx;
+                        dexed_user_cursor_ = idx;
+                    }
+                    break;
+                }
+                case DexedParamPage::Import:
+                {
+                    // K2 scrolls the .syx files (a file list, same as any
+                    // open folder).
+                    int total = dexed_import_file_count_;
+                    if(total > 0)
+                    {
+                        int idx = (int)(Clampf(k2, 0.f, 1.f) * total);
+                        if(idx >= total)
+                            idx = total - 1;
+                        if(idx != dexed_import_cursor_)
+                            dexed_preset_status_[0] = '\0';
+                        dexed_import_cursor_ = idx;
                     }
                     break;
                 }
@@ -6252,12 +6179,13 @@ void Ui::DrawDexedScreen()
         case DexedParamPage::MIDI: page_name = "MIDI"; break;
         case DexedParamPage::Advanced: page_name = "Advanced"; break;
         case DexedParamPage::Preset: page_name = "Preset"; break;
+        case DexedParamPage::User: page_name = "User"; break;
+        case DexedParamPage::Import: page_name = "Import"; break;
         default: break;
     }
     char title[24];
     snprintf(title, sizeof(title), "Dxd:%s", page_name);
-    disp_->SetCursor(0, 0);
-    WriteUpper(title);
+    DrawPageTitle(title, DexedUnsaved());
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
     disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
@@ -6469,114 +6397,23 @@ void Ui::DrawDexedScreen()
             if(dexed_preset_slots_dirty_)
                 RefreshDexedPresetSlots();
 
-            bool choosing_save    = save_load_mode_ == SaveLoadMode::ChoosingSave;
-            bool browsing_load    = save_load_mode_ == SaveLoadMode::BrowsingLoad;
-            bool browsing_import  = browsing_load && dexed_import_browsing_;
-            bool load_chooser     = browsing_load && !load_browsing_files_ && !dexed_import_browsing_;
-            bool browsing_group
-                = browsing_load && load_browsing_files_ && !dexed_files_group_open_;
-            bool browsing_folders = browsing_load && load_browsing_files_ && dexed_files_group_open_
-                                      && dexed_files_group_ != DexedFilesGroup::User
-                                      && !dexed_preset_folder_open_;
-            if(browsing_import && dexed_import_files_dirty_)
-                RefreshDexedImportFiles();
-            // A group/folder name isn't a preset -- nothing to
-            // confirm-load until "New" is picked at the top chooser, a
-            // folder is actually open onto a real preset
-            // (Roms/Dexed/Imports), the User group is open (it has no
-            // folder level of its own, see DexedFilesGroup's own
-            // comment), or a real .syx file is highlighted inside the
-            // Import list.
-            bool dexed_files_ready = load_browsing_files_ && dexed_files_group_open_
-                                       && (dexed_preset_folder_open_
-                                           || dexed_files_group_ == DexedFilesGroup::User);
-            bool can_hold_load = browsing_load
-                                  && (load_new_selected_ || dexed_files_ready
-                                      || (dexed_import_browsing_ && dexed_import_file_count_ > 0));
+            bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
+            bool at_groups     = browsing_load && !dexed_files_group_open_;
+            bool at_folders    = browsing_load && dexed_files_group_open_ && !dexed_preset_folder_open_;
+            bool in_folder     = browsing_load && dexed_files_group_open_ && dexed_preset_folder_open_;
 
-            if(pod_->button2.Pressed() && (choosing_save || can_hold_load))
+            // Same layout as every other engine's browser: a Tom Thumb
+            // header naming the level, then the one highlighted entry.
+            static const char* const kGroups[] = {"Roms", "Dexed", "Imports"};
+            if(at_groups)
             {
-                float       held     = pod_->button2.TimeHeldMs();
-                int         w = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                const char* hold_msg = choosing_save
-                                           ? "Hold: Save..."
-                                           : browsing_import ? "Hold: Import..." : "Hold: Load...";
+                TomThumbDrawText(disp_, 0, 15, "Roms+Dexed+Imports", true);
                 disp_->SetCursor(0, 20);
-                WriteUpper(hold_msg);
-                disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
-                if(w > 0)
-                    disp_->DrawRect(1, 31, w, 33, true, true);
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
-                break;
+                WriteUpper(kGroups[(int)dexed_files_group_]);
             }
-
-            if(choosing_save)
+            else if(at_folders || in_folder)
             {
-                bool can_overwrite
-                    = dexed_loaded_preset_slot_ > DexedSynth::GetNumFactoryPresets();
-                char line1[24], line2[16];
-                snprintf(line1, sizeof(line1), "%c Overwrite%s", !save_as_new_ ? '>' : ' ',
-                          can_overwrite ? "" : " (n/a)");
-                snprintf(line2, sizeof(line2), "%c Save New", save_as_new_ ? '>' : ' ');
-                disp_->SetCursor(0, 16);
-                WriteUpper(line1);
-                disp_->SetCursor(0, 28);
-                WriteUpper(line2);
-            }
-            else if(load_chooser)
-            {
-                char line1[24], line2[24], line3[16];
-                bool files_sel = !load_new_selected_ && !dexed_import_selected_;
-                snprintf(line1, sizeof(line1), "%c Files", files_sel ? '>' : ' ');
-                snprintf(line2, sizeof(line2), "%c Import", dexed_import_selected_ ? '>' : ' ');
-                snprintf(line3, sizeof(line3), "%c Load New", load_new_selected_ ? '>' : ' ');
-                disp_->SetCursor(0, 14);
-                WriteUpper(line1);
-                disp_->SetCursor(0, 24);
-                WriteUpper(line2);
-                disp_->SetCursor(0, 34);
-                WriteUpper(line3);
-            }
-            else if(browsing_import)
-            {
-                char line2[24];
-                if(dexed_import_file_count_ <= 0)
-                    snprintf(line2, sizeof(line2), "No .syx in DXIMPORT/");
-                else
-                    snprintf(line2, sizeof(line2), "Import: %.14s",
-                              dexed_import_names_[dexed_import_cursor_]);
-                disp_->SetCursor(0, 20);
-                WriteUpper(line2);
-            }
-            else if(browsing_group)
-            {
-                // Tom Thumb (see font_tomthumb.h), not the normal
-                // WriteUpper()/Font_6x8 every other line on this page
-                // uses -- 4 rows don't fit this body area at 8px/row,
-                // Tom Thumb's own 6px row height does.
-                char line1[16], line2[16], line3[16], line4[16];
-                snprintf(line1, sizeof(line1), "%c Roms",
-                          dexed_files_group_ == DexedFilesGroup::Roms ? '>' : ' ');
-                snprintf(line2, sizeof(line2), "%c Dexed",
-                          dexed_files_group_ == DexedFilesGroup::Dexed ? '>' : ' ');
-                snprintf(line3, sizeof(line3), "%c Imports",
-                          dexed_files_group_ == DexedFilesGroup::Imports ? '>' : ' ');
-                snprintf(line4, sizeof(line4), "%c User",
-                          dexed_files_group_ == DexedFilesGroup::User ? '>' : ' ');
-                TomThumbDrawText(disp_, 0, 16, line1, true);
-                TomThumbDrawText(disp_, 0, 24, line2, true);
-                TomThumbDrawText(disp_, 0, 32, line3, true);
-                TomThumbDrawText(disp_, 0, 40, line4, true);
-            }
-            else if(browsing_folders)
-            {
-                // No "Folder: " label -- Font_6x8 is fixed 6px/char, and
-                // "Folder: Woodwind 3 (64)" (23 chars) overflows the
-                // 128px display (21 chars max), pushing the count off
-                // the right edge. The longest real name+count ("Woodwind
-                // 3 (64)", 15 chars) fits comfortably without the label.
-                char        line2[24];
+                // Folder name + size; inside a folder, the preset below it.
                 const char* name;
                 int         count;
                 if(dexed_files_group_ == DexedFilesGroup::Imports)
@@ -6591,7 +6428,7 @@ void Ui::DrawDexedScreen()
                     }
                     else
                     {
-                        name  = "(none)";
+                        name  = "(no imports)";
                         count = 0;
                     }
                 }
@@ -6601,78 +6438,38 @@ void Ui::DrawDexedScreen()
                     name    = DexedSynth::GetFactoryCategoryName(cat);
                     count   = DexedSynth::GetFactoryCategoryCount(cat);
                 }
-                snprintf(line2, sizeof(line2), "%s (%d)", name, count);
-                disp_->SetCursor(0, 20);
-                WriteUpper(line2);
-            }
-            else if(browsing_load) // dexed_files_ready -- see its own comment above
-            {
-                int  browsed_slot = ResolveDexedPresetSlot();
-                char line2[24];
-                if(browsed_slot < 0)
-                    snprintf(line2, sizeof(line2), "(empty)");
-                else if(browsed_slot <= DexedSynth::GetNumFactoryPresets())
-                    snprintf(line2, sizeof(line2), "Load: %s",
-                              DexedSynth::GetFactoryPresetName(browsed_slot - 1));
+                char folder_line[32];
+                if(count > 0)
+                    snprintf(folder_line, sizeof(folder_line), "%s (%d)", name, count);
+                else
+                    snprintf(folder_line, sizeof(folder_line), "%s", name);
+                if(at_folders)
+                {
+                    TomThumbDrawText(disp_, 0, 15, kGroups[(int)dexed_files_group_], true);
+                    disp_->SetCursor(0, 20);
+                    WriteUpper(folder_line);
+                }
                 else
                 {
-                    // A user slot's real name lives inside its own saved
-                    // file (a manual save keeps whatever name was in the
-                    // live patch at save time; a SysEx import keeps the
-                    // bank's own original name verbatim) -- read it once
-                    // per distinct slot landed on, not once per Draw()
-                    // tick, see dexed_browse_name_slot_'s own comment.
-                    if(browsed_slot != dexed_browse_name_slot_)
-                    {
-                        DexedSynth::DexedPresetData preset;
-                        const char*                  name = "?";
-                        if(PerformanceStore::LoadDexedPreset(browsed_slot, &preset))
-                            name = DexedSynth::GetPresetDataName(preset);
-                        // Some older saves genuinely predate real embedded
-                        // names (before the factory bank/name system
-                        // existed) and carry blank name bytes -- fall
-                        // back to the slot number rather than a bare "?"
-                        // so those don't look like a fresh regression.
-                        if(strcmp(name, "?") == 0)
-                            // No real embedded name to show (older save,
-                            // blank name bytes) -- "DEXED" matches
-                            // Global:SdMgmt's own short code for this
-                            // category, same shared vocabulary as every
-                            // other bare-number display in the project.
-                            snprintf(dexed_browse_name_buf_, sizeof(dexed_browse_name_buf_),
-                                      "DEXED%d", browsed_slot);
-                        else
-                            snprintf(dexed_browse_name_buf_, sizeof(dexed_browse_name_buf_), "%s",
-                                      name);
-                        dexed_browse_name_slot_ = browsed_slot;
-                    }
-                    snprintf(line2, sizeof(line2), "Load: %s", dexed_browse_name_buf_);
+                    TomThumbDrawText(disp_, 0, 15, folder_line, true);
+                    int  slot = ResolveDexedPresetSlot();
+                    char line2[24];
+                    if(slot < 0)
+                        snprintf(line2, sizeof(line2), "(empty)");
+                    else
+                        // "> " marks the preset that's loaded right now --
+                        // you stay in the folder after loading.
+                        snprintf(line2, sizeof(line2), "%s%s",
+                                  slot == dexed_loaded_preset_slot_ ? "> " : "",
+                                  DexedSlotName(slot));
+                    disp_->SetCursor(0, 20);
+                    WriteUpper(line2);
                 }
-                disp_->SetCursor(0, 20);
-                WriteUpper(line2);
             }
             else
             {
-                char line1[24];
-                if(dexed_loaded_preset_slot_ <= 0)
-                    snprintf(line1, sizeof(line1), "Now: (custom)");
-                else if(dexed_loaded_preset_slot_ <= DexedSynth::GetNumFactoryPresets())
-                    snprintf(line1, sizeof(line1), "Now: %s",
-                              DexedSynth::GetFactoryPresetName(dexed_loaded_preset_slot_ - 1));
-                else
-                {
-                    // Live in RAM already (dexed_ is currently playing
-                    // it) -- no SD read needed, unlike the "Load:" case
-                    // above for a highlighted-but-not-yet-applied slot.
-                    const char* name = DexedSynth::GetPresetDataName(dexed_->CapturePreset());
-                    if(strcmp(name, "?") == 0)
-                        // See the "Load:" case's own comment -- some
-                        // older saves genuinely predate real embedded
-                        // names and carry blank name bytes.
-                        snprintf(line1, sizeof(line1), "Now: DEXED%d", dexed_loaded_preset_slot_);
-                    else
-                        snprintf(line1, sizeof(line1), "Now: %s", name);
-                }
+                char line1[32];
+                snprintf(line1, sizeof(line1), "Now: %s", DexedSlotName(dexed_loaded_preset_slot_));
                 disp_->SetCursor(0, 20);
                 WriteUpper(line1);
                 if(dexed_preset_status_[0] != '\0')
@@ -6682,43 +6479,138 @@ void Ui::DrawDexedScreen()
                 }
             }
 
+            // Shared browse convention: K1 scrolls groups/folders, K2 the
+            // presets inside one, B1 backs out a level, B2 opens/loads.
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
+                             (at_groups || at_folders) ? "Scroll" : "", "", "",
+                             in_folder ? "Scroll" : "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             browsing_load ? "Back" : "", "", "",
+                             !browsing_load ? "Load" : (in_folder ? "Load" : "Open"));
+            break;
+        }
+        case DexedParamPage::User:
+        {
+            if(!PerformanceStore::IsCardPresent())
             {
-                const char* b1_label;
-                if(save_load_mode_ == SaveLoadMode::Idle)
-                    b1_label = "Save";
-                else if(load_chooser && !load_new_selected_)
-                    b1_label = "Select";
-                else
-                    // Back everywhere else within Files' own nested
-                    // browsing (group chooser, folder list, and an open
-                    // folder) -- Button2 is "Open" at the group/folder
-                    // levels instead (drills deeper), see
-                    // OnButton1Short()/HandleButton2()'s own comments on
-                    // this split.
-                    b1_label = "Back";
-                const char* b2_label;
-                if(save_load_mode_ == SaveLoadMode::Idle)
-                    b2_label = "Load";
-                else if(choosing_save)
-                    b2_label = "Hold=Save";
-                else if(browsing_group || browsing_folders)
-                    b2_label = "Open";
-                else if(dexed_files_ready)
-                    // "Preview/Load" -- ShortPressFn/LongPressFn, same
-                    // convention as Layer:Status's "Pause/Overdub".
-                    b2_label = "Preview/Load";
-                else if(browsing_import && can_hold_load)
-                    b2_label = "Hold=Import";
-                else if(can_hold_load)
-                    b2_label = "Hold=Load";
-                else
-                    b2_label = "";
-
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
-                                 (choosing_save || browsing_load) ? "Scroll" : "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1_label, "", "",
-                                 b2_label);
+                disp_->SetCursor(0, 20);
+                WriteUpper("No card");
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
+                break;
             }
+            if(dexed_preset_slots_dirty_)
+                RefreshDexedPresetSlots();
+
+            int  loaded        = dexed_loaded_preset_slot_;
+            bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
+            bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
+
+            // Saving keeps its hold-to-confirm bar; loading is a plain tap.
+            if(pod_->button2.Pressed() && choosing_save)
+            {
+                float held = pod_->button2.TimeHeldMs();
+                int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
+                disp_->SetCursor(0, 20);
+                WriteUpper("Hold: Save...");
+                disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
+                if(w > 0)
+                    disp_->DrawRect(1, 31, w, 33, true, true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+                break;
+            }
+
+            TomThumbDrawText(disp_, 0, 15, "User Presets", true);
+
+            if(choosing_save)
+            {
+                bool can_overwrite = loaded > DexedSynth::GetNumFactoryPresets();
+                char line1[24], line2[16];
+                snprintf(line1, sizeof(line1), "%c Overwrite%s", !save_as_new_ ? '>' : ' ',
+                          can_overwrite ? "" : " (n/a)");
+                snprintf(line2, sizeof(line2), "%c Save New", save_as_new_ ? '>' : ' ');
+                disp_->SetCursor(0, 24);
+                WriteUpper(line1);
+                disp_->SetCursor(0, 34);
+                WriteUpper(line2);
+            }
+            else if(browsing_load)
+            {
+                char line[24];
+                if(dexed_user_cursor_ == 0)
+                    snprintf(line, sizeof(line), "New");
+                else
+                {
+                    int slot = dexed_preset_user_slots_[dexed_user_cursor_ - 1];
+                    snprintf(line, sizeof(line), "%s%s", slot == loaded ? "> " : "",
+                              DexedSlotName(slot));
+                }
+                disp_->SetCursor(0, 24);
+                WriteUpper(line);
+            }
+            else
+            {
+                char line1[32];
+                snprintf(line1, sizeof(line1), "Now: %s", DexedSlotName(loaded));
+                disp_->SetCursor(0, 24);
+                WriteUpper(line1);
+                if(dexed_preset_status_[0] != '\0')
+                {
+                    disp_->SetCursor(0, 36);
+                    WriteUpper(dexed_preset_status_);
+                }
+            }
+
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, choosing_save ? "Select" : "",
+                             "", "", browsing_load ? "Scroll" : "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             save_load_mode_ == SaveLoadMode::Idle ? "Save" : "Back", "", "",
+                             choosing_save ? "Hold=Save" : "Load");
+            break;
+        }
+        case DexedParamPage::Import:
+        {
+            if(!PerformanceStore::IsCardPresent())
+            {
+                disp_->SetCursor(0, 20);
+                WriteUpper("No card");
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "Retry");
+                break;
+            }
+            if(dexed_import_files_dirty_)
+                RefreshDexedImportFiles();
+            if(pod_->button2.Pressed() && dexed_import_file_count_ > 0)
+            {
+                float held = pod_->button2.TimeHeldMs();
+                int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
+                TomThumbDrawText(disp_, 0, 15, "Hold: Import...", true);
+                disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
+                if(w > 0)
+                    disp_->DrawRect(1, 21, w, 23, true, true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+                break;
+            }
+
+            TomThumbDrawText(disp_, 0, 15, "From DEXED IMPORT/", true);
+            char line[48];
+            if(dexed_import_file_count_ <= 0)
+                snprintf(line, sizeof(line), "(no .syx files)");
+            else
+                snprintf(line, sizeof(line), "%s", dexed_import_names_[dexed_import_cursor_]);
+            disp_->SetCursor(0, 24);
+            WriteUpper(line);
+            if(dexed_preset_status_[0] != '\0')
+            {
+                disp_->SetCursor(0, 36);
+                WriteUpper(dexed_preset_status_);
+            }
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "",
+                             dexed_import_file_count_ > 0 ? "Scroll" : "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "",
+                             dexed_import_file_count_ > 0 ? "Hold=Import" : "");
             break;
         }
         default: break;
@@ -10434,12 +10326,13 @@ void Ui::RefreshDexedPresetSlots()
         case DexedFilesGroup::Dexed:
             folder_count = DexedSynth::GetFactoryCategoryCount(ResolveDexedRealCategory());
             break;
-        case DexedFilesGroup::Imports: folder_count = dexed_import_folder_count_; break;
-        case DexedFilesGroup::User:
-        default: folder_count = dexed_preset_user_slot_count_; break;
+        case DexedFilesGroup::Imports:
+        default: folder_count = dexed_import_folder_count_; break;
     }
     if(dexed_preset_cursor_ >= folder_count)
         dexed_preset_cursor_ = folder_count > 0 ? folder_count - 1 : 0;
+    if(dexed_user_cursor_ > dexed_preset_user_slot_count_)
+        dexed_user_cursor_ = dexed_preset_user_slot_count_; // index 0 is "New"
     dexed_preset_slots_dirty_ = false;
 }
 
@@ -10461,6 +10354,7 @@ int Ui::ResolveDexedPresetSlot() const
             return DexedSynth::GetFactoryCategorySlot(ResolveDexedRealCategory(),
                                                         dexed_preset_cursor_);
         case DexedFilesGroup::Imports:
+        default:
         {
             if(dexed_preset_folder_cursor_ < 0
                || dexed_preset_folder_cursor_ >= dexed_import_folder_count_)
@@ -10470,11 +10364,6 @@ int Ui::ResolveDexedPresetSlot() const
             int slot = f.first_slot + dexed_preset_cursor_;
             return slot <= f.last_slot ? slot : -1;
         }
-        case DexedFilesGroup::User:
-        default:
-            if(dexed_preset_cursor_ < 0 || dexed_preset_cursor_ >= dexed_preset_user_slot_count_)
-                return -1;
-            return dexed_preset_user_slots_[dexed_preset_cursor_];
     }
 }
 
@@ -10500,8 +10389,10 @@ void Ui::TriggerSaveDexedPreset(bool force_new)
     if(ok)
     {
         dexed_loaded_preset_slot_ = slot;
-        snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Saved %d", slot);
+        dexed_browse_name_slot_   = -2; // its name may have changed
+        snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Saved DEXED%d", slot);
         dexed_preset_slots_dirty_ = true; // a new slot may now exist
+        MarkDexedClean();
     }
     else
     {
@@ -10518,43 +10409,77 @@ void Ui::TriggerNewDexedPreset()
     dexed_loaded_preset_slot_ = 1;
     snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "New (%s)",
               DexedSynth::GetFactoryPresetName(0));
+    MarkDexedClean();
 }
 
-void Ui::TriggerLoadDexedPreset()
+void Ui::LoadDexedSlot(int slot)
 {
-    if(!dexed_)
+    if(!dexed_ || slot < 1)
         return;
-    if(dexed_import_selected_)
-    {
-        TriggerDexedSyxImport();
-        return;
-    }
-    if(!load_browsing_files_)
-    {
-        TriggerNewDexedPreset();
-        return;
-    }
-    int slot = ResolveDexedPresetSlot();
-    if(slot < 0)
-        return;
-
     DexedSynth::DexedPresetData preset;
     bool ok = PerformanceStore::LoadDexedPreset(slot, &preset);
     if(ok)
     {
         dexed_->ApplyPreset(preset);
         dexed_loaded_preset_slot_ = slot;
-        if(slot <= DexedSynth::GetNumFactoryPresets())
-            snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Loaded %s",
-                      DexedSynth::GetFactoryPresetName(slot - 1));
-        else
-            snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Loaded DEXED%d", slot);
+        snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Loaded %s",
+                  DexedSlotName(slot));
+        MarkDexedClean();
     }
     else
     {
         snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Fail:%s",
                   PerformanceStore::GetLastError());
     }
+}
+
+const char* Ui::DexedSlotName(int slot)
+{
+    if(slot <= 0)
+        return "(custom)";
+    if(slot <= DexedSynth::GetNumFactoryPresets())
+        return DexedSynth::GetFactoryPresetName(slot - 1);
+    // A user slot's name lives inside its own saved file -- read it once
+    // per distinct slot, not once per Draw() tick (see
+    // dexed_browse_name_slot_'s own comment). The loaded slot is already
+    // live in RAM, so no SD read for that one.
+    if(slot != dexed_browse_name_slot_)
+    {
+        const char* name = "?";
+        DexedSynth::DexedPresetData preset;
+        if(slot == dexed_loaded_preset_slot_ && dexed_)
+            name = DexedSynth::GetPresetDataName(dexed_->CapturePreset());
+        else if(PerformanceStore::LoadDexedPreset(slot, &preset))
+            name = DexedSynth::GetPresetDataName(preset);
+        // Older saves can carry blank name bytes -- show "DEXEDn" (the
+        // Global:SdMgmt short code) rather than a bare "?".
+        if(strcmp(name, "?") == 0)
+            snprintf(dexed_browse_name_buf_, sizeof(dexed_browse_name_buf_), "DEXED%d", slot);
+        else
+            snprintf(dexed_browse_name_buf_, sizeof(dexed_browse_name_buf_), "%s", name);
+        dexed_browse_name_slot_ = slot;
+    }
+    return dexed_browse_name_buf_;
+}
+
+Ui::EditSnapshot Ui::DexedSnapshot() const
+{
+    EditSnapshot s;
+    if(!dexed_)
+        return s;
+    DexedSynth::DexedPresetData p = dexed_->CapturePreset();
+    for(size_t i = 0; i < sizeof(p.patch); i++)
+        s.Add(p.patch[i]);
+    s.Add(p.reverb_send01);
+    s.Add(p.output_level01);
+    s.Add(p.filter_mode);
+    s.Add(p.filter_cutoff01);
+    s.Add(p.filter_res01);
+    s.Add(p.pan01);
+    s.Add(p.delay_send01);
+    s.Add(p.fold_amount01);
+    s.Add(p.fold_trim01);
+    return s;
 }
 
 void Ui::RefreshDexedImportFiles()
@@ -10634,6 +10559,8 @@ void Ui::TriggerDexedSyxImport()
     dexed_->ApplyPreset(presets[count - 1]);
     dexed_loaded_preset_slot_ = last_slot;
     dexed_preset_slots_dirty_ = true; // new user slot(s) now exist
+    dexed_browse_name_slot_   = -2;
+    MarkDexedClean();
 
     // Every import gets its own named folder (Files -> Imports group),
     // even a single-voice one -- named after the .syx file itself (the

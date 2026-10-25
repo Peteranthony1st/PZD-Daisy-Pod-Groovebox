@@ -592,12 +592,17 @@ class Ui
         // the deep-editing detour sits next to the save/load workflow
         // it's meant to feed into, without being the very last page.
         Advanced,
-        // Save/Load the whole Dexed sound as a preset, folder-browsing
-        // 150+ factory presets by real sound-type category plus a
-        // "User" folder of SD saves -- same two-level browsing shape
-        // the removed FmSynth's own Preset page used, generalized to
-        // more/larger categories.
+        // SysEx import: K2 scrolls the .syx files in DEXED IMPORT/, hold
+        // B2 imports one (each becomes its own folder under the Preset
+        // page's Imports group). Same place as the Sampler's own Import.
+        Import,
+        // Load-only browser, shared browse convention: groups (Roms /
+        // Dexed / Imports) -> folders -> presets. K1 scrolls groups and
+        // folders, K2 the presets in an open folder, a tap loads and stays.
         Preset,
+        // Your own saves (+ New): B1 saves (K1 Overwrite/Save New, hold
+        // B2), B2 loads from a list that starts with "New".
+        User,
         kCount
     };
 
@@ -760,14 +765,14 @@ class Ui
     // Imports: one folder per completed SysEx import (see
     //   PerformanceStore::ListDexedImportFolders()), each holding just
     //   that one import's own contiguous slot range.
-    // User: every USER slot that ISN'T part of a recorded import folder
-    //   -- hand-saved presets only, filtered in RefreshDexedPresetSlots().
+    // Hand-saved presets (every USER slot that ISN'T part of a recorded
+    // import folder, filtered in RefreshDexedPresetSlots()) live on the
+    // separate User page instead.
     enum class DexedFilesGroup
     {
         Roms,
         Dexed,
         Imports,
-        User,
         kCount
     };
 
@@ -924,6 +929,8 @@ class Ui
         DexedMidi, // K1 only -- which MIDI channel this engine listens on
         DexedAdvanced, // entry point only -- see Screen::DexedOperator instead
         DexedPreset, // browses a list directly, no pickup used
+        DexedUser,   // ditto -- the User page's own list / save choice
+        DexedImport, // ditto -- the Import page's file list
         // Screen::DexedOperator -- one context per sub-page, shared
         // across all 6 operators (branch internally on dexed_op_index_),
         // same "one context, branch on which target" idiom LayerStatus
@@ -1392,18 +1399,16 @@ class Ui
     // slot. Same non-destructive reasoning as TriggerSave()'s own
     // force_new.
     void TriggerSaveDexedPreset(bool force_new = false);
-    // Load chooser confirmed with "New" highlighted -- applies factory
-    // preset 0, same fresh-start convention as the removed
-    // TriggerNewFmPreset().
+    // User page's "New" entry -- applies factory preset 0, same
+    // fresh-start convention as the removed TriggerNewFmPreset().
     void TriggerNewDexedPreset();
-    // Short tap while a preset is highlighted inside an open folder:
-    // applies it immediately to the live engine WITHOUT leaving the
-    // browser (live preview, scrolling K1 + tapping B2 auditions one
-    // preset after another) -- the SAME function as the hold-to-commit
-    // gesture, which additionally exits back to Idle. Confirmed as the
-    // real behavior of the removed FmSynth's own preset browser (not a
-    // separate non-committing "audition" primitive), reused as-is here.
-    void TriggerLoadDexedPreset();
+    // Loads one preset by real slot number (factory or user), shared by
+    // the Preset and User pages.
+    void LoadDexedSlot(int slot);
+    // Screen name for a slot: factory names straight from the firmware
+    // table, a user slot's from its own file (cached per slot, see
+    // dexed_browse_name_slot_), "DEXEDn" if it has no embedded name.
+    const char* DexedSlotName(int slot);
     // Re-scans DXIMPORT/ on the SD card for .syx files -- called once on
     // entry to the Preset page's own Import file list, same pattern as
     // RefreshGranularImportFiles().
@@ -1417,9 +1422,7 @@ class Ui
     // becomes 32. The LAST voice imported is also applied live
     // (DexedSynth::ApplyPreset()) and becomes dexed_loaded_preset_slot_,
     // the same "land on something real" feel as TriggerLoadDexedPreset()'s
-    // own preview -- called from there when dexed_import_selected_ is
-    // set, so every existing Button1/Button2 call site reaches this
-    // automatically with no per-call-site branching needed.
+    // own preview.
     void TriggerDexedSyxImport();
 
     // --- Ensemble presets (EnsembleParamPage::Preset) --------------------
@@ -1967,8 +1970,8 @@ class Ui
     // chooser, true = drilled into the flat file list (one level, unlike
     // Files' own two -- there's no factory-category structure for an
     // arbitrary SD folder).
-    bool dexed_import_selected_ = false;
-    bool dexed_import_browsing_ = false;
+    // User page list cursor: 0 = "New", 1.. = dexed_preset_user_slots_.
+    int  dexed_user_cursor_     = 0;
     int  dexed_import_cursor_   = 0; // which .syx file is highlighted
     char dexed_import_names_[kMaxImportFiles][PerformanceStore::kMaxImportSyxNameLen + 1] = {};
     int  dexed_import_file_count_  = 0;
@@ -2136,7 +2139,7 @@ class Ui
     // padding bytes can never make two equal sounds look different.
     struct EditSnapshot
     {
-        uint8_t bytes[192];
+        uint8_t bytes[256];
         int     len = 0;
         template <typename T>
         void Add(const T& v)
@@ -2171,6 +2174,13 @@ class Ui
         return ensemble_baseline_.len > 0 && !(EnsembleSnapshot() == ensemble_baseline_);
     }
     EditSnapshot ensemble_baseline_ = {};
+    EditSnapshot dexed_baseline_    = {};
+    EditSnapshot DexedSnapshot() const;
+    void         MarkDexedClean() { dexed_baseline_ = DexedSnapshot(); }
+    bool         DexedUnsaved() const
+    {
+        return dexed_baseline_.len > 0 && !(DexedSnapshot() == dexed_baseline_);
+    }
     EditSnapshot GranularSnapshot() const;
     void         MarkGranularClean();
     bool         GranularUnsaved() const;
