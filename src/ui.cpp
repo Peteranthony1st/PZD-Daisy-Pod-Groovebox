@@ -1390,6 +1390,8 @@ void Ui::OnButton1Short()
             }
             else if(global_page_ == GlobalPage::Bypass)
                 bypass_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
+            else if(global_page_ == GlobalPage::Delay)
+                delay_sync_ = !delay_sync_; // Time: free ms <-> note values
             else if(global_page_ == GlobalPage::ReverbTone)
                 global_reverb_tone_target_b_ = false; // knobs -> PreDelay/PreFilter
             else if(global_page_ == GlobalPage::Speed)
@@ -1999,6 +2001,8 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case GlobalPage::Filter: return KnobContext::GlobalFilter;
                 case GlobalPage::Reverb: return KnobContext::GlobalReverb;
                 case GlobalPage::Delay: return KnobContext::GlobalDelay;
+                case GlobalPage::DelayReverb: return KnobContext::GlobalDelayReverb;
+                case GlobalPage::DelayTone: return KnobContext::GlobalDelayTone;
                 case GlobalPage::Bypass:
                     return bypass_fx_target_delay_ ? KnobContext::GlobalBypassDelay
                                                       : KnobContext::GlobalBypassReverb;
@@ -2197,6 +2201,13 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             break;
         case KnobContext::GlobalReverb:
             k1_pickup_raw_[i] = reverb_size01_;
+            break;
+        case KnobContext::GlobalDelayReverb:
+            k1_pickup_raw_[i] = delay_to_reverb01_;
+            break;
+        case KnobContext::GlobalDelayTone:
+            k1_pickup_raw_[i] = delay_pingpong01_;
+            k2_pickup_raw_[i] = delay_tone01_;
             break;
         case KnobContext::GlobalBypassReverb:
             k1_pickup_raw_[i] = bypass_reverb_send01_;
@@ -2851,6 +2862,18 @@ void Ui::ApplyKnobs()
                     delay_time01_ = Clampf(k1, 0.f, 1.f);
                 if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
                     delay_feedback01_ = Clampf(k2, 0.f, 1.f);
+            }
+            else if(global_page_ == GlobalPage::DelayReverb)
+            {
+                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    delay_to_reverb01_ = Clampf(k1, 0.f, 1.f);
+            }
+            else if(global_page_ == GlobalPage::DelayTone)
+            {
+                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    delay_pingpong01_ = Clampf(k1, 0.f, 1.f);
+                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    delay_tone01_ = Clampf(k2, 0.f, 1.f);
             }
             else if(global_page_ == GlobalPage::Bypass)
             {
@@ -4698,6 +4721,10 @@ void Ui::DrawGlobalScreen()
         title = "Global:Reverb";
     else if(global_page_ == GlobalPage::Delay)
         title = "Global:Delay";
+    else if(global_page_ == GlobalPage::DelayReverb)
+        title = "Global:Dly-Rev";
+    else if(global_page_ == GlobalPage::DelayTone)
+        title = "Global:DlyTone";
     else if(global_page_ == GlobalPage::Bypass)
         title = "Global:Bypass";
     else if(global_page_ == GlobalPage::ReverbTone)
@@ -4808,11 +4835,38 @@ void Ui::DrawGlobalScreen()
     // Shared Time/Feedback for the ONE cross-feedback delay bus every
     // engine/layer sends into (see main.cpp's fx_delay_l/r).
     {
+        if(delay_sync_)
+        {
+            snprintf(line1, sizeof(line1), "Sync: %d BPM", (int)(tempo_->GetBpm() + 0.5f));
+            disp_->SetCursor(0, 16);
+            WriteUpper(line1);
+        }
         char time_val[12], fb_val[8];
         FormatDelayTime(delay_time01_, time_val, sizeof(time_val));
         snprintf(fb_val, sizeof(fb_val), "%d%%", (int)(delay_feedback01_ * 100.f + 0.5f));
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Time", time_val, fb_val,
                          "Feedback");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                         delay_sync_ ? "Sync On" : "Sync Off", "", "", "");
+    }
+    else if(global_page_ == GlobalPage::DelayReverb)
+    // How much of the delay's output also feeds the reverb -- so echoes
+    // sit in the same space as the dry sound (see main.cpp).
+    {
+        char amt_val[8];
+        snprintf(amt_val, sizeof(amt_val), "%d%%", (int)(delay_to_reverb01_ * 100.f + 0.5f));
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Dly>Rev", amt_val, "", "");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+    }
+    else if(global_page_ == GlobalPage::DelayTone)
+    // Ping-Pong (0 = echoes follow the source's own pan, 100% = always
+    // bounce L/R) and Tone (each repeat darker) -- see SharedDelay::Bus.
+    {
+        char pp_val[8], tone_val[8];
+        snprintf(pp_val, sizeof(pp_val), "%d%%", (int)(delay_pingpong01_ * 100.f + 0.5f));
+        snprintf(tone_val, sizeof(tone_val), "%d%%", (int)(delay_tone01_ * 100.f + 0.5f));
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "PingPong", pp_val, tone_val,
+                         "Tone");
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
     }
     else if(global_page_ == GlobalPage::Bypass)
@@ -4885,12 +4939,15 @@ void Ui::DrawGlobalScreen()
     }
 }
 
-void Ui::FormatDelayTime(float time01, char* out, size_t out_size)
+void Ui::FormatDelayTime(float time01, char* out, size_t out_size) const
 {
     if(SharedDelay::IsOff(time01))
         snprintf(out, out_size, "Off");
+    else if(delay_sync_)
+        snprintf(out, out_size, "%s", SharedDelay::SyncName(SharedDelay::SyncIndex(time01)));
     else
-        snprintf(out, out_size, "%dms", (int)(SharedDelay::TimeMs(time01) + 0.5f));
+        snprintf(out, out_size, "%dms",
+                  (int)(SharedDelay::TimeMs(time01, false, tempo_->GetBpm()) + 0.5f));
 }
 
 void Ui::DrawFileScreen()
@@ -10841,7 +10898,7 @@ void Ui::TriggerExport()
                                             reverb_prefilter01_, reverb_input_diffusion1_01_,
                                             reverb_input_diffusion2_01_,
                                             reverb_decay_diffusion01_, reverb_damping01_,
-                                            delay_time01_, delay_feedback01_,
+                                            GetDelaySettings(), delay_to_reverb01_,
                                             /*for_microdexed=*/false, project_speed_,
                                             &Ui::OnSaveLoadProgress);
     export_op_in_progress_  = false;
@@ -10868,7 +10925,7 @@ void Ui::TriggerExportMicroDexed()
                                             reverb_prefilter01_, reverb_input_diffusion1_01_,
                                             reverb_input_diffusion2_01_,
                                             reverb_decay_diffusion01_, reverb_damping01_,
-                                            delay_time01_, delay_feedback01_,
+                                            GetDelaySettings(), delay_to_reverb01_,
                                             /*for_microdexed=*/true, project_speed_,
                                             &Ui::OnSaveLoadProgress);
     export_op_in_progress_  = false;

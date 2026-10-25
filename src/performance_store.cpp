@@ -5113,8 +5113,8 @@ bool ExportWav(TempoClock&  tempo,
               float        reverb_input_diffusion2_01,
               float        reverb_decay_diffusion01,
               float        reverb_damping01,
-              float        delay_time01,
-              float        delay_feedback01,
+              const SharedDelay::Settings& delay,
+              float        delay_to_reverb01,
               bool         for_microdexed,
               float        project_speed,
               ProgressFn   on_progress)
@@ -5283,38 +5283,13 @@ bool ExportWav(TempoClock&  tempo,
     export_reverb.SetDecayDiffusion01(Clampf(reverb_decay_diffusion01, 0.f, 1.f));
     export_reverb.SetDamping01(Clampf(reverb_damping01, 0.f, 1.f));
 
-    // Local shared delay bus, mirroring main.cpp's fx_delay_l/r -- same
-    // cross-feedback ("ping-pong") pair, same reasoning as export_reverb
-    // above for why this is static/SDRAM-placed/re-zeroed every call.
-    // kExportMaxDelaySamples must match main.cpp's own kMaxDelaySamples
-    // (1.5s @ 48kHz) -- not shared via a header since neither file
-    // exposes its constant, just kept in sync by this comment.
-    constexpr size_t kExportMaxDelaySamples = 72000;
-    static daisysp::DelayLine<float, kExportMaxDelaySamples> DSY_SDRAM_BSS export_delay_l;
-    static daisysp::DelayLine<float, kExportMaxDelaySamples> DSY_SDRAM_BSS export_delay_r;
-    memset(&export_delay_l, 0, sizeof(export_delay_l));
-    memset(&export_delay_r, 0, sizeof(export_delay_r));
-    export_delay_l.Init();
-    export_delay_r.Init();
-    // Same Time curve/Feedback cap as main.cpp's AudioCallback() -- see
-    // its own comment for why Time is exponential (more resolution at
-    // short, slapback-style delays) and Feedback is capped below 1.0.
-    constexpr float kExportMinDelayMs = 20.f;
-    constexpr float kExportMaxDelayMs = (float)kExportMaxDelaySamples / 48000.f * 1000.f;
-    constexpr float kExportMaxDelayFeedback = 0.9f;
-    float export_delay_ms = kExportMinDelayMs
-                             * powf(kExportMaxDelayMs / kExportMinDelayMs,
-                                     Clampf(delay_time01, 0.f, 1.f));
-    float export_delay_samples = export_delay_ms * 0.001f * (float)sample_rate;
-    export_delay_samples
-        = export_delay_samples < 1.f
-              ? 1.f
-              : export_delay_samples > (float)kExportMaxDelaySamples - 1.f
-                    ? (float)kExportMaxDelaySamples - 1.f
-                    : export_delay_samples;
-    export_delay_l.SetDelay(export_delay_samples);
-    export_delay_r.SetDelay(export_delay_samples);
-    float export_delay_feedback = Clampf(delay_feedback01, 0.f, 1.f) * kExportMaxDelayFeedback;
+    // Local shared delay bus -- the exact same SharedDelay::Bus class as
+    // main.cpp's fx_delay, so an export sounds like the Pod. Static/SDRAM/
+    // re-cleared every call, same reasoning as export_reverb above.
+    static SharedDelay::Bus DSY_SDRAM_BSS export_delay;
+    export_delay.Init();
+    export_delay.Configure(delay, tempo.GetBpm(), (float)sample_rate);
+    const bool export_delay_off = SharedDelay::IsOff(delay.time01);
 
     // Dummy input/ticks for the offline Process() calls below -- a
     // Playing-state layer never reads either (confirmed against
@@ -5341,7 +5316,7 @@ bool ExportWav(TempoClock&  tempo,
     static float   reverb_send_l[kChunkSamples] DSY_SDRAM_BSS;
     static float   reverb_send_r[kChunkSamples] DSY_SDRAM_BSS;
     // Same idea as reverb_send_l/r above, now processed through
-    // export_delay_l/r below (mirroring main.cpp's fx_delay_l/r) so
+    // export_delay below (the same SharedDelay::Bus as main.cpp) so
     // exported WAVs include Delay too, not just Reverb.
     static float   delay_send_l[kChunkSamples] DSY_SDRAM_BSS;
     static float   delay_send_r[kChunkSamples] DSY_SDRAM_BSS;
@@ -5409,21 +5384,23 @@ bool ExportWav(TempoClock&  tempo,
 
             for(UINT i = 0; i < n; i++)
             {
+                // Same order as main.cpp's AudioCallback(): delay first,
+                // so its echoes can also feed the reverb (Dly-Rev).
+                if(!export_delay_off)
+                {
+                    float delay_wet_l, delay_wet_r;
+                    export_delay.Process(delay_send_l[i], delay_send_r[i], &delay_wet_l,
+                                         &delay_wet_r);
+                    chunk_l[i] += delay_wet_l;
+                    chunk_r[i] += delay_wet_r;
+                    reverb_send_l[i] += delay_wet_l * delay_to_reverb01;
+                    reverb_send_r[i] += delay_wet_r * delay_to_reverb01;
+                }
+
                 float rev_wet_l, rev_wet_r;
                 export_reverb.Process(reverb_send_l[i], reverb_send_r[i], &rev_wet_l, &rev_wet_r);
                 chunk_l[i] += rev_wet_l;
                 chunk_r[i] += rev_wet_r;
-
-                // Same cross-feedback delay as main.cpp's AudioCallback()
-                // -- read both lines before either Write() so the ping-
-                // pong feedback uses this sample's actual output, not a
-                // half-updated value from writing one channel first.
-                float delay_wet_l = export_delay_l.Read();
-                float delay_wet_r = export_delay_r.Read();
-                export_delay_l.Write(delay_send_l[i] + delay_wet_r * export_delay_feedback);
-                export_delay_r.Write(delay_send_r[i] + delay_wet_l * export_delay_feedback);
-                chunk_l[i] += delay_wet_l;
-                chunk_r[i] += delay_wet_r;
 
                 float l = chunk_l[i];
                 float r = chunk_r[i];

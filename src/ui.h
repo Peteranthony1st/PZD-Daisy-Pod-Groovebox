@@ -168,6 +168,18 @@ class Ui
     // runaway self-oscillation in the cross-feedback pair.
     float GetDelayTime01() const { return delay_time01_; }
     float GetDelayFeedback01() const { return delay_feedback01_; }
+    // Everything the shared delay bus needs, for main.cpp and WAV export.
+    SharedDelay::Settings GetDelaySettings() const
+    {
+        SharedDelay::Settings s;
+        s.time01     = delay_time01_;
+        s.feedback01 = delay_feedback01_;
+        s.sync       = delay_sync_;
+        s.pingpong01 = delay_pingpong01_;
+        s.tone01     = delay_tone01_;
+        return s;
+    }
+    float GetDelayToReverb01() const { return delay_to_reverb01_; }
     // Which MIDI channel each engine responds to -- -1 = Omni (respond to
     // everything, the default, matching this project's own behavior
     // before per-engine routing existed). 0-15 = a specific channel
@@ -185,8 +197,9 @@ class Ui
     float GetBypassReverbSend01() const { return bypass_reverb_send01_; }
     // Same, into the shared delay bus (Global:Bypass, B2).
     float GetBypassDelaySend01() const { return bypass_delay_send01_; }
-    // Shared delay Time for the screen: "Off" at 0, otherwise ms.
-    static void FormatDelayTime(float time01, char* out, size_t out_size);
+    // Shared delay Time for the screen: "Off" at 0, otherwise ms, or the
+    // note value (e.g. "1/8D") with Sync on.
+    void FormatDelayTime(float time01, char* out, size_t out_size) const;
     // Gain applied to the Bypass dry monitor mix -- uses whichever layer
     // is currently selected on the Home screen, since Bypass is mainly
     // used to check levels right before recording into that layer (see
@@ -359,8 +372,14 @@ class Ui
         // Diffusion 1+2) so needs no toggle.
         ReverbTone,
         ReverbDiffusion,
-        // The shared delay bus: K1 Time, K2 Feedback.
+        // How much of the shared delay's output also feeds the shared
+        // reverb (K1), so echoes sit in the same space as the dry sound.
+        DelayReverb,
+        // The shared delay bus: K1 Time (ms, or a note value with Sync
+        // on), K2 Feedback, B1 Sync on/off.
         Delay,
+        // Delay character: K1 Ping-Pong, K2 Tone (darker repeats).
+        DelayTone,
         // Bypass (live input monitor) sends into the shared busses --
         // same shape as every engine's own FX page: B1 = Reverb (K1
         // Send, K2 shared Size), B2 = Delay (K1 Send, K2 shared Time).
@@ -860,7 +879,9 @@ class Ui
         GlobalTempo,
         GlobalFilter,
         GlobalReverb,
-        GlobalDelay, // Global:Delay -- Time + Feedback
+        GlobalDelay,       // Global:Delay -- Time + Feedback
+        GlobalDelayReverb, // Global:Dly-Rev -- Delay -> Reverb amount
+        GlobalDelayTone,   // Global:DlyTone -- Ping-Pong + Tone
         // Global:Reverb Tone's own Button-toggled pair -- see
         // global_reverb_tone_target_b_.
         GlobalReverbTonePreDelay,     // PreDelay + PreFilter
@@ -1584,6 +1605,10 @@ class Ui
     // own delay_bypassed), so a fresh boot doesn't pay delay's fixed
     // per-sample cost until you actually turn the knob up.
     float delay_feedback01_ = 0.35f; // shared delay bus's Feedback, see GetDelayFeedback01()
+    bool  delay_sync_        = false; // Global:Delay B1 -- Time follows the BPM
+    float delay_pingpong01_  = 0.f;   // Global:DlyTone K1, see SharedDelay::Bus
+    float delay_tone01_      = 0.f;   // Global:DlyTone K2
+    float delay_to_reverb01_ = 0.f;   // Global:Dly-Rev K1
     // -1 = Omni (default) -- see GetDexedMidiChannel()/GetGranularMidiChannel()/
     // GetSampleSynthMidiChannel().
     int dexed_midi_channel_        = -1;

@@ -7,6 +7,7 @@
 #include "dexed_synth.h"
 #include "ensemble_synth.h"
 #include "sample_synth.h"
+#include "shared_delay.h"
 
 // SD card save/load for a whole "performance" (all layers' audio plus
 // tempo/global/per-layer settings) as one flat binary file per slot.
@@ -735,8 +736,8 @@ bool ExportWav(TempoClock&  tempo,
                float        reverb_input_diffusion2_01,
                float        reverb_decay_diffusion01,
                float        reverb_damping01,
-               float        delay_time01,
-               float        delay_feedback01,
+               const SharedDelay::Settings& delay,
+               float        delay_to_reverb01,
                bool         for_microdexed,
                float        project_speed,
                ProgressFn   on_progress = nullptr);
