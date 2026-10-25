@@ -184,6 +184,49 @@ int  NextFreeGranularPresetSlot();
 bool DeleteGranularPreset(int slot, int* loaded_slot_inout = nullptr);
 bool DuplicateGranularPreset(int slot, int* out_new_slot, ProgressFn on_progress = nullptr);
 
+// Grains Preset-page library: folders under GRAINS/ holding the same
+// audio-inclusive preset files as the numbered user saves above, but
+// listed by name. GRAINS/PRESETS/ holds the starter presets (any *.DAT
+// dropped in there shows up); saved captures fill GRAINS/CAPTURED1,
+// CAPTURED2, ... (CAPnnn.DAT, kSampleBankCapacity-style 32 per folder,
+// the next folder created automatically once every existing one is full).
+constexpr const char* kGranularStarterFolder  = "PRESETS";
+constexpr int         kGranularCapturedPerBank = 32;
+constexpr int         kMaxGranularCapturedBanks = 99;
+constexpr int         kMaxGranularLibNameLen   = 60; // same as kMaxImportWavNameLen
+// Existing CAPTUREDn numbers, ascending.
+int  ListGranularCapturedBanks(uint8_t* out_numbers, int max_out);
+// *.DAT files in GRAINS/<folder>, sorted by name. Names longer than
+// kMaxGranularLibNameLen are skipped, not truncated.
+int  ListGranularLibraryItems(const char* folder, char out_names[][kMaxGranularLibNameLen + 1],
+                              int max_out);
+bool LoadGranularLibraryPreset(const char*                         folder,
+                               const char*                         name,
+                               GranularEngine::GranularPresetData* out_preset,
+                               float*                              out_audio_l,
+                               float*                              out_audio_r,
+                               size_t                              audio_capacity,
+                               size_t*                             out_audio_len,
+                               ProgressFn                          on_progress = nullptr);
+// Writes into the lowest CAPTUREDn with a free CAPnnn.DAT, creating the
+// next folder when all are full. out_folder/out_name receive where it
+// landed (e.g. "CAPTURED1", "CAP004.DAT").
+bool SaveGranularCapture(const GranularEngine::GranularPresetData& preset,
+                         const float*                              audio_l,
+                         const float*                              audio_r,
+                         size_t                                    audio_len,
+                         char*                                     out_folder,
+                         size_t                                    out_folder_size,
+                         char*                                     out_name,
+                         size_t                                    out_name_size,
+                         ProgressFn                                on_progress = nullptr);
+// Global:SdMgmt's view into Grains captures -- CAPnnn.DAT (n = 1..32) in
+// GRAINS/CAPTURED<bank>, same delete-then-close-the-gap and duplicate-
+// into-the-same-folder shape as DeleteSampleSynthCapture()/
+// DuplicateSampleSynthCapture().
+bool DeleteGranularCapture(int bank, int n);
+bool DuplicateGranularCapture(int bank, int n, int* out_new_n, ProgressFn on_progress = nullptr);
+
 // Dexed presets: parameters only, no audio -- same shape as the
 // removed FmSynth/PadSynth presets, including the same factory range:
 // 1..DexedSynth::GetNumFactoryPresets() are the permanently read-only,

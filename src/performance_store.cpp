@@ -1255,6 +1255,25 @@ struct EnsemblePresetFileHeader
 constexpr uint32_t kEnsemblePresetFileVersion = 1;
 } // namespace
 
+namespace
+{
+// The file write itself, shared by numbered user saves and library
+// captures -- the caller has already made sure fname's folder exists.
+bool SaveGranularPresetFile(const char*                               fname,
+                            const GranularEngine::GranularPresetData& preset,
+                            const float*                              audio_l,
+                            const float*                              audio_r,
+                            size_t                                    audio_len,
+                            ProgressFn                                on_progress);
+bool LoadGranularPresetFile(const char*                         fname,
+                            GranularEngine::GranularPresetData* out_preset,
+                            float*                              out_audio_l,
+                            float*                              out_audio_r,
+                            size_t                              audio_capacity,
+                            size_t*                             out_audio_len,
+                            ProgressFn                          on_progress);
+} // namespace
+
 bool SaveGranularPreset(int                                       slot,
                         const GranularEngine::GranularPresetData& preset,
                         const float*                              audio_l,
@@ -1274,7 +1293,35 @@ bool SaveGranularPreset(int                                       slot,
         SetError("mkdir", mkdir_res);
         return false;
     }
+    return SaveGranularPresetFile(fname, preset, audio_l, audio_r, audio_len, on_progress);
+}
 
+bool LoadGranularPreset(int                                  slot,
+                        GranularEngine::GranularPresetData* out_preset,
+                        float*                               out_audio_l,
+                        float*                               out_audio_r,
+                        size_t                                audio_capacity,
+                        size_t*                               out_audio_len,
+                        ProgressFn                            on_progress)
+{
+    if(!card_ready || slot < 1 || slot > kMaxGranularPresets || !out_preset || !out_audio_len)
+        return false;
+
+    char fname[24];
+    GranularPresetFilename(slot, fname, sizeof(fname));
+    return LoadGranularPresetFile(fname, out_preset, out_audio_l, out_audio_r, audio_capacity,
+                                  out_audio_len, on_progress);
+}
+
+namespace
+{
+bool SaveGranularPresetFile(const char*                               fname,
+                            const GranularEngine::GranularPresetData& preset,
+                            const float*                              audio_l,
+                            const float*                              audio_r,
+                            size_t                                    audio_len,
+                            ProgressFn                                on_progress)
+{
     ClearError();
     static FIL file; // see the DTCMRAM/DMA comment on Save() above
     FRESULT    fr = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
@@ -1332,20 +1379,14 @@ bool SaveGranularPreset(int                                       slot,
     return ok && close_res == FR_OK;
 }
 
-bool LoadGranularPreset(int                                  slot,
-                        GranularEngine::GranularPresetData* out_preset,
-                        float*                               out_audio_l,
-                        float*                               out_audio_r,
-                        size_t                                audio_capacity,
-                        size_t*                               out_audio_len,
-                        ProgressFn                            on_progress)
+bool LoadGranularPresetFile(const char*                         fname,
+                            GranularEngine::GranularPresetData* out_preset,
+                            float*                              out_audio_l,
+                            float*                              out_audio_r,
+                            size_t                              audio_capacity,
+                            size_t*                             out_audio_len,
+                            ProgressFn                          on_progress)
 {
-    if(!card_ready || slot < 1 || slot > kMaxGranularPresets || !out_preset || !out_audio_len)
-        return false;
-
-    char fname[24];
-    GranularPresetFilename(slot, fname, sizeof(fname));
-
     ClearError();
     static FIL file; // see the DTCMRAM/DMA comment on Save() above
     FRESULT    fr = f_open(&file, fname, FA_READ);
@@ -1414,6 +1455,8 @@ bool LoadGranularPreset(int                                  slot,
         SetError("close", close_res);
     return ok && close_res == FR_OK;
 }
+
+} // namespace
 
 int ListGranularPresets(int* out_numbers, int max_out)
 {
@@ -1486,6 +1529,257 @@ bool DuplicateGranularPreset(int slot, int* out_new_slot, ProgressFn on_progress
     if(!CopyFileChunked(src, dst, on_progress))
         return false;
     *out_new_slot = new_slot;
+    return true;
+}
+
+namespace
+{
+// "CAPTURED12" -> 12; 0 if name isn't CAPTURED + 1..99 (no leading zeros).
+int ParseGranularCapturedBank(const char* name)
+{
+    const char* prefix = "CAPTURED";
+    size_t      plen   = strlen(prefix);
+    if(strncmp(name, prefix, plen) != 0)
+        return 0;
+    const char* d = name + plen;
+    if(d[0] < '1' || d[0] > '9')
+        return 0;
+    int n = 0;
+    for(; *d; d++)
+    {
+        if(*d < '0' || *d > '9')
+            return 0;
+        n = n * 10 + (*d - '0');
+        if(n > kMaxGranularCapturedBanks)
+            return 0;
+    }
+    return n;
+}
+
+bool IsDatName(const char* fname)
+{
+    size_t len = strlen(fname);
+    return len > 4 && strcasecmp(fname + len - 4, ".dat") == 0;
+}
+} // namespace
+
+int ListGranularCapturedBanks(uint8_t* out_numbers, int max_out)
+{
+    if(!card_ready || !out_numbers)
+        return 0;
+    static DIR dir; // see the DTCMRAM/DMA comment on Save() above
+    if(f_opendir(&dir, "GRAINS") != FR_OK)
+        return 0;
+    int            count = 0;
+    static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
+    while(count < max_out && f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0)
+    {
+        if(!(fno.fattrib & AM_DIR))
+            continue;
+        int n = ParseGranularCapturedBank(fno.fname);
+        if(n == 0)
+            continue;
+        int j = count - 1; // insert in ascending order
+        while(j >= 0 && out_numbers[j] > n)
+        {
+            out_numbers[j + 1] = out_numbers[j];
+            j--;
+        }
+        out_numbers[j + 1] = (uint8_t)n;
+        count++;
+    }
+    f_closedir(&dir);
+    return count;
+}
+
+int ListGranularLibraryItems(const char* folder, char out_names[][kMaxGranularLibNameLen + 1],
+                             int max_out)
+{
+    if(!card_ready || !folder || !out_names)
+        return 0;
+    char path[48];
+    snprintf(path, sizeof(path), "GRAINS/%s", folder);
+    static DIR dir; // see the DTCMRAM/DMA comment on Save() above
+    if(f_opendir(&dir, path) != FR_OK)
+        return 0; // no such folder yet -- nothing to list
+    int            count = 0;
+    static FILINFO fno; // see the DTCMRAM/DMA comment on Save() above
+    while(count < max_out && f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != 0)
+    {
+        if(fno.fname[0] == '.' || (fno.fattrib & AM_DIR) || !IsDatName(fno.fname))
+            continue; // AppleDouble sidecars, subfolders, anything else
+        if(strlen(fno.fname) > kMaxGranularLibNameLen)
+            continue;
+        snprintf(out_names[count], kMaxGranularLibNameLen + 1, "%s", fno.fname);
+        count++;
+    }
+    f_closedir(&dir);
+    // Insertion sort, same as SortNames() -- a few dozen names at most.
+    static char tmp[kMaxGranularLibNameLen + 1];
+    for(int i = 1; i < count; i++)
+    {
+        memcpy(tmp, out_names[i], sizeof(tmp));
+        int j = i - 1;
+        while(j >= 0 && strcasecmp(out_names[j], tmp) > 0)
+        {
+            memcpy(out_names[j + 1], out_names[j], sizeof(tmp));
+            j--;
+        }
+        memcpy(out_names[j + 1], tmp, sizeof(tmp));
+    }
+    return count;
+}
+
+bool LoadGranularLibraryPreset(const char*                         folder,
+                               const char*                         name,
+                               GranularEngine::GranularPresetData* out_preset,
+                               float*                              out_audio_l,
+                               float*                              out_audio_r,
+                               size_t                              audio_capacity,
+                               size_t*                             out_audio_len,
+                               ProgressFn                          on_progress)
+{
+    if(!card_ready || !folder || !name || !out_preset || !out_audio_len)
+        return false;
+    char fname[96];
+    snprintf(fname, sizeof(fname), "GRAINS/%s/%s", folder, name);
+    return LoadGranularPresetFile(fname, out_preset, out_audio_l, out_audio_r, audio_capacity,
+                                  out_audio_len, on_progress);
+}
+
+bool SaveGranularCapture(const GranularEngine::GranularPresetData& preset,
+                         const float*                              audio_l,
+                         const float*                              audio_r,
+                         size_t                                    audio_len,
+                         char*                                     out_folder,
+                         size_t                                    out_folder_size,
+                         char*                                     out_name,
+                         size_t                                    out_name_size,
+                         ProgressFn                                on_progress)
+{
+    if(!card_ready)
+        return false;
+    FRESULT fr = f_mkdir("GRAINS");
+    if(fr != FR_OK && fr != FR_EXIST)
+    {
+        SetError("mkdir", fr);
+        return false;
+    }
+    // Lowest existing bank with a free CAPnnn.DAT, else the lowest unused
+    // bank number -- same fill order as FindSampleBankWithSpace().
+    static uint8_t banks[kMaxGranularCapturedBanks];
+    int            bank_count = ListGranularCapturedBanks(banks, kMaxGranularCapturedBanks);
+    char           fname[48];
+    FILINFO        fno;
+    for(int i = 0; i < bank_count; i++)
+    {
+        for(int n = 1; n <= kGranularCapturedPerBank; n++)
+        {
+            snprintf(fname, sizeof(fname), "GRAINS/CAPTURED%d/CAP%03d.DAT", banks[i], n);
+            if(f_stat(fname, &fno) == FR_OK)
+                continue;
+            if(!SaveGranularPresetFile(fname, preset, audio_l, audio_r, audio_len, on_progress))
+                return false;
+            snprintf(out_folder, out_folder_size, "CAPTURED%d", banks[i]);
+            snprintf(out_name, out_name_size, "CAP%03d.DAT", n);
+            return true;
+        }
+    }
+    for(int b = 1; b <= kMaxGranularCapturedBanks; b++)
+    {
+        bool used = false;
+        for(int i = 0; i < bank_count; i++)
+            used = used || banks[i] == b;
+        if(used)
+            continue;
+        char folder[32];
+        snprintf(folder, sizeof(folder), "GRAINS/CAPTURED%d", b);
+        fr = f_mkdir(folder);
+        if(fr != FR_OK && fr != FR_EXIST)
+        {
+            SetError("mkdir", fr);
+            return false;
+        }
+        snprintf(fname, sizeof(fname), "%s/CAP001.DAT", folder);
+        if(!SaveGranularPresetFile(fname, preset, audio_l, audio_r, audio_len, on_progress))
+            return false;
+        snprintf(out_folder, out_folder_size, "CAPTURED%d", b);
+        snprintf(out_name, out_name_size, "CAP001.DAT");
+        return true;
+    }
+    SetError("banksfull", FR_OK);
+    return false;
+}
+
+namespace
+{
+void GranularCaptureFilename(int bank, int n, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "GRAINS/CAPTURED%d/CAP%03d.DAT", bank, n);
+}
+} // namespace
+
+bool DeleteGranularCapture(int bank, int n)
+{
+    if(!card_ready || bank < 1 || n < 1 || n > kGranularCapturedPerBank)
+        return false;
+    char fname[48];
+    GranularCaptureFilename(bank, n, fname, sizeof(fname));
+    if(!DeleteFileGeneric(fname))
+        return false;
+    // Close the gap, same as DeleteSampleSynthCapture().
+    int target = n;
+    for(int src = n + 1; src <= kGranularCapturedPerBank; src++)
+    {
+        char    src_name[48];
+        FILINFO fno;
+        GranularCaptureFilename(bank, src, src_name, sizeof(src_name));
+        if(f_stat(src_name, &fno) != FR_OK)
+            continue;
+        char dst_name[48];
+        GranularCaptureFilename(bank, target, dst_name, sizeof(dst_name));
+        f_rename(src_name, dst_name);
+        target++;
+    }
+    return true;
+}
+
+bool DuplicateGranularCapture(int bank, int n, int* out_new_n, ProgressFn on_progress)
+{
+    if(!out_new_n)
+        return false;
+    *out_new_n = -1;
+    if(!card_ready || bank < 1 || n < 1 || n > kGranularCapturedPerBank)
+        return false;
+    char    src[48];
+    FILINFO fno;
+    GranularCaptureFilename(bank, n, src, sizeof(src));
+    if(f_stat(src, &fno) != FR_OK)
+    {
+        SetError("dupsrc", FR_NO_FILE);
+        return false;
+    }
+    int new_n = -1;
+    for(int i = 1; i <= kGranularCapturedPerBank; i++)
+    {
+        char fname[48];
+        GranularCaptureFilename(bank, i, fname, sizeof(fname));
+        if(f_stat(fname, &fno) != FR_OK)
+        {
+            new_n = i;
+            break;
+        }
+    }
+    if(new_n < 0)
+    {
+        SetError("full", FR_OK); // stays in the same folder, like the Sampler's
+        return false;
+    }
+    char dst[48];
+    GranularCaptureFilename(bank, new_n, dst, sizeof(dst));
+    if(!CopyFileChunked(src, dst, on_progress))
+        return false;
+    *out_new_n = new_n;
     return true;
 }
 

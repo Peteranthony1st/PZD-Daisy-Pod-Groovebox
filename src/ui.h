@@ -535,13 +535,16 @@ class Ui
         // SetSource() changes, so re-opening this page and trimming again
         // always works from the original full capture.
         Trim,
-        // Save/Copy(save-as-new)/Hold-to-Load, identical gesture set to
-        // Pad's own Preset page -- but unlike Pad, saving/loading here
-        // also streams the captured audio itself to/from the SD card
-        // (see PerformanceStore::SaveGranularPreset()/LoadGranularPreset()),
-        // so this one shows a live progress bar during the transfer
-        // (Ui::OnSaveLoadProgress(), same as a whole-performance Save/Load).
+        // Load-only library, shared browse convention: a folder list
+        // (Starter = GRAINS/PRESETS, then Captured 1..n = GRAINS/CAPTUREDn,
+        // filled by Trim's own Save), K1 scrolls folders, K2 the sounds
+        // inside one, a tap loads and stays. Loads stream the captured
+        // audio too, with a live progress bar (Ui::OnSaveLoadProgress()).
         Preset,
+        // Your own edited saves (GRAINS/PRESnnn.DAT): B1 saves (K1 picks
+        // Overwrite/Save New, hold B2 confirms), B2 loads from a list
+        // that starts with "New (blank)".
+        User,
         kCount
     };
 
@@ -885,6 +888,7 @@ class Ui
         GranularCapture, // no continuous knobs -- Button1/Button2 only
         GranularTrim,
         GranularPreset, // browses a list directly, no pickup used
+        GranularUser,   // ditto -- the User page's own list / save choice
         // Screen::Mixer -- shared across all 7 non-Master channels (see
         // mixer_position_), same "one context, branch internally on which
         // channel" idiom as LayerStatus already uses for Cur()/
@@ -1197,12 +1201,9 @@ class Ui
     // Save lands in a new slot rather than overwriting whatever was
     // loaded -- the prior save on the card is untouched either way.
     void TriggerNew();
-    // Button2 long-hold (800ms): confirms whatever the Load chooser has
-    // settled on -- delegates to TriggerNew() if "New" is highlighted,
-    // otherwise loads file_slots_[file_cursor_] (drilled into via
-    // Button1, see load_browsing_files_'s own comment), replacing every
-    // layer's audio and all settings with the saved performance's.
-    void TriggerLoad();
+    // Load-list tap: loads one saved performance (PERFnnn), replacing
+    // every layer's audio and all settings with the saved performance's.
+    void TriggerLoad(int slot);
 
     // --- SD MGMT (Global:SdMgmt page) ------------------------------------
     // Returns whichever of file_slots_/granular_preset_user_slots_/
@@ -1223,6 +1224,19 @@ class Ui
         return sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures
                || sd_mgmt_folder_ == SdMgmtFolder::SampleSynthKits;
     }
+    // CAPT box only: browsing Grains captures (GRAINS/CAPTUREDn) rather
+    // than the Sampler's (SAMPLES/CAPTUREDn).
+    bool SdMgmtGrainsCaptures() const
+    {
+        return sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures && sd_mgmt_capt_kind_ == 1;
+    }
+    // On a folder-list level inside a box (CAPT's Sampler/Grains choice,
+    // or a bank list) -- K1 scrolls, B2 opens. Otherwise, once in a box,
+    // it's the item list: K2 scrolls, B1 hold duplicates, B2 hold deletes.
+    bool SdMgmtAtFolderList() const
+    {
+        return sd_mgmt_in_folder_ && SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0;
+    }
     // Item count at whichever level SdMgmt is on inside a bank box.
     int  SdMgmtBankLevelCount();
     // Bank-box (Captures/Kits) halves of TriggerSdMgmtDuplicate()/Delete().
@@ -1230,6 +1244,8 @@ class Ui
     void TriggerSdMgmtBankDelete();
     void RefreshSdMgmtBanks();
     void RefreshSdMgmtItems();
+    // B2 on the box grid: enter the highlighted box with a fresh scan.
+    void SdMgmtOpenBox();
     // These 2 share their dirty flag/arrays with
     // SampleSynthParamPage::User's own inline refresh (ui.cpp's
     // DrawSampleSynthScreen()) -- same "whichever call runs first wins,
@@ -1329,14 +1345,22 @@ class Ui
     // R()/GetSourceLen()) alongside the parameters -- same non-destructive
     // reasoning as TriggerSave()'s own force_new.
     void TriggerSaveGranularPreset(bool force_new = false);
-    // Button2 long-hold (800ms): confirms whatever the Load chooser has
-    // settled on -- delegates to TriggerNewGranularPreset() if "New" is
-    // highlighted, otherwise loads whichever preset
-    // granular_preset_cursor_ is currently browsing (drilled into via
-    // Button1, see load_browsing_files_'s own comment), replacing both
-    // the live parameters AND the currently loaded capture audio.
-    void TriggerLoadGranularPreset();
-    // Grains Preset's own Load chooser confirmed with "New" highlighted
+    // Loads one numbered user save (User page), replacing both the live
+    // parameters and the loaded capture audio.
+    void LoadGranularUserSlot(int slot);
+    // Loads the highlighted sound of the open Preset-page folder.
+    void LoadGranularLibraryItem();
+    // Trim page hold-B2: saves the current (trimmed) capture plus its
+    // settings into the next free GRAINS/CAPTUREDn/CAPnnn.DAT, where it
+    // then shows up on the Preset page.
+    void TriggerSaveGranularCapture();
+    // Folder index on the Preset page -> folder name under GRAINS/
+    // ("PRESETS", "CAPTURED3") and on-screen label ("Starter", "Captured 3").
+    void GranularLibFolder(int idx, char* name, size_t name_size, char* label,
+                           size_t label_size) const;
+    // "Bell Shimmer.DAT" -> "Bell Shimmer" for the screen.
+    static void GranularLibDisplayName(const char* file, char* out, size_t out_size);
+    // User page's "New (blank)" entry
     // -- clears the captured audio and resets every param to the
     // engine's own defaults, same fresh-start spirit as Global:File's
     // own TriggerNew().
@@ -1692,7 +1716,7 @@ class Ui
     static constexpr int kMaxFileSlots = 99; // must match PerformanceStore::kMaxSlots
     int  file_slots_[kMaxFileSlots] = {};    // existing slot numbers, ascending
     int  file_slot_count_           = 0;
-    int  file_cursor_               = 0;     // index into file_slots_, browsed by knob1
+    int  file_cursor_               = 0;     // Load list: 0 = "New (blank)", 1.. = file_slots_
     // Which slot the in-memory performance currently corresponds to, or
     // -1 if it's a fresh/never-saved (or just-"New"'d) performance. Save
     // overwrites this slot when set; when -1, Save adopts the next free
@@ -1713,7 +1737,9 @@ class Ui
     static constexpr float kSdMgmtDeleteHoldMs = 1500.f;
     SdMgmtFolder sd_mgmt_folder_    = SdMgmtFolder::Performances;
     bool         sd_mgmt_in_folder_ = false; // false = picking a folder, true = browsing its files
-    int          sd_mgmt_cursor_    = 0;     // index into the current folder's own slot list
+    int          sd_mgmt_cursor_    = 0;     // item list cursor (K2)
+    int          sd_mgmt_list_cursor_ = 0;   // folder-list cursor (K1): Sampler/Grains, banks
+    int          sd_mgmt_capt_kind_   = -1;  // CAPT box: -1 = choosing, 0 = Sampler, 1 = Grains
     char         sd_mgmt_status_[24] = {};   // last duplicate/delete result
 
     // --- WAV export (Global:Export page) ------------------------------
@@ -1840,13 +1866,31 @@ class Ui
     static constexpr int kMaxGranularPresetSlots = 99; // must match PerformanceStore::kMaxGranularPresets
     int  granular_preset_user_slots_[kMaxGranularPresetSlots] = {}; // SD user slots, ascending
     int  granular_preset_user_slot_count_                      = 0;
-    // No factory range -- every listed slot is a real user save, so this
-    // browses granular_preset_user_slots_ directly.
-    int  granular_preset_cursor_       = 0;
+    // User page list cursor: 0 = "New (blank)", 1.. = the user saves.
+    int  granular_user_cursor_         = 0;
     bool granular_preset_slots_dirty_  = true; // forces one RefreshGranularPresetSlots() on entry
     // -1 = nothing loaded yet / current sound doesn't match a saved slot.
     int  granular_loaded_preset_slot_  = -1;
     char granular_preset_status_[24]   = {}; // last save/load result
+
+    // --- Grains Preset-page library (GRAINS/PRESETS + CAPTUREDn) --------
+    // Folder list: index 0 = Starter, 1.. = the Captured banks ascending.
+    // Sizes match PerformanceStore::kMaxGranularCapturedBanks/
+    // kGranularCapturedPerBank/kMaxGranularLibNameLen + 1 (not included here).
+    uint8_t granular_captured_banks_[99]   = {};
+    int     granular_captured_bank_count_  = 0;
+    int     granular_lib_folder_           = -1; // open folder, -1 = at the folder list
+    int     granular_lib_folder_cursor_    = 0;
+    static constexpr int kGranularLibListMax = 32;
+    char    granular_lib_names_[kGranularLibListMax][61] = {};
+    int     granular_lib_count_            = 0;
+    int     granular_lib_cursor_           = 0;
+    bool    granular_lib_dirty_            = true; // folder list
+    bool    granular_lib_items_dirty_      = true; // open folder's sounds
+    // What's loaded from the library (empty = nothing), for "> " and "Now:".
+    char    granular_loaded_lib_folder_[16] = {};
+    char    granular_loaded_lib_name_[61]   = {};
+    char    granular_trim_status_[32]       = {}; // last capture-save result
 
     // --- Dexed engine (Screen::Dexed) ------------------------------------
     DexedSynth*    dexed_            = nullptr;
@@ -2127,6 +2171,11 @@ class Ui
         return ensemble_baseline_.len > 0 && !(EnsembleSnapshot() == ensemble_baseline_);
     }
     EditSnapshot ensemble_baseline_ = {};
+    EditSnapshot GranularSnapshot() const;
+    void         MarkGranularClean();
+    bool         GranularUnsaved() const;
+    EditSnapshot granular_baseline_      = {};
+    bool         granular_capture_unsaved_ = false; // fresh capture not saved anywhere yet
     bool         sample_synth_capture_unsaved_ = false;
     struct SampleBankEntry
     {

@@ -1,22 +1,29 @@
-Grains presets live here (PRES001.DAT, PRES002.DAT, ...) -- each one is
-audio-inclusive (the captured sample itself, plus every parameter), so
-loading a preset restores the exact sound, not just settings.
+Grains sounds live here. Every file is audio-inclusive (the captured
+sample itself plus every parameter), so loading one restores the exact
+sound, not just settings.
 
-PRES001-009 ship pre-loaded as starter presets -- all CC0-licensed
-source audio from freesound.org (bassimat), 5-second excerpts, engine
-default parameters. The Pod's screen has no preset-naming field (just
-the slot number), so these names are for reference here only:
+On the Pod they appear on two pages:
 
-  PRES001  Bell Shimmer        -- bell with water shimmering texture
-  PRES002  Ethereal Piano      -- shimmering granular piano ambience
-  PRES003  Guitar Loop         -- brilliant jazz guitar granular loop
-  PRES004  Atonal Soundscape   -- dark, gritty ambient space texture
-  PRES005  Synthetic Crickets  -- synthetic crickets talking
-  PRES006  Bass Drone          -- low frequency drone, oscillating grains
-  PRES007  Ice Rain Glitch     -- high-frequency granular glitch texture
-  PRES008  Water Bubbles       -- ambient water bubbles and untuned grains
-  PRES009  Sea & Bells         -- peaceful sea water, bubbles and bells
+Preset page (load only) -- folders, listed by file name:
+  PRESETS/     "Starter" -- the 9 starter sounds below. Any .DAT file
+               you drop in here shows up by its file name.
+  CAPTURED1/   "Captured 1", "Captured 2", ... -- captures you save
+  CAPTURED2/   from the Trim page (hold B2), CAP001.DAT, CAP002.DAT,
+  ...          ... 32 per folder; the next folder is created
+               automatically when the last one is full.
 
-Delete or overwrite any of them like any other preset -- your own saves
-just continue from PRES010 onward as plain numbered slots, same as
-always.
+User page -- your own edited saves (PRES001.DAT, PRES002.DAT, ...),
+shown as GRAINS1, GRAINS2, ... Save New / Overwrite from the User page.
+
+Starter sounds -- all CC0-licensed source audio from freesound.org
+(bassimat), 5-second excerpts, engine default parameters:
+
+  Bell Shimmer        -- bell with water shimmering texture
+  Ethereal Piano      -- shimmering granular piano ambience
+  Guitar Loop         -- brilliant jazz guitar granular loop
+  Atonal Soundscape   -- dark, gritty ambient space texture
+  Synthetic Crickets  -- synthetic crickets talking
+  Bass Drone          -- low frequency drone, oscillating grains
+  Ice Rain Glitch     -- high-frequency granular glitch texture
+  Water Bubbles       -- ambient water bubbles and untuned grains
+  Sea and Bells       -- peaceful sea water, bubbles and bells

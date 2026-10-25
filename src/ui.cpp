@@ -365,9 +365,18 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             int n = (int)GranularParamPage::kCount;
             int p = (((int)granular_param_page_ + inc) % n + n) % n;
             GranularParamPage new_granular_page = (GranularParamPage)p;
-            if(new_granular_page == GranularParamPage::Preset
-               && granular_param_page_ != GranularParamPage::Preset)
-                granular_preset_slots_dirty_ = true; // re-scan the card on entry
+            if(new_granular_page != granular_param_page_)
+            {
+                // Re-scan the card on entry to either list page.
+                if(new_granular_page == GranularParamPage::Preset)
+                {
+                    granular_lib_dirty_       = true;
+                    granular_lib_items_dirty_ = true;
+                }
+                else if(new_granular_page == GranularParamPage::User)
+                    granular_preset_slots_dirty_ = true;
+                granular_trim_status_[0] = '\0';
+            }
             granular_param_page_ = new_granular_page;
             save_load_mode_      = SaveLoadMode::Idle; // same reset as Global:File above
         }
@@ -698,16 +707,14 @@ void Ui::HandleButton2(const UiControlEvents& events)
             button2_long_fired_ = false;
         }
     }
-    else if(screen_ == Screen::Global && global_page_ == GlobalPage::SdMgmt
-            && sd_mgmt_in_folder_)
+    else if(screen_ == Screen::Global && global_page_ == GlobalPage::SdMgmt)
     {
-        // Inside a bank box's bank list there's nothing to delete yet --
-        // a short tap opens the highlighted bank instead (same "Open"
-        // tap as the Sampler's own Preset browser).
-        bool at_bank_list = SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0;
-        // Longer hold than every other confirm gesture here (see
+        // Shared browse convention: B2 taps open (a box, then any folder
+        // level inside it); in an item list B2 is hold-to-delete, with a
+        // longer hold than every other confirm here (see
         // kSdMgmtDeleteHoldMs's own comment) -- delete has no undo.
-        if(!at_bank_list && b.Pressed() && b.TimeHeldMs() > kSdMgmtDeleteHoldMs
+        bool in_items = sd_mgmt_in_folder_ && !SdMgmtAtFolderList();
+        if(in_items && b.Pressed() && b.TimeHeldMs() > kSdMgmtDeleteHoldMs
            && !button2_long_fired_)
         {
             button2_long_fired_ = true;
@@ -715,14 +722,26 @@ void Ui::HandleButton2(const UiControlEvents& events)
         }
         if(events.btn2_released)
         {
-            if(at_bank_list)
+            if(!sd_mgmt_in_folder_)
+                SdMgmtOpenBox();
+            else if(!in_items)
             {
-                if(sd_mgmt_cursor_ < sd_mgmt_bank_count_)
+                int n = SdMgmtBankLevelCount();
+                if(sd_mgmt_list_cursor_ < n)
                 {
-                    sd_mgmt_bank_        = sd_mgmt_cursor_;
-                    sd_mgmt_cursor_      = 0;
-                    sd_mgmt_items_dirty_ = true;
-                    sd_mgmt_status_[0]   = '\0';
+                    if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures
+                       && sd_mgmt_capt_kind_ < 0)
+                    {
+                        sd_mgmt_capt_kind_   = sd_mgmt_list_cursor_; // 0 Sampler, 1 Grains
+                        sd_mgmt_banks_dirty_ = true;
+                    }
+                    else
+                    {
+                        sd_mgmt_bank_        = sd_mgmt_list_cursor_;
+                        sd_mgmt_cursor_      = 0;
+                        sd_mgmt_items_dirty_ = true;
+                    }
+                    sd_mgmt_status_[0] = '\0';
                 }
             }
             else if(!button2_long_fired_ && events.btn2_held_ms > kSdMgmtDeleteHoldMs)
@@ -732,55 +751,39 @@ void Ui::HandleButton2(const UiControlEvents& events)
     }
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::File)
     {
-        // Button2 confirms whichever of the two revealed states is
-        // active -- Save (ChoosingSave) or Load (BrowsingLoad) -- so
-        // Button1's own tap is free to always mean "Back" once inside
-        // either one (see OnButton1Short()), same as SD MGMT's own
-        // Back/Hold=Duplicate split.
+        // Same convention as every engine's User page: saving keeps an
+        // 800 ms hold (it can overwrite); loading is a tap that stays in
+        // the list. Entry 0 of the list is "New (blank)".
         bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
-        // BrowsingLoad only has something to confirm once either "New" is
-        // picked at the top-level chooser or the numbered list has been
-        // drilled into (see ApplyKnobs()'s own BrowsingLoad handling and
-        // load_new_selected_/load_browsing_files_'s own comment) -- at
-        // the chooser with "Files" picked there's no specific target yet,
-        // so a hold there does nothing.
-        bool can_confirm_load = save_load_mode_ == SaveLoadMode::BrowsingLoad
-                                 && (load_browsing_files_ || load_new_selected_);
-        bool can_confirm      = can_confirm_save || can_confirm_load;
-        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm)
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_save)
         {
             button2_long_fired_ = true;
-            if(can_confirm_save)
-                TriggerSave(save_as_new_);
-            else
-                TriggerLoad();
+            TriggerSave(save_as_new_);
             save_load_mode_ = SaveLoadMode::Idle;
         }
         if(events.btn2_released)
         {
-            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm)
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm_save)
             {
-                if(can_confirm_save)
-                    TriggerSave(save_as_new_);
-                else
-                    TriggerLoad();
+                TriggerSave(save_as_new_);
                 save_load_mode_ = SaveLoadMode::Idle;
+            }
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad)
+            {
+                if(file_cursor_ == 0)
+                    TriggerNew();
+                else if(file_cursor_ - 1 < file_slot_count_)
+                    TriggerLoad(file_slots_[file_cursor_ - 1]);
             }
             else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
             {
-                // Short tap from Idle only: reveal the file list to
-                // browse (Button2's own label becomes "Hold=Load" to
-                // commit). While already in ChoosingSave/BrowsingLoad, a
-                // short tap here does nothing new -- only the hold above
-                // commits, and Button1's tap is "Back".
                 if(!PerformanceStore::IsCardPresent())
-                    PerformanceStore::Remount();
-                else
                 {
-                    save_load_mode_     = SaveLoadMode::BrowsingLoad;
-                    load_new_selected_  = false;
-                    load_browsing_files_ = false;
+                    PerformanceStore::Remount();
+                    file_slots_dirty_ = true; // re-scan once actually mounted
                 }
+                else
+                    save_load_mode_ = SaveLoadMode::BrowsingLoad;
             }
             button2_long_fired_ = false;
         }
@@ -849,49 +852,83 @@ void Ui::HandleButton2(const UiControlEvents& events)
             }
         }
     }
-    else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::Preset)
+    else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::Trim)
     {
-        // Button2 confirms whichever of Save/Load is revealed -- see
-        // Global:File's own Button2 handling for the shared SaveLoadMode
-        // this mirrors.
-        bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
-        // BrowsingLoad only has something to confirm once either "New" is
-        // picked at the top-level chooser or the numbered list has been
-        // drilled into (see Global:File's own can_confirm_load comment).
-        bool can_confirm_load = save_load_mode_ == SaveLoadMode::BrowsingLoad
-                                 && (load_browsing_files_ || load_new_selected_);
-        bool can_confirm      = can_confirm_save || can_confirm_load;
-        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm)
+        // Hold to save the trimmed capture into the Preset page's
+        // Captured folders -- same as SMPVO's own Trim page.
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_)
         {
             button2_long_fired_ = true;
-            if(can_confirm_save)
-                TriggerSaveGranularPreset(save_as_new_);
+            TriggerSaveGranularCapture();
+        }
+        if(events.btn2_released)
+        {
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f)
+                TriggerSaveGranularCapture();
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::Preset)
+    {
+        // Shared browse convention: tap opens the browser, then a folder;
+        // a tap on a sound loads it and stays in the folder. No hold.
+        bool at_folder_list = granular_lib_folder_ < 0;
+        if(events.btn2_released)
+        {
+            if(save_load_mode_ == SaveLoadMode::BrowsingLoad && !at_folder_list)
+            {
+                if(granular_lib_count_ > 0)
+                    LoadGranularLibraryItem();
+            }
+            else if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
+            {
+                granular_lib_folder_      = granular_lib_folder_cursor_;
+                granular_lib_items_dirty_ = true;
+                granular_lib_cursor_      = 0;
+            }
+            else if(!PerformanceStore::IsCardPresent())
+                PerformanceStore::Remount();
             else
-                TriggerLoadGranularPreset();
+            {
+                save_load_mode_          = SaveLoadMode::BrowsingLoad;
+                granular_lib_folder_     = -1; // always start at the folder list
+                granular_lib_dirty_      = true;
+                granular_preset_status_[0] = '\0';
+            }
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::User)
+    {
+        // Saving keeps an 800 ms hold (it can overwrite); loading is a tap
+        // that stays in the list. Entry 0 of the list is "New (blank)".
+        bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_save)
+        {
+            button2_long_fired_ = true;
+            TriggerSaveGranularPreset(save_as_new_);
             save_load_mode_ = SaveLoadMode::Idle;
         }
         if(events.btn2_released)
         {
-            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm)
+            if(!button2_long_fired_ && events.btn2_held_ms > 800.f && can_confirm_save)
             {
-                if(can_confirm_save)
-                    TriggerSaveGranularPreset(save_as_new_);
-                else
-                    TriggerLoadGranularPreset();
+                TriggerSaveGranularPreset(save_as_new_);
                 save_load_mode_ = SaveLoadMode::Idle;
+            }
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad)
+            {
+                if(granular_user_cursor_ == 0)
+                    TriggerNewGranularPreset();
+                else if(granular_user_cursor_ - 1 < granular_preset_user_slot_count_)
+                    LoadGranularUserSlot(granular_preset_user_slots_[granular_user_cursor_ - 1]);
             }
             else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
             {
-                // Short tap from Idle only: reveal the preset list to
-                // browse.
                 if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
                 else
-                {
-                    save_load_mode_      = SaveLoadMode::BrowsingLoad;
-                    load_new_selected_   = false;
-                    load_browsing_files_ = false;
-                }
+                    save_load_mode_ = SaveLoadMode::BrowsingLoad;
             }
             button2_long_fired_ = false;
         }
@@ -1376,35 +1413,11 @@ void Ui::OnButton1Short()
             }
             else if(global_page_ == GlobalPage::File)
             {
-                if(save_load_mode_ == SaveLoadMode::BrowsingLoad && load_browsing_files_)
-                {
-                    // Back out of the numbered file list to the Files/New
-                    // chooser (see load_browsing_files_'s own comment).
-                    load_browsing_files_ = false;
-                }
-                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && !load_new_selected_)
-                {
-                    // "Files" is highlighted at the chooser -- drill into
-                    // the numbered list (Knob1 now scrolls it directly,
-                    // see ApplyKnobs()).
-                    load_browsing_files_ = true;
-                }
-                else if(save_load_mode_ != SaveLoadMode::Idle)
-                {
-                    // Back -- covers ChoosingSave, and the Load chooser
-                    // with "New" highlighted (nothing further to drill
-                    // into there). Button2 owns confirming whichever of
-                    // Save/Load is currently revealed (see
-                    // HandleButton2()), so Button1's tap here is
-                    // otherwise always just a way out, same as SD MGMT's
-                    // own Back.
-                    save_load_mode_ = SaveLoadMode::Idle;
-                }
+                if(save_load_mode_ != SaveLoadMode::Idle)
+                    save_load_mode_ = SaveLoadMode::Idle; // Back
                 // No card: this hand-wired socket has no card-detect pin
                 // (see PerformanceStore::Remount()'s doc comment), so a
-                // card swapped out and back in needs an explicit re-mount
-                // attempt -- repurpose Button1 for that instead of Save
-                // while there's nothing to save to anyway.
+                // card swapped out and back in needs an explicit re-mount.
                 else if(!PerformanceStore::IsCardPresent())
                 {
                     PerformanceStore::Remount();
@@ -1412,10 +1425,8 @@ void Ui::OnButton1Short()
                 }
                 else
                 {
-                    // Reveal the Overwrite/Save New choice -- Button2's
-                    // hold now confirms it (see HandleButton2()).
-                    // Default to whichever's actually available:
-                    // Overwrite only makes sense if something's loaded.
+                    // Reveal Overwrite / Save New -- K1 picks, holding
+                    // Button2 confirms. Overwrite only if something's loaded.
                     save_load_mode_ = SaveLoadMode::ChoosingSave;
                     save_as_new_    = loaded_slot_ < 0;
                 }
@@ -1518,57 +1529,23 @@ void Ui::OnButton1Short()
                         layers_[i].SetPlayPosRaw(0.f);
                 }
             }
-            else if(global_page_ == GlobalPage::SdMgmt)
+            else if(global_page_ == GlobalPage::SdMgmt && sd_mgmt_in_folder_)
             {
-                if(!sd_mgmt_in_folder_)
+                // Back up one level: items -> bank list -> (CAPT only)
+                // Sampler/Grains -> the box grid. K1 hasn't moved, so the
+                // same folder is still highlighted. B1's hold means
+                // Duplicate in an item list (see OnButton1Long()).
+                if(SdMgmtIsBankFolder() && sd_mgmt_bank_ >= 0)
+                    sd_mgmt_bank_ = -1;
+                else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures
+                        && sd_mgmt_capt_kind_ >= 0)
                 {
-                    // Drill into the highlighted folder -- force a fresh
-                    // scan (same "re-scan on entry" idiom as Global:File)
-                    // since files may have changed since the last visit.
-                    sd_mgmt_in_folder_ = true;
-                    sd_mgmt_cursor_    = 0;
-                    sd_mgmt_status_[0] = '\0';
-                    switch(sd_mgmt_folder_)
-                    {
-                        case SdMgmtFolder::Performances: file_slots_dirty_ = true; break;
-                        case SdMgmtFolder::GranularPresets:
-                            granular_preset_slots_dirty_ = true;
-                            break;
-                        case SdMgmtFolder::DexedPresets:
-                            dexed_preset_slots_dirty_ = true;
-                            break;
-                        case SdMgmtFolder::EnsemblePresets:
-                            ensemble_preset_slots_dirty_ = true;
-                            break;
-                        case SdMgmtFolder::SampleSynthCaptures:
-                        case SdMgmtFolder::SampleSynthKits:
-                            sd_mgmt_bank_        = -1; // bank list first
-                            sd_mgmt_banks_dirty_ = true;
-                            break;
-                        case SdMgmtFolder::SampleSynthVoiceUserPresets:
-                            sample_synth_voice_user_dirty_ = true;
-                            break;
-                        case SdMgmtFolder::SampleSynthDrumUserPresets:
-                            sample_synth_drum_user_dirty_ = true;
-                            break;
-                        default: break;
-                    }
+                    sd_mgmt_capt_kind_ = -1;
+                    sd_mgmt_banks_dirty_ = true;
                 }
                 else
-                {
-                    // Back up one level -- from a bank's items to the
-                    // bank list, otherwise to folder-select. Button1's
-                    // hold means Duplicate once already browsing files
-                    // (see OnButton1Long()), so its tap is free to mean this.
-                    if(SdMgmtIsBankFolder() && sd_mgmt_bank_ >= 0)
-                    {
-                        sd_mgmt_cursor_ = sd_mgmt_bank_;
-                        sd_mgmt_bank_   = -1;
-                    }
-                    else
-                        sd_mgmt_in_folder_ = false;
-                    sd_mgmt_status_[0] = '\0';
-                }
+                    sd_mgmt_in_folder_ = false;
+                sd_mgmt_status_[0] = '\0';
             }
             break;
         case Screen::Granular:
@@ -1622,31 +1599,29 @@ void Ui::OnButton1Short()
             }
             else if(granular_param_page_ == GranularParamPage::Preset)
             {
-                if(save_load_mode_ == SaveLoadMode::BrowsingLoad && load_browsing_files_)
+                // Back one level: a folder's sounds -> the folder list (K1
+                // still where it was, so the same folder stays highlighted)
+                // -> out of the browser.
+                if(save_load_mode_ != SaveLoadMode::Idle)
                 {
-                    // Back out of the numbered list to the Files/New
-                    // chooser -- see Global:File's own comment.
-                    load_browsing_files_ = false;
+                    if(granular_lib_folder_ >= 0)
+                        granular_lib_folder_ = -1;
+                    else
+                        save_load_mode_ = SaveLoadMode::Idle;
                 }
-                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && !load_new_selected_)
-                {
-                    // "Files" is highlighted -- drill into the numbered
-                    // list (Knob1 now scrolls it directly).
-                    load_browsing_files_ = true;
-                }
-                else if(save_load_mode_ != SaveLoadMode::Idle)
-                {
-                    // Back -- Button2 confirms Save/Load (see
-                    // HandleButton2()), so this tap always just returns
-                    // to the page's own idle state, same as Global:File.
-                    save_load_mode_ = SaveLoadMode::Idle;
-                }
+                else if(!PerformanceStore::IsCardPresent())
+                    PerformanceStore::Remount();
+            }
+            else if(granular_param_page_ == GranularParamPage::User)
+            {
+                if(save_load_mode_ != SaveLoadMode::Idle)
+                    save_load_mode_ = SaveLoadMode::Idle; // Back
                 else if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
                 else
                 {
-                    // Reveal the Overwrite/Save New choice -- Button2's
-                    // hold now confirms it (see HandleButton2()).
+                    // Reveal Overwrite / Save New -- K1 picks, holding
+                    // Button2 confirms (see HandleButton2()).
                     save_load_mode_ = SaveLoadMode::ChoosingSave;
                     save_as_new_    = granular_loaded_preset_slot_ <= 0;
                 }
@@ -1950,7 +1925,7 @@ void Ui::OnButton1Long()
     else if(screen_ == Screen::Layer && layer_page_ == LayerPage::Status)
         Cur().OnRecordButtonLongPress(*tempo_);
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::SdMgmt
-            && sd_mgmt_in_folder_ && !(SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0))
+            && sd_mgmt_in_folder_ && !SdMgmtAtFolderList())
         TriggerSdMgmtDuplicate();
 }
 
@@ -2194,6 +2169,7 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case GranularParamPage::Capture: return KnobContext::GranularCapture;
                 case GranularParamPage::Trim: return KnobContext::GranularTrim;
                 case GranularParamPage::Preset: return KnobContext::GranularPreset;
+                case GranularParamPage::User: return KnobContext::GranularUser;
                 default: return KnobContext::GranularGrainSizeFill;
             }
         case Screen::Mixer:
@@ -2672,6 +2648,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             k2_pickup_raw_[i] = granular_trim_end01_;
             break;
         case KnobContext::GranularPreset: break; // browses a list directly, no pickup used
+        case KnobContext::GranularUser: break;   // ditto
         case KnobContext::MixerVolPan:
             k1_pickup_raw_[i] = MixerGetVolume01(mixer_position_);
             k2_pickup_raw_[i] = MixerGetPan01(mixer_position_);
@@ -2948,31 +2925,19 @@ void Ui::ApplyKnobs()
                 if(save_load_mode_ == SaveLoadMode::ChoosingSave)
                 {
                     // Overwrite is only a real option once something's
-                    // actually loaded -- otherwise force Save New so
-                    // Knob1 can't land on a choice that doesn't exist.
+                    // actually loaded -- otherwise force Save New.
                     save_as_new_ = loaded_slot_ < 0 ? true : k1 >= 0.5f;
                 }
                 else if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
                 {
-                    if(!load_browsing_files_)
-                    {
-                        // Top-level chooser (mirrors ChoosingSave's own
-                        // Overwrite/Save New pick above) -- forced to New
-                        // when there's nothing to browse, same "can't
-                        // select what doesn't exist" reasoning.
-                        load_new_selected_ = file_slot_count_ == 0 ? true : k1 >= 0.5f;
-                    }
-                    else if(file_slot_count_ > 0)
-                    {
-                        // Drilled into the numbered list (Button1's own
-                        // tap, see OnButton1Short()) -- discretized
-                        // browse, not pickup-tracked, same idiom as
-                        // every other list-browse knob in this project.
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * file_slot_count_);
-                        if(idx >= file_slot_count_)
-                            idx = file_slot_count_ - 1;
-                        file_cursor_ = idx;
-                    }
+                    // K2 scrolls "New" + the saved performances.
+                    int total = 1 + file_slot_count_;
+                    int idx   = (int)(Clampf(k2, 0.f, 1.f) * total);
+                    if(idx >= total)
+                        idx = total - 1;
+                    if(idx != file_cursor_)
+                        file_status_[0] = '\0';
+                    file_cursor_ = idx;
                 }
             }
             // (GlobalPage::Mixer has no knobs of its own any more -- entry
@@ -2980,11 +2945,11 @@ void Ui::ApplyKnobs()
             // for the real editing surface. No branch needed for it here.)
             else if(global_page_ == GlobalPage::SdMgmt)
             {
+                // Shared browse convention: K1 scrolls the box grid and
+                // every folder level, K2 scrolls an item list (K1 left
+                // alone, so Back lands on the same folder).
                 if(!sd_mgmt_in_folder_)
                 {
-                    // Knob1 picks which folder -- discretized among the 3
-                    // categories, same idiom as every other list-browse
-                    // knob in this project.
                     int n   = (int)SdMgmtFolder::kCount;
                     int idx = (int)(Clampf(k1, 0.f, 1.f) * n);
                     if(idx >= n)
@@ -2993,19 +2958,21 @@ void Ui::ApplyKnobs()
                 }
                 else
                 {
-                    int count = 0;
+                    bool at_list = SdMgmtAtFolderList();
+                    int  count   = 0;
                     if(SdMgmtIsBankFolder())
                         count = SdMgmtBankLevelCount();
                     else
                         SdMgmtSlots(&count);
                     if(count > 0)
                     {
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * count);
+                        int idx = (int)(Clampf(at_list ? k1 : k2, 0.f, 1.f) * count);
                         if(idx >= count)
                             idx = count - 1;
-                        if(idx != sd_mgmt_cursor_)
+                        int& cur = at_list ? sd_mgmt_list_cursor_ : sd_mgmt_cursor_;
+                        if(idx != cur)
                             sd_mgmt_status_[0] = '\0';
-                        sd_mgmt_cursor_ = idx;
+                        cur = idx;
                     }
                 }
             }
@@ -3158,36 +3125,48 @@ void Ui::ApplyKnobs()
                 }
                 case GranularParamPage::Preset:
                 {
-                    if(save_load_mode_ == SaveLoadMode::ChoosingSave)
-                    {
-                        save_as_new_ = granular_loaded_preset_slot_ <= 0 ? true : k1 >= 0.5f;
-                        break;
-                    }
+                    // K1 scrolls the folder list; inside a folder K2
+                    // scrolls the sounds and K1 is left alone, so it still
+                    // points at this folder on Back.
                     if(save_load_mode_ != SaveLoadMode::BrowsingLoad)
                         break;
-                    if(!load_browsing_files_)
+                    if(granular_lib_folder_ < 0)
                     {
-                        // Top-level chooser (mirrors ChoosingSave's own
-                        // Overwrite/Save New pick above) -- forced to New
-                        // when there's nothing to browse, same "can't
-                        // select what doesn't exist" reasoning.
-                        load_new_selected_
-                            = granular_preset_user_slot_count_ == 0 ? true : k1 >= 0.5f;
+                        int n = 1 + granular_captured_bank_count_; // Starter + Captured
+                        int idx = (int)(Clampf(k1, 0.f, 1.f) * n);
+                        if(idx >= n)
+                            idx = n - 1;
+                        granular_lib_folder_cursor_ = idx;
                         break;
                     }
-                    // Drilled into the numbered list (Button1's own tap,
-                    // see OnButton1Short()) -- discretized browse, not
-                    // pickup-tracked, same idiom as Global:File's own
-                    // file_cursor_ (no factory range here to fold in).
-                    if(granular_preset_user_slot_count_ > 0)
+                    int total = granular_lib_count_;
+                    if(total > 0)
                     {
-                        int total = granular_preset_user_slot_count_;
-                        int idx   = (int)(Clampf(k1, 0.f, 1.f) * total);
+                        int idx = (int)(Clampf(k2, 0.f, 1.f) * total);
                         if(idx >= total)
                             idx = total - 1;
-                        if(idx != granular_preset_cursor_)
+                        if(idx != granular_lib_cursor_)
                             granular_preset_status_[0] = '\0';
-                        granular_preset_cursor_ = idx;
+                        granular_lib_cursor_ = idx;
+                    }
+                    break;
+                }
+                case GranularParamPage::User:
+                {
+                    if(save_load_mode_ == SaveLoadMode::ChoosingSave)
+                    {
+                        // Overwrite only makes sense once a user save is loaded.
+                        save_as_new_ = granular_loaded_preset_slot_ <= 0 ? true : k1 >= 0.5f;
+                    }
+                    else if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
+                    {
+                        int total = 1 + granular_preset_user_slot_count_; // "New" + saves
+                        int idx   = (int)(Clampf(k2, 0.f, 1.f) * total);
+                        if(idx >= total)
+                            idx = total - 1;
+                        if(idx != granular_user_cursor_)
+                            granular_preset_status_[0] = '\0';
+                        granular_user_cursor_ = idx;
                     }
                     break;
                 }
@@ -4907,7 +4886,7 @@ void Ui::DrawGlobalScreen()
 void Ui::DrawFileScreen()
 {
     disp_->SetCursor(0, 0);
-    WriteUpper("Global:File");
+    WriteUpper("Global:Perf");
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
     disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
@@ -4927,73 +4906,51 @@ void Ui::DrawFileScreen()
     if(file_slots_dirty_)
         RefreshFileSlots();
 
-    // Whichever button is actually held wins the space (hold-to-confirm
-    // progress, same idea as the Status page's Clear); otherwise this
-    // area shows whichever of Idle/ChoosingSave/BrowsingLoad is active
-    // (see SaveLoadMode's own comment).
     bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
     bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
-    // Load's own top-level chooser (Files/New, mirrors ChoosingSave's own
-    // Overwrite/Save New) -- see load_new_selected_/load_browsing_files_'s
-    // own comment in ui.h.
-    bool load_chooser  = browsing_load && !load_browsing_files_;
-    bool can_hold_load = browsing_load && (load_browsing_files_ || load_new_selected_);
-    // Button1 has no hold action any more -- its tap means "Save" (Idle),
-    // "drill into the file list" (Load chooser with Files highlighted),
-    // or "Back" (everywhere else revealed, see OnButton1Short()). Button2
-    // confirms Save and Load (see HandleButton2()) once there's something
-    // specific to confirm.
-    if(pod_->button2.Pressed() && (choosing_save || can_hold_load))
+
+    // Saving keeps its hold-to-confirm bar; loading is a plain tap.
+    if(pod_->button2.Pressed() && choosing_save)
     {
-        float       held     = pod_->button2.TimeHeldMs();
-        int         w        = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-        const char* hold_msg = choosing_save ? "Hold: Save..." : "Hold: Load...";
+        float held = pod_->button2.TimeHeldMs();
+        int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
         disp_->SetCursor(0, 20);
-        WriteUpper(hold_msg);
+        WriteUpper("Hold: Save...");
         disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
         if(w > 0)
             disp_->DrawRect(1, 31, w, 33, true, true);
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+        return;
     }
-    else if(choosing_save)
+
+    TomThumbDrawText(disp_, 0, 15, "Performances", true);
+
+    if(choosing_save)
     {
-        // Overwrite only shown as a real option once something's loaded
-        // -- Knob1's own ApplyKnobs() handling already forces Save New
-        // when it isn't, this just reflects that on screen too.
-        bool can_overwrite = loaded_slot_ >= 0;
         char line1[24], line2[16];
         snprintf(line1, sizeof(line1), "%c Overwrite%s", !save_as_new_ ? '>' : ' ',
-                  can_overwrite ? "" : " (n/a)");
+                  loaded_slot_ >= 0 ? "" : " (n/a)");
         snprintf(line2, sizeof(line2), "%c Save New", save_as_new_ ? '>' : ' ');
-        disp_->SetCursor(0, 16);
+        disp_->SetCursor(0, 24);
         WriteUpper(line1);
-        disp_->SetCursor(0, 28);
-        WriteUpper(line2);
-    }
-    else if(load_chooser)
-    {
-        // Same shape as ChoosingSave's own Overwrite/Save New -- Files
-        // only a real option once something's actually saved, same
-        // "can't select what doesn't exist" reasoning as Overwrite's own.
-        char line1[24], line2[16];
-        snprintf(line1, sizeof(line1), "%c Files%s", !load_new_selected_ ? '>' : ' ',
-                  file_slot_count_ > 0 ? "" : " (n/a)");
-        snprintf(line2, sizeof(line2), "%c Load New", load_new_selected_ ? '>' : ' ');
-        disp_->SetCursor(0, 16);
-        WriteUpper(line1);
-        disp_->SetCursor(0, 28);
+        disp_->SetCursor(0, 34);
         WriteUpper(line2);
     }
     else if(browsing_load)
     {
-        // Drilled into the numbered list (load_browsing_files_ == true).
-        // "PERF" matches the exact short code Global:SdMgmt's own grid
-        // box uses (SdMgmtFolderShortLabel()) -- one consistent
-        // vocabulary for "which engine is this slot from" everywhere
-        // a bare number is shown, not a second one invented here.
-        char line2[32];
-        snprintf(line2, sizeof(line2), "Load: PERF%d", file_slots_[file_cursor_]);
-        disp_->SetCursor(0, 20);
-        WriteUpper(line2);
+        // "PERF" matches Global:SdMgmt's own short code for this box.
+        // "> " marks the performance that's loaded right now.
+        char line[32];
+        if(file_cursor_ == 0)
+            snprintf(line, sizeof(line), "New (blank)");
+        else
+        {
+            int slot = file_slots_[file_cursor_ - 1];
+            snprintf(line, sizeof(line), "%sPERF%d", slot == loaded_slot_ ? "> " : "", slot);
+        }
+        disp_->SetCursor(0, 24);
+        WriteUpper(line);
     }
     else
     {
@@ -5002,36 +4959,20 @@ void Ui::DrawFileScreen()
             snprintf(line1, sizeof(line1), "Now: PERF%d", loaded_slot_);
         else
             snprintf(line1, sizeof(line1), "Now: (unsaved)");
-        disp_->SetCursor(0, 20);
+        disp_->SetCursor(0, 24);
         WriteUpper(line1);
-
         if(file_status_[0] != '\0')
         {
-            disp_->SetCursor(0, 32);
+            disp_->SetCursor(0, 36);
             WriteUpper(file_status_);
         }
     }
 
-    const char* b1_label;
-    if(save_load_mode_ == SaveLoadMode::Idle)
-        b1_label = "Save";
-    else if(load_chooser && !load_new_selected_)
-        b1_label = "Select"; // drills into the numbered list
-    else
-        b1_label = "Back";
-    const char* b2_label;
-    if(save_load_mode_ == SaveLoadMode::Idle)
-        b2_label = "Load";
-    else if(choosing_save)
-        b2_label = "Hold=Save";
-    else if(can_hold_load)
-        b2_label = "Hold=Load";
-    else
-        b2_label = ""; // Load chooser with Files highlighted -- nothing to confirm yet
-
-    DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
-                     (choosing_save || browsing_load) ? "Scroll" : "", "", "", "");
-    DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1_label, "", "", b2_label);
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, choosing_save ? "Select" : "", "", "",
+                     browsing_load ? "Scroll" : "");
+    DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                     save_load_mode_ == SaveLoadMode::Idle ? "Save" : "Back", "", "",
+                     choosing_save ? "Hold=Save" : "Load");
 }
 
 const char* Ui::SdMgmtFolderName(SdMgmtFolder f)
@@ -5042,7 +4983,7 @@ const char* Ui::SdMgmtFolderName(SdMgmtFolder f)
         case SdMgmtFolder::GranularPresets: return "Grains Presets";
         case SdMgmtFolder::DexedPresets: return "Dexed Presets";
         case SdMgmtFolder::EnsemblePresets: return "Ensemble Presets";
-        case SdMgmtFolder::SampleSynthCaptures: return "Sampler Captures";
+        case SdMgmtFolder::SampleSynthCaptures: return "Captures";
         case SdMgmtFolder::SampleSynthKits: return "Sampler Kits";
         case SdMgmtFolder::SampleSynthVoiceUserPresets: return "SMPVO User";
         case SdMgmtFolder::SampleSynthDrumUserPresets: return "SMPDR User";
@@ -5087,8 +5028,7 @@ void Ui::DrawSdMgmtScreen()
 
     // Whichever button is actually held wins the space, same hold-to-
     // confirm-progress idiom as every other destructive/blocking action.
-    if(pod_->button1.Pressed() && sd_mgmt_in_folder_
-       && !(SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0))
+    if(pod_->button1.Pressed() && sd_mgmt_in_folder_ && !SdMgmtAtFolderList())
     {
         float held = pod_->button1.TimeHeldMs();
         int   w    = (int)(Clampf(held / 400.f, 0.f, 1.f) * (disp_->Width() - 2));
@@ -5101,8 +5041,7 @@ void Ui::DrawSdMgmtScreen()
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
         return;
     }
-    if(pod_->button2.Pressed() && sd_mgmt_in_folder_
-       && !(SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0))
+    if(pod_->button2.Pressed() && sd_mgmt_in_folder_ && !SdMgmtAtFolderList())
     {
         float held = pod_->button2.TimeHeldMs();
         int   w    = (int)(Clampf(held / kSdMgmtDeleteHoldMs, 0.f, 1.f) * (disp_->Width() - 2));
@@ -5157,16 +5096,23 @@ void Ui::DrawSdMgmtScreen()
     else
     {
         char line1[24];
-        bool bank_box = SdMgmtIsBankFolder();
+        bool bank_box         = SdMgmtIsBankFolder();
+        bool at_list          = SdMgmtAtFolderList();
+        bool choosing_kind    = sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures
+                             && sd_mgmt_capt_kind_ < 0;
         int  bank_level_count = bank_box ? SdMgmtBankLevelCount() : 0;
-        if(bank_box && sd_mgmt_cursor_ >= bank_level_count)
-            sd_mgmt_cursor_ = bank_level_count > 0 ? bank_level_count - 1 : 0;
+        int& cur              = at_list ? sd_mgmt_list_cursor_ : sd_mgmt_cursor_;
+        if(bank_box && cur >= bank_level_count)
+            cur = bank_level_count > 0 ? bank_level_count - 1 : 0;
         if(bank_box && sd_mgmt_bank_ >= 0)
         {
             char label[16];
             SampleBankEntryLabel(sd_mgmt_banks_[sd_mgmt_bank_], label, sizeof(label));
-            snprintf(line1, sizeof(line1), "%s:", label);
+            snprintf(line1, sizeof(line1), "%s%s:", SdMgmtGrainsCaptures() ? "Gr " : "", label);
         }
+        else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures && !choosing_kind)
+            snprintf(line1, sizeof(line1), "%s Captures:",
+                      sd_mgmt_capt_kind_ == 1 ? "Grains" : "Sampler");
         else
             snprintf(line1, sizeof(line1), "%s:", SdMgmtFolderName(sd_mgmt_folder_));
         disp_->SetCursor(0, 14);
@@ -5179,13 +5125,17 @@ void Ui::DrawSdMgmtScreen()
         }
         else if(bank_box)
         {
-            char line2[24];
-            if(bank_level_count == 0)
+            char line2[64];
+            if(choosing_kind)
+                snprintf(line2, sizeof(line2), "%s", cur == 0 ? "Sampler" : "Grains");
+            else if(bank_level_count == 0)
                 snprintf(line2, sizeof(line2), "(empty)");
             else if(sd_mgmt_bank_ < 0)
-                SampleBankEntryLabel(sd_mgmt_banks_[sd_mgmt_cursor_], line2, sizeof(line2));
+                SampleBankEntryLabel(sd_mgmt_banks_[cur], line2, sizeof(line2));
+            else if(SdMgmtGrainsCaptures())
+                GranularLibDisplayName(sd_mgmt_item_names_[cur], line2, sizeof(line2));
             else
-                snprintf(line2, sizeof(line2), "%s", sd_mgmt_item_names_[sd_mgmt_cursor_]);
+                snprintf(line2, sizeof(line2), "%s", sd_mgmt_item_names_[cur]);
             disp_->SetCursor(0, 26);
             WriteUpper(line2);
         }
@@ -5203,15 +5153,16 @@ void Ui::DrawSdMgmtScreen()
         }
     }
 
-    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Scroll", "", "", "");
-    // "Back/Duplicate" -- ShortPressFn/LongPressFn, same convention as
-    // Layer:Status's "Pause/Overdub"/"Undo/Clear". Delete stays
-    // "Hold=Delete" (Button2 has no short-tap meaning in-folder here).
-    bool at_bank_list = sd_mgmt_in_folder_ && SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0;
+    // Shared browse convention: K1 scrolls the grid and folder levels,
+    // K2 an item list; B1 backs out a level (hold = Duplicate in an item
+    // list), B2 opens (hold = Delete in an item list).
+    bool at_list  = SdMgmtAtFolderList();
+    bool in_items = sd_mgmt_in_folder_ && !at_list;
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, in_items ? "" : "Scroll", "", "",
+                     in_items ? "Scroll" : "");
     DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
-                     sd_mgmt_in_folder_ ? (at_bank_list ? "Back" : "Back/Duplicate") : "Select",
-                     "", "",
-                     sd_mgmt_in_folder_ ? (at_bank_list ? "Open" : "Hold=Delete") : "");
+                     !sd_mgmt_in_folder_ ? "" : (at_list ? "Back" : "Back/Duplicate"), "", "",
+                     in_items ? "Hold=Delete" : "Open");
 }
 
 void Ui::DrawExportScreen()
@@ -5321,6 +5272,7 @@ void Ui::DrawGranularScreen()
         case GranularParamPage::Capture: page_name = "Capture"; break;
         case GranularParamPage::Trim: page_name = "Trim"; break;
         case GranularParamPage::Preset: page_name = "Preset"; break;
+        case GranularParamPage::User: page_name = "User"; break;
         default: break;
     }
     // Shared content band for the simpler pages below (ADSR's graph,
@@ -5331,8 +5283,7 @@ void Ui::DrawGranularScreen()
     const int kBandTop = 22, kBandBottom = 44;
     char title[24];
     snprintf(title, sizeof(title), "Gran:%s", page_name);
-    disp_->SetCursor(0, 0);
-    WriteUpper(title);
+    DrawPageTitle(title, GranularUnsaved());
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
     disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
@@ -5820,10 +5771,27 @@ void Ui::DrawGranularScreen()
         }
         case GranularParamPage::Trim:
         {
-            char line[24];
-            snprintf(line, sizeof(line), "Start%d%% End%d%%",
-                      (int)(granular_trim_start01_ * 100.f + 0.5f),
-                      (int)(granular_trim_end01_ * 100.f + 0.5f));
+            // Hold-to-confirm bar for saving the capture, same look as
+            // every other hold-to-save in this project.
+            if(pod_->button2.Pressed())
+            {
+                float held = pod_->button2.TimeHeldMs();
+                int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
+                TomThumbDrawText(disp_, 0, 15, "Hold: Save Capture...", true);
+                disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
+                if(w > 0)
+                    disp_->DrawRect(1, 21, w, 23, true, true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+                break;
+            }
+            char line[32];
+            if(granular_trim_status_[0] != '\0')
+                snprintf(line, sizeof(line), "%s", granular_trim_status_);
+            else
+                snprintf(line, sizeof(line), "Start%d%% End%d%%",
+                          (int)(granular_trim_start01_ * 100.f + 0.5f),
+                          (int)(granular_trim_end01_ * 100.f + 0.5f));
             TomThumbDrawText(disp_, 0, 15, line, true);
 
             // Reuses DrawGranularWaveform()'s two-marker drawing as-is --
@@ -5838,7 +5806,8 @@ void Ui::DrawGranularScreen()
             snprintf(s_val, sizeof(s_val), "%d%%", (int)(granular_trim_start01_ * 100.f + 0.5f));
             snprintf(e_val, sizeof(e_val), "%d%%", (int)(granular_trim_end01_ * 100.f + 0.5f));
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Start", s_val, e_val, "End");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Play", "", "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Play", "", "",
+                             granular_capture_full_len_ > 0 ? "Hold=Save" : "");
             break;
         }
         case GranularParamPage::Preset:
@@ -5851,91 +5820,74 @@ void Ui::DrawGranularScreen()
                 DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
                 break;
             }
-            if(granular_preset_slots_dirty_)
-                RefreshGranularPresetSlots();
+            if(granular_lib_dirty_)
+            {
+                granular_captured_bank_count_ = PerformanceStore::ListGranularCapturedBanks(
+                    granular_captured_banks_, PerformanceStore::kMaxGranularCapturedBanks);
+                int n = 1 + granular_captured_bank_count_;
+                if(granular_lib_folder_cursor_ >= n)
+                    granular_lib_folder_cursor_ = 0;
+                if(granular_lib_folder_ >= n)
+                    granular_lib_folder_ = -1; // that folder's gone -- back to the list
+                granular_lib_dirty_ = false;
+            }
+            bool at_folder_list = granular_lib_folder_ < 0;
+            char folder_name[16], folder_label[24];
+            if(!at_folder_list && granular_lib_items_dirty_)
+            {
+                GranularLibFolder(granular_lib_folder_, folder_name, sizeof(folder_name),
+                                  folder_label, sizeof(folder_label));
+                granular_lib_count_ = PerformanceStore::ListGranularLibraryItems(
+                    folder_name, granular_lib_names_, kGranularLibListMax);
+                if(granular_lib_cursor_ >= granular_lib_count_)
+                    granular_lib_cursor_ = 0;
+                granular_lib_items_dirty_ = false;
+            }
 
-            bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
             bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
-            bool load_chooser  = browsing_load && !load_browsing_files_;
-            bool can_hold_load = browsing_load && (load_browsing_files_ || load_new_selected_);
+            bool in_folder     = browsing_load && !at_folder_list;
 
-            // Body text uses the same bigger Font_6x8/WriteUpper
-            // convention as Global:File (not TomThumb, unlike the rest of
-            // this screen's pages) -- same reasoning: this is the one
-            // page where matching Global:File's exact look matters more
-            // than matching Grains' own other pages.
-            //
-            // Button2 confirms whichever of Save/Load is active (Button1
-            // is always "Back" (or "Select" on the Load chooser) once
-            // inside either state -- see OnButton1Short()/
-            // HandleButton2()). The actual SD transfer (once the hold
-            // fires) takes over the WHOLE display via
-            // Ui::OnSaveLoadProgress() instead, since it can run long
-            // enough (up to ~1.9MB of audio) to need its own feedback,
-            // unlike Pad's instant tiny-struct load.
-            if(pod_->button2.Pressed() && (choosing_save || can_hold_load))
-            {
-                float       held     = pod_->button2.TimeHeldMs();
-                int         w        = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                const char* hold_msg = choosing_save ? "Hold: Save..." : "Hold: Load...";
-                disp_->SetCursor(0, 20);
-                WriteUpper(hold_msg);
-                disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
-                if(w > 0)
-                    disp_->DrawRect(1, 31, w, 33, true, true);
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
-                break;
-            }
+            if(!at_folder_list)
+                GranularLibFolder(granular_lib_folder_, folder_name, sizeof(folder_name),
+                                  folder_label, sizeof(folder_label));
+            TomThumbDrawText(disp_, 0, 15, at_folder_list ? "Starter+Captured" : folder_label,
+                             true);
 
-            if(choosing_save)
+            if(browsing_load)
             {
-                bool can_overwrite = granular_loaded_preset_slot_ > 0;
-                char line1[24], line2[16];
-                snprintf(line1, sizeof(line1), "%c Overwrite%s", !save_as_new_ ? '>' : ' ',
-                          can_overwrite ? "" : " (n/a)");
-                snprintf(line2, sizeof(line2), "%c Save New", save_as_new_ ? '>' : ' ');
-                disp_->SetCursor(0, 16);
-                WriteUpper(line1);
-                disp_->SetCursor(0, 28);
-                WriteUpper(line2);
-            }
-            else if(load_chooser)
-            {
-                // Same shape as ChoosingSave's own Overwrite/Save New --
-                // Files only a real option once something's actually
-                // saved, same "can't select what doesn't exist" reasoning
-                // as Overwrite's own.
-                char line1[24], line2[16];
-                snprintf(line1, sizeof(line1), "%c Files%s", !load_new_selected_ ? '>' : ' ',
-                          granular_preset_user_slot_count_ > 0 ? "" : " (n/a)");
-                snprintf(line2, sizeof(line2), "%c Load New", load_new_selected_ ? '>' : ' ');
-                disp_->SetCursor(0, 16);
-                WriteUpper(line1);
-                disp_->SetCursor(0, 28);
-                WriteUpper(line2);
-            }
-            else if(browsing_load)
-            {
-                // Drilled into the numbered list (load_browsing_files_ ==
-                // true).
-                // "GRAINS" matches Global:SdMgmt's own short code for
-                // this category (SdMgmtFolderShortLabel()) -- one
-                // shared vocabulary everywhere a bare slot number is
-                // shown, not a second one invented here.
-                char line2[24];
-                snprintf(line2, sizeof(line2), "Load: GRAINS%d",
-                          granular_preset_user_slots_[granular_preset_cursor_]);
+                char line2[48];
+                if(at_folder_list)
+                    GranularLibFolder(granular_lib_folder_cursor_, folder_name,
+                                      sizeof(folder_name), line2, sizeof(line2));
+                else if(granular_lib_count_ > 0)
+                {
+                    // "> " marks the sound that's loaded right now -- you
+                    // stay in the folder after loading, so it's worth showing.
+                    const char* nm     = granular_lib_names_[granular_lib_cursor_];
+                    bool        loaded = strcmp(granular_loaded_lib_folder_, folder_name) == 0
+                                  && strcmp(granular_loaded_lib_name_, nm) == 0;
+                    char shown[61];
+                    GranularLibDisplayName(nm, shown, sizeof(shown));
+                    snprintf(line2, sizeof(line2), "%s%s", loaded ? "> " : "", shown);
+                }
+                else
+                    snprintf(line2, sizeof(line2), "(empty)");
                 disp_->SetCursor(0, 20);
                 WriteUpper(line2);
             }
             else
             {
-                char line1[24];
-                if(granular_loaded_preset_slot_ <= 0)
-                    snprintf(line1, sizeof(line1), "Now: (custom)");
-                else
+                char line1[48];
+                if(granular_loaded_lib_name_[0] != '\0')
+                {
+                    char shown[61];
+                    GranularLibDisplayName(granular_loaded_lib_name_, shown, sizeof(shown));
+                    snprintf(line1, sizeof(line1), "Now: %s", shown);
+                }
+                else if(granular_loaded_preset_slot_ > 0)
                     snprintf(line1, sizeof(line1), "Now: GRAINS%d", granular_loaded_preset_slot_);
+                else
+                    snprintf(line1, sizeof(line1), "Now: (new)");
                 disp_->SetCursor(0, 20);
                 WriteUpper(line1);
                 if(granular_preset_status_[0] != '\0')
@@ -5945,29 +5897,105 @@ void Ui::DrawGranularScreen()
                 }
             }
 
+            // Shared browse convention: K1 scrolls folders, K2 scrolls the
+            // sounds inside one, B1 backs out a level, B2 opens/loads.
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
+                             browsing_load && at_folder_list ? "Scroll" : "", "", "",
+                             in_folder ? "Scroll" : "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             save_load_mode_ == SaveLoadMode::Idle ? "" : "Back", "", "",
+                             save_load_mode_ == SaveLoadMode::Idle
+                                 ? "Load"
+                                 : (at_folder_list ? "Open"
+                                                   : (granular_lib_count_ > 0 ? "Load" : "")));
+            break;
+        }
+        case GranularParamPage::User:
+        {
+            if(!PerformanceStore::IsCardPresent())
             {
-                const char* b1_label;
-                if(save_load_mode_ == SaveLoadMode::Idle)
-                    b1_label = "Save";
-                else if(load_chooser && !load_new_selected_)
-                    b1_label = "Select";
-                else
-                    b1_label = "Back";
-                const char* b2_label;
-                if(save_load_mode_ == SaveLoadMode::Idle)
-                    b2_label = "Load";
-                else if(choosing_save)
-                    b2_label = "Hold=Save";
-                else if(can_hold_load)
-                    b2_label = "Hold=Load";
-                else
-                    b2_label = "";
-
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
-                                 (choosing_save || browsing_load) ? "Scroll" : "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1_label, "", "",
-                                 b2_label);
+                disp_->SetCursor(0, 20);
+                WriteUpper("No card");
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
+                break;
             }
+            if(granular_preset_slots_dirty_)
+                RefreshGranularPresetSlots();
+
+            int  loaded        = granular_loaded_preset_slot_;
+            bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
+            bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
+
+            // Saving keeps its hold-to-confirm bar; loading is a plain tap.
+            if(pod_->button2.Pressed() && choosing_save)
+            {
+                float held = pod_->button2.TimeHeldMs();
+                int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
+                disp_->SetCursor(0, 20);
+                WriteUpper("Hold: Save...");
+                disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
+                if(w > 0)
+                    disp_->DrawRect(1, 31, w, 33, true, true);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+                break;
+            }
+
+            TomThumbDrawText(disp_, 0, 15, "User Presets", true);
+
+            if(choosing_save)
+            {
+                char line1[24], line2[16];
+                snprintf(line1, sizeof(line1), "%c Overwrite%s", !save_as_new_ ? '>' : ' ',
+                          loaded > 0 ? "" : " (n/a)");
+                snprintf(line2, sizeof(line2), "%c Save New", save_as_new_ ? '>' : ' ');
+                disp_->SetCursor(0, 24);
+                WriteUpper(line1);
+                disp_->SetCursor(0, 34);
+                WriteUpper(line2);
+            }
+            else if(browsing_load)
+            {
+                // "GRAINS" matches Global:SdMgmt's own short code for user saves.
+                char line[24];
+                if(granular_user_cursor_ == 0)
+                    snprintf(line, sizeof(line), "New (blank)");
+                else
+                {
+                    int slot = granular_preset_user_slots_[granular_user_cursor_ - 1];
+                    snprintf(line, sizeof(line), "%sGRAINS%d", slot == loaded ? "> " : "", slot);
+                }
+                disp_->SetCursor(0, 24);
+                WriteUpper(line);
+            }
+            else
+            {
+                char line1[48];
+                if(loaded > 0)
+                    snprintf(line1, sizeof(line1), "Now: GRAINS%d", loaded);
+                else if(granular_loaded_lib_name_[0] != '\0')
+                {
+                    char shown[61];
+                    GranularLibDisplayName(granular_loaded_lib_name_, shown, sizeof(shown));
+                    snprintf(line1, sizeof(line1), "Now: %s", shown);
+                }
+                else
+                    snprintf(line1, sizeof(line1), "Now: (new)");
+                disp_->SetCursor(0, 24);
+                WriteUpper(line1);
+                if(granular_preset_status_[0] != '\0')
+                {
+                    disp_->SetCursor(0, 36);
+                    WriteUpper(granular_preset_status_);
+                }
+            }
+
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, choosing_save ? "Select" : "",
+                             "", "", browsing_load ? "Scroll" : "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             save_load_mode_ == SaveLoadMode::Idle ? "Save" : "Back", "", "",
+                             choosing_save ? "Hold=Save" : "Load");
             break;
         }
         default: break;
@@ -8338,8 +8366,8 @@ void Ui::DrawOscilloscope(int top, int bottom, const float* buf, size_t capacity
 void Ui::RefreshFileSlots()
 {
     file_slot_count_ = PerformanceStore::ListSlots(file_slots_, kMaxFileSlots);
-    if(file_cursor_ >= file_slot_count_)
-        file_cursor_ = file_slot_count_ > 0 ? file_slot_count_ - 1 : 0;
+    if(file_cursor_ > file_slot_count_)
+        file_cursor_ = file_slot_count_; // index 0 is "New"
     file_slots_dirty_ = false;
 }
 
@@ -8404,19 +8432,8 @@ void Ui::TriggerNew()
     snprintf(file_status_, sizeof(file_status_), "New perf");
 }
 
-void Ui::TriggerLoad()
+void Ui::TriggerLoad(int slot)
 {
-    // !load_browsing_files_ means the top-level chooser confirmed with
-    // "New" highlighted (can_confirm_load only allows a confirm here when
-    // that's the case -- see HandleButton2()) -- confirming it is exactly
-    // TriggerNew()'s own wipe.
-    if(!load_browsing_files_)
-    {
-        TriggerNew();
-        return;
-    }
-    int slot = file_slots_[file_cursor_];
-
     // Freeze the audio engine for the whole load: it restores layers one
     // at a time and each can take a while (streaming its recorded audio
     // off the SD card), and the audio ISR keeps running throughout a
@@ -8507,10 +8524,51 @@ const int* Ui::SdMgmtSlots(int* out_count)
     }
 }
 
+void Ui::SdMgmtOpenBox()
+{
+    // Force a fresh scan (same "re-scan on entry" idiom as Global:File)
+    // since files may have changed since the last visit.
+    sd_mgmt_in_folder_ = true;
+    sd_mgmt_cursor_    = 0;
+    sd_mgmt_status_[0] = '\0';
+    switch(sd_mgmt_folder_)
+    {
+        case SdMgmtFolder::Performances: file_slots_dirty_ = true; break;
+        case SdMgmtFolder::GranularPresets: granular_preset_slots_dirty_ = true; break;
+        case SdMgmtFolder::DexedPresets: dexed_preset_slots_dirty_ = true; break;
+        case SdMgmtFolder::EnsemblePresets: ensemble_preset_slots_dirty_ = true; break;
+        case SdMgmtFolder::SampleSynthCaptures:
+        case SdMgmtFolder::SampleSynthKits:
+            sd_mgmt_capt_kind_   = -1; // CAPT: Sampler/Grains choice first
+            sd_mgmt_bank_        = -1; // bank list first
+            sd_mgmt_banks_dirty_ = true;
+            break;
+        case SdMgmtFolder::SampleSynthVoiceUserPresets: sample_synth_voice_user_dirty_ = true; break;
+        case SdMgmtFolder::SampleSynthDrumUserPresets: sample_synth_drum_user_dirty_ = true; break;
+        default: break;
+    }
+}
+
 void Ui::RefreshSdMgmtBanks()
 {
     using PerformanceStore::SampleBank;
-    if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthKits)
+    if(SdMgmtGrainsCaptures())
+    {
+        // Grains banks reuse SampleBankEntry for the number only -- every
+        // Grains branch below goes by SdMgmtGrainsCaptures(), not .type.
+        uint8_t numbers[PerformanceStore::kMaxGranularCapturedBanks];
+        int     n = PerformanceStore::ListGranularCapturedBanks(
+            numbers, PerformanceStore::kMaxGranularCapturedBanks);
+        if(n > kMaxListedSampleBanks)
+            n = kMaxListedSampleBanks;
+        for(int i = 0; i < n; i++)
+        {
+            sd_mgmt_banks_[i].type   = SampleBank::Captured;
+            sd_mgmt_banks_[i].number = numbers[i];
+        }
+        sd_mgmt_bank_count_ = n;
+    }
+    else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthKits)
         sd_mgmt_bank_count_ = ListFaceSampleBanks(true, sd_mgmt_banks_, kMaxListedSampleBanks);
     else
     {
@@ -8535,14 +8593,24 @@ void Ui::RefreshSdMgmtItems()
     if(sd_mgmt_bank_ >= 0 && sd_mgmt_bank_ < sd_mgmt_bank_count_)
     {
         const SampleBankEntry& e = sd_mgmt_banks_[sd_mgmt_bank_];
-        sd_mgmt_item_count_      = PerformanceStore::ListSampleBankItems(
-            e.type, e.number, sd_mgmt_item_names_, kMaxSampleSynthSoundsListed);
+        if(SdMgmtGrainsCaptures())
+        {
+            char folder[16];
+            snprintf(folder, sizeof(folder), "CAPTURED%d", e.number);
+            sd_mgmt_item_count_ = PerformanceStore::ListGranularLibraryItems(
+                folder, sd_mgmt_item_names_, kMaxSampleSynthSoundsListed);
+        }
+        else
+            sd_mgmt_item_count_ = PerformanceStore::ListSampleBankItems(
+                e.type, e.number, sd_mgmt_item_names_, kMaxSampleSynthSoundsListed);
     }
     sd_mgmt_items_dirty_ = false;
 }
 
 int Ui::SdMgmtBankLevelCount()
 {
+    if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures && sd_mgmt_capt_kind_ < 0)
+        return 2; // Sampler, Grains
     if(sd_mgmt_banks_dirty_)
         RefreshSdMgmtBanks();
     if(sd_mgmt_bank_ < 0)
@@ -8601,7 +8669,17 @@ void Ui::TriggerSdMgmtBankDuplicate()
     char        result[PerformanceStore::kMaxSampleSynthKitRefLen] = {};
     bool        ok = false;
     g_progress_disp = disp_;
-    if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures)
+    if(SdMgmtGrainsCaptures())
+    {
+        // Stays in the same folder, like the Sampler's own captures.
+        int n = CaptureNumberFromName(item), new_n = -1;
+        ok    = n > 0
+             && PerformanceStore::DuplicateGranularCapture(sd_mgmt_banks_[sd_mgmt_bank_].number, n,
+                                                           &new_n, &Ui::OnSaveLoadProgress);
+        if(ok)
+            snprintf(result, sizeof(result), "CAP%03d", new_n);
+    }
+    else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures)
     {
         // Stays in the same CAPTUREDn -- if that one's full, it just
         // fails (see DuplicateSampleSynthCapture()'s own doc comment).
@@ -8627,6 +8705,9 @@ void Ui::TriggerSdMgmtBankDuplicate()
     {
         snprintf(sd_mgmt_status_, sizeof(sd_mgmt_status_), "Copied:%s", result);
         MarkSampleSynthListsDirty();
+        granular_lib_dirty_       = true;
+        granular_lib_items_dirty_ = true;
+        sd_mgmt_items_dirty_      = true;
     }
     else
         snprintf(sd_mgmt_status_, sizeof(sd_mgmt_status_), "Fail:%s",
@@ -8643,7 +8724,21 @@ void Ui::TriggerSdMgmtBankDelete()
     char item[PerformanceStore::kMaxSampleSynthWavNameLen + 1];
     snprintf(item, sizeof(item), "%s", sd_mgmt_item_names_[sd_mgmt_cursor_]);
     bool ok = false;
-    if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures)
+    if(SdMgmtGrainsCaptures())
+    {
+        // Same "only the exact loaded file" rule as the Sampler's below.
+        bool was_loaded = strcmp(granular_loaded_lib_folder_, folder) == 0
+                          && strcmp(granular_loaded_lib_name_, item) == 0;
+        int n = CaptureNumberFromName(item);
+        ok    = n > 0
+             && PerformanceStore::DeleteGranularCapture(sd_mgmt_banks_[sd_mgmt_bank_].number, n);
+        if(ok && was_loaded)
+        {
+            granular_loaded_lib_name_[0]   = '\0';
+            granular_loaded_lib_folder_[0] = '\0';
+        }
+    }
+    else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures)
     {
         // Only the simple case -- deleting the exact file that's
         // currently loaded clears the loaded-sound tracking. A later
@@ -8671,6 +8766,9 @@ void Ui::TriggerSdMgmtBankDelete()
     {
         snprintf(sd_mgmt_status_, sizeof(sd_mgmt_status_), "Deleted:%s", item);
         MarkSampleSynthListsDirty();
+        granular_lib_dirty_       = true;
+        granular_lib_items_dirty_ = true;
+        sd_mgmt_items_dirty_      = true;
         if(sd_mgmt_cursor_ > 0)
             sd_mgmt_cursor_--;
     }
@@ -8891,6 +8989,12 @@ void Ui::TriggerGranularImport()
 
 void Ui::OnNewGranularCapture(size_t full_len)
 {
+    // A fresh capture isn't saved anywhere yet. Loads and New call this
+    // too, then MarkGranularClean() straight after, which clears it again.
+    granular_capture_unsaved_      = full_len > 0;
+    granular_loaded_lib_name_[0]   = '\0';
+    granular_loaded_lib_folder_[0] = '\0';
+    granular_trim_status_[0]       = '\0';
     granular_capture_full_len_ = full_len;
     granular_trim_start01_     = 0.f;
     granular_trim_end01_       = 1.f;
@@ -10027,9 +10131,8 @@ void Ui::RefreshGranularPresetSlots()
 {
     granular_preset_user_slot_count_ = PerformanceStore::ListGranularPresets(
         granular_preset_user_slots_, kMaxGranularPresetSlots);
-    if(granular_preset_cursor_ >= granular_preset_user_slot_count_)
-        granular_preset_cursor_
-            = granular_preset_user_slot_count_ > 0 ? granular_preset_user_slot_count_ - 1 : 0;
+    if(granular_user_cursor_ > granular_preset_user_slot_count_)
+        granular_user_cursor_ = granular_preset_user_slot_count_; // index 0 is "New"
     granular_preset_slots_dirty_ = false;
 }
 
@@ -10066,9 +10169,12 @@ void Ui::TriggerSaveGranularPreset(bool force_new)
 
     if(ok)
     {
-        granular_loaded_preset_slot_ = slot;
-        snprintf(granular_preset_status_, sizeof(granular_preset_status_), "Saved %d", slot);
+        granular_loaded_preset_slot_   = slot;
+        granular_loaded_lib_name_[0]   = '\0'; // it's a user save now
+        granular_loaded_lib_folder_[0] = '\0';
+        snprintf(granular_preset_status_, sizeof(granular_preset_status_), "Saved GRAINS%d", slot);
         granular_preset_slots_dirty_ = true; // a new slot may now exist
+        MarkGranularClean();
     }
     else
     {
@@ -10088,51 +10194,26 @@ void Ui::TriggerNewGranularPreset()
     granular_->ApplyPreset(GranularEngine::GranularPresetData{});
     granular_->SetSource(granular_capture_buf_l_, granular_capture_buf_r_, 0);
     OnNewGranularCapture(0);
-    granular_loaded_preset_slot_ = 0;
+    granular_loaded_preset_slot_   = 0;
+    granular_loaded_lib_name_[0]   = '\0';
+    granular_loaded_lib_folder_[0] = '\0';
     snprintf(granular_preset_status_, sizeof(granular_preset_status_), "New");
+    MarkGranularClean();
 }
 
-void Ui::TriggerLoadGranularPreset()
+void Ui::LoadGranularUserSlot(int slot)
 {
     if(!granular_)
         return;
-    // !load_browsing_files_ means the top-level chooser confirmed with
-    // "New" highlighted (can_confirm_load only allows a confirm here when
-    // that's the case -- see HandleButton2()).
-    if(!load_browsing_files_)
-    {
-        TriggerNewGranularPreset();
-        return;
-    }
-    if(granular_preset_cursor_ < 0
-       || granular_preset_cursor_ >= granular_preset_user_slot_count_)
-        return;
-    int slot = granular_preset_user_slots_[granular_preset_cursor_];
-
     GranularEngine::GranularPresetData preset;
     size_t audio_len = 0;
-    // Tried detaching just the granular engine from the buffer being
-    // overwritten (SetSource(nullptr, nullptr, 0) instead of a full
-    // g_audio_suspended) on the theory that the real race was Process()
-    // reading src_l_/src_r_ while the SD DMA transfer rewrote them --
-    // real hardware testing disproved that: the failure (AUD0:1,
-    // FR_DISK_ERR) persisted identically with the engine detached. That
-    // rules out a buffer-specific race and points at the same general
-    // audio-ISR-vs-SDMMC-DMA contention the original "close9"
-    // (FR_INVALID_OBJECT) bug had -- which every other load/save
-    // function in this file already guards against with a full
-    // g_audio_suspended (TriggerLoad(), TriggerSave(),
-    // TriggerSaveGranularPreset(), TriggerLoadDexedPreset(),
-    // TriggerSaveDexedPreset()). This was simply the one left out.
-    // Yes, this does silence Dexed and the Looper layers too for the
-    // ~1-2s a Grains load now takes (down from ~15s pre-fix) -- real
-    // hardware showed that's not actually avoidable here, not an
-    // unnecessary blunt hammer.
+    // Full g_audio_suspended, not just detaching the engine -- real
+    // hardware showed the same audio-ISR-vs-SDMMC-DMA contention every
+    // other load/save here guards against (AUD0:1, FR_DISK_ERR otherwise).
+    // Loaded audio lands in the same owned capture buffer Direct Record/
+    // From-Layer already use.
     g_audio_suspended = true;
     g_progress_disp   = disp_;
-    // Loaded audio lands in the same owned capture buffer Direct Record/
-    // From-Layer already use -- whichever source most recently filled it
-    // is exactly what SetSource() should be pointing at.
     bool ok = PerformanceStore::LoadGranularPreset(
         slot, &preset, granular_capture_buf_l_, granular_capture_buf_r_,
         granular_capture_capacity_, &audio_len, &Ui::OnSaveLoadProgress);
@@ -10144,14 +10225,176 @@ void Ui::TriggerLoadGranularPreset()
         granular_->ApplyPreset(preset);
         granular_->SetSource(granular_capture_buf_l_, granular_capture_buf_r_, audio_len);
         OnNewGranularCapture(audio_len);
-        granular_loaded_preset_slot_ = slot;
+        granular_loaded_preset_slot_   = slot;
+        granular_loaded_lib_name_[0]   = '\0';
+        granular_loaded_lib_folder_[0] = '\0';
         snprintf(granular_preset_status_, sizeof(granular_preset_status_), "Loaded GRAINS%d", slot);
+        MarkGranularClean();
     }
     else
     {
         snprintf(granular_preset_status_, sizeof(granular_preset_status_), "Fail:%s",
                   PerformanceStore::GetLastError());
     }
+}
+
+void Ui::GranularLibFolder(int idx, char* name, size_t name_size, char* label,
+                           size_t label_size) const
+{
+    if(idx <= 0 || idx > granular_captured_bank_count_)
+    {
+        snprintf(name, name_size, "%s", PerformanceStore::kGranularStarterFolder);
+        snprintf(label, label_size, "Starter");
+        return;
+    }
+    int n = granular_captured_banks_[idx - 1];
+    snprintf(name, name_size, "CAPTURED%d", n);
+    snprintf(label, label_size, "Captured %d", n);
+}
+
+void Ui::GranularLibDisplayName(const char* file, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "%s", file);
+    size_t len = strlen(out);
+    if(len > 4 && strcasecmp(out + len - 4, ".dat") == 0)
+        out[len - 4] = '\0';
+}
+
+void Ui::LoadGranularLibraryItem()
+{
+    if(!granular_ || granular_lib_folder_ < 0 || granular_lib_cursor_ >= granular_lib_count_)
+        return;
+    char folder[16], label[24];
+    GranularLibFolder(granular_lib_folder_, folder, sizeof(folder), label, sizeof(label));
+    const char* name = granular_lib_names_[granular_lib_cursor_];
+
+    GranularEngine::GranularPresetData preset;
+    size_t audio_len = 0;
+    g_audio_suspended = true; // see LoadGranularUserSlot()
+    g_progress_disp   = disp_;
+    bool ok = PerformanceStore::LoadGranularLibraryPreset(
+        folder, name, &preset, granular_capture_buf_l_, granular_capture_buf_r_,
+        granular_capture_capacity_, &audio_len, &Ui::OnSaveLoadProgress);
+    g_progress_disp   = nullptr;
+    g_audio_suspended = false;
+
+    if(ok)
+    {
+        granular_->ApplyPreset(preset);
+        granular_->SetSource(granular_capture_buf_l_, granular_capture_buf_r_, audio_len);
+        OnNewGranularCapture(audio_len);
+        // Not a user save -- the User page's Save starts as Save New.
+        granular_loaded_preset_slot_ = 0;
+        snprintf(granular_loaded_lib_folder_, sizeof(granular_loaded_lib_folder_), "%s", folder);
+        snprintf(granular_loaded_lib_name_, sizeof(granular_loaded_lib_name_), "%s", name);
+        char shown[61];
+        GranularLibDisplayName(name, shown, sizeof(shown));
+        snprintf(granular_preset_status_, sizeof(granular_preset_status_), "Loaded %s", shown);
+        MarkGranularClean();
+    }
+    else
+    {
+        snprintf(granular_preset_status_, sizeof(granular_preset_status_), "Fail:%s",
+                  PerformanceStore::GetLastError());
+    }
+}
+
+void Ui::TriggerSaveGranularCapture()
+{
+    if(!granular_)
+        return;
+    if(granular_capture_full_len_ == 0 || granular_->GetSourceLen() == 0)
+    {
+        snprintf(granular_trim_status_, sizeof(granular_trim_status_), "Nothing captured");
+        return;
+    }
+    if(!PerformanceStore::IsCardPresent())
+    {
+        PerformanceStore::Remount();
+        if(!PerformanceStore::IsCardPresent())
+        {
+            snprintf(granular_trim_status_, sizeof(granular_trim_status_), "No card");
+            return;
+        }
+    }
+    GranularEngine::GranularPresetData preset = granular_->CapturePreset();
+    char folder[16], name[16];
+    g_audio_suspended = true; // see TriggerSaveGranularPreset()
+    g_progress_disp   = disp_;
+    bool ok = PerformanceStore::SaveGranularCapture(
+        preset, granular_->GetSourceL(), granular_->GetSourceR(), granular_->GetSourceLen(),
+        folder, sizeof(folder), name, sizeof(name), &Ui::OnSaveLoadProgress);
+    g_progress_disp   = nullptr;
+    g_audio_suspended = false;
+
+    if(ok)
+    {
+        granular_loaded_preset_slot_ = 0;
+        snprintf(granular_loaded_lib_folder_, sizeof(granular_loaded_lib_folder_), "%s", folder);
+        snprintf(granular_loaded_lib_name_, sizeof(granular_loaded_lib_name_), "%s", name);
+        char shown[16];
+        GranularLibDisplayName(name, shown, sizeof(shown));
+        snprintf(granular_trim_status_, sizeof(granular_trim_status_), "Saved %s/%s", folder,
+                  shown);
+        granular_lib_dirty_       = true;
+        granular_lib_items_dirty_ = true;
+        MarkGranularClean();
+    }
+    else
+    {
+        snprintf(granular_trim_status_, sizeof(granular_trim_status_), "Fail:%s",
+                  PerformanceStore::GetLastError());
+    }
+}
+
+Ui::EditSnapshot Ui::GranularSnapshot() const
+{
+    EditSnapshot s;
+    if(!granular_)
+        return s;
+    GranularEngine::GranularPresetData p = granular_->CapturePreset();
+    s.Add(p.size01);
+    s.Add(p.fill01);
+    s.Add(p.scan_fill01);
+    s.Add(p.gap01);
+    s.Add(p.scan_gap01);
+    s.Add(p.position01);
+    s.Add(p.scan01);
+    s.Add(p.scan_start01);
+    s.Add(p.scan_end01);
+    s.Add(p.grain_tune01);
+    s.Add(p.grain_follows_note);
+    s.Add(p.direction01);
+    s.Add(p.scan_direction);
+    s.Add(p.attack01);
+    s.Add(p.decay01);
+    s.Add(p.sustain01);
+    s.Add(p.release01);
+    s.Add(p.filter_mode);
+    s.Add(p.filter_cutoff01);
+    s.Add(p.filter_res01);
+    s.Add(p.grain_volume01);
+    s.Add(p.scan_volume01);
+    s.Add(p.rhythm_index);
+    s.Add(p.grain_speed);
+    s.Add(p.jitter01);
+    s.Add(p.scan_bounce);
+    s.Add(p.reverb_send01);
+    s.Add(granular_trim_start01_);
+    s.Add(granular_trim_end01_);
+    return s;
+}
+
+void Ui::MarkGranularClean()
+{
+    granular_baseline_        = GranularSnapshot();
+    granular_capture_unsaved_ = false;
+}
+
+bool Ui::GranularUnsaved() const
+{
+    return granular_capture_unsaved_
+           || (granular_baseline_.len > 0 && !(GranularSnapshot() == granular_baseline_));
 }
 
 void Ui::RefreshDexedPresetSlots()
