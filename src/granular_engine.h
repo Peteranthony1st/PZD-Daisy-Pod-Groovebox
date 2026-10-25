@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "svf_setup.h"
 #include <cstddef>
 #include "daisysp.h"
 #include "looper_layer.h" // FilterMode, kFilterMinHz/kFilterMaxHz
@@ -636,7 +637,7 @@ class GranularEngine
     static constexpr float kMinAdsrSeconds = 0.005f;
     static constexpr float kMaxAdsrSeconds = 3.f;
 
-    daisysp::Svf filter_l_, filter_r_;
+    TptSvf filter_l_, filter_r_;
     FilterMode   filter_mode_     = FilterMode::Off;
     float        filter_cutoff01_ = 1.f;
     float        filter_res01_    = 0.f;

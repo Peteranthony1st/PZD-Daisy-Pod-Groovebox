@@ -1,4 +1,5 @@
 #include "dexed_synth.h"
+#include "svf_setup.h"
 #include "itcm.h"
 #include "dexed_sysex.h"
 #include "msfa/exp2.h"

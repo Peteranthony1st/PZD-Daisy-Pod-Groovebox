@@ -1,5 +1,6 @@
 #pragma once
 #include "daisy_seed.h"
+#include "svf_setup.h"
 #include "daisysp.h"
 #include "tempo_clock.h"
 
@@ -451,7 +452,7 @@ struct LooperLayer
     float      filter_cutoff01_  = 0.5f; // raw 0..1, for save/restore
     float      filter_res_       = 0.2f;
     float      filter_res01_     = 0.22f; // raw 0..1, for save/restore
-    daisysp::Svf filter_l_, filter_r_;
+    TptSvf filter_l_, filter_r_;
 
     LayerEffect effect_        = LayerEffect::Off;
     float       effect_param_a_ = 0.5f;

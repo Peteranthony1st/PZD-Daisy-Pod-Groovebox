@@ -23,6 +23,9 @@ struct EnsembleFactoryPreset
     float       filter_res01;
     float       output_level01;
     float       pan01;
+    float       reverb_send01; // into the shared reverb -- its Size is global (Global:Reverb)
+    float       delay_send01;  // into the shared delay -- Time is global (Global:Delay)
+    float       gain01;        // 0 = unity, 1 = +12 dB into the limiter
 };
 
 extern const EnsembleFactoryPreset kEnsembleFactoryPresets[];

@@ -199,7 +199,7 @@ Full control map:
 | Ensemble: Env | Attack (or Sustain) | Decay (or Release) | — | Toggle AD/SR |
 | Ensemble: Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
 | Ensemble: Filter | Cutoff | Resonance | Cycle filter mode | — |
-| Ensemble: Mix | Output level | Pan | — | — |
+| Ensemble: Mix | Output level (or Gain, 0 to +12 dB into the limiter) | Pan | Target Level+Pan | Target Gain |
 | Ensemble: FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Ensemble: MIDI | MIDI channel (Omni, 1-16) | — | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
 | Ensemble: Preset | — | Scroll the factory presets | Back | Load (tap, stays) |
@@ -615,6 +615,39 @@ looped sample -> Filter (Svf: Low/High/Band) -> one selectable character
   more recent cut on top of that. See *Boot process: bootloader + QSPI
   flash* below for the current, real-hardware-measured worst-case CPU
   number.
+
+### One filter for everything: the trapezoidal SVF
+
+Every filter in the project -- each engine's Filter page, the looper
+layers, the master filter, export's copy and the import anti-alias
+filters -- is now `TptSvf` (`svf_setup.h`), Andrew Simper's 2013
+trapezoidal/zero-delay-feedback state-variable filter (Cytomic,
+"SvfLinearTrapOptimised2"), replacing `daisysp::Svf`.
+
+`daisysp::Svf` is Simper's older double-sampled design (musicdsp.org
+#92). Its resonance carries a cubic saturation term,
+`band -= drive * band^3`; Simper gives drive's range as 0-0.1, while
+DaisySP sets it to 0.5 x resonance, and that nonlinearity isn't covered
+by the design's stability analysis. Dexed and Ensemble filter *before*
+their limiters, so a chord can reach +-4 inside the filter, and the
+cubic term then over-corrected and crackled (Ensemble's Dark Drone,
+Dexed at high resonance). Setting drive to Simper's own range helped at
+moderate resonance but exposed the top end, where damping reaches zero.
+
+The trapezoidal SVF is linear and stable at any input level, cutoff and
+resonance. Resonance keeps the old knob curve (damping =
+2(1 - res^0.25)) so the knobs feel the same, but stops at a damping of
+0.05 (Q 20) rather than 0, where a linear filter would have nothing left
+to hold it. Cutoff is also more accurate at high settings (exact tan()
+prewarp rather than the double-sampled sine approximation). It runs once
+per sample instead of twice: with the looper, Dexed, SMPVO and Ensemble
+all playing through filters, CPU went from 73% average / 85% peak to
+**65% / 76%**.
+
+A faint crackle on high held Ensemble notes with a resonant low-pass
+remained after the swap -- so it isn't the filter; most likely the
+oscillators' residual aliasing near the cutoff being lifted by the
+resonance. Judged a rare special case and left.
 
 ### Dattorro plate reverb
 
@@ -2108,6 +2141,34 @@ Filter Mode on for the Filter Cutoff mod-wheel target, and the user
 rejected it directly in favor of parameters "behaving as they're set,"
 with the wheel defaulting to **Off** rather than a target that does
 something by default.
+
+### Gain, a re-voiced 16-preset bank, and user saves that keep their numbers
+
+Ensemble's loudness follows how many drawbars are up (each voice sums
+its drawbars at a fixed per-voice level), and centre Pan halves both
+sides on top -- a thin registration was genuinely quiet, and Output
+Level, applied after the tanh limiter, couldn't make that up without
+clipping further down the chain. **Gain** (Mix page, B2) multiplies the
+signal into the limiter by 4^x, 0 to +12 dB; pushed hard it saturates
+gently. It's saved in Ensemble presets as file version 2 (v1 files load
+at 0 dB, so they sound as they did).
+
+The factory bank was rewritten as 16 presets, each setting
+registration, envelope, filter mode/cutoff/resonance, chorus, Gain and
+a reverb send (`ensemble_factory_data.cpp` lists the parameter curves at
+the top for tuning by ear). None send to the delay -- tried and dropped
+by ear: echoes smear these long-release sounds; the delay is left for
+per-song use.
+
+Growing the bank exposed a numbering trap: user saves were numbered
+straight after the factory presets (ENSM9 onwards, because there were
+8), so adding factory presets would have hidden ENSM9..ENSM16.
+`PerformanceStore::kEnsembleFirstUserSlot = 9` now fixes user numbering
+for good, and the UI tracks factory presets in their own range
+(`kEnsembleFactorySlotBase = 1000 + index`), loading them straight from
+the firmware table -- so the Preset page also works with no SD card.
+Dexed's Roms/Dexed groups likewise no longer need a card; only its
+Imports group does.
 
 ### Factory presets, and a real filter-cutoff bug found while retuning them
 

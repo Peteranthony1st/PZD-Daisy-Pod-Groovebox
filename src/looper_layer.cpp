@@ -1,4 +1,5 @@
 #include "looper_layer.h"
+#include "svf_setup.h"
 #include "itcm.h"
 #include <math.h>
 #include <cstring>

@@ -1,4 +1,5 @@
 #include "granular_engine.h"
+#include "svf_setup.h"
 #include "itcm.h"
 #include <atomic>
 #include <cmath>

@@ -289,7 +289,13 @@ bool DuplicateDexedPreset(int slot, int* out_new_slot, ProgressFn on_progress = 
 // LoadEnsemblePreset() serves those directly without touching the card,
 // and SaveEnsemblePreset()/NextFreeEnsemblePresetSlot() never target
 // them. User saves start right after that range.
-constexpr int kMaxEnsemblePresets = 107; // 8 factory + 99 user, same user headroom as Grains
+constexpr int kMaxEnsemblePresets = 107; // user saves ENSM9..ENSM107
+// User saves are numbered from 9 for good -- whatever the size of the
+// factory bank. (They used to start right after the factory presets,
+// which happened to be 8; adding factory presets would have hidden
+// ENSM9 onwards.) Factory presets aren't files and are loaded straight
+// from EnsembleSynth::GetFactoryPreset().
+constexpr int kEnsembleFirstUserSlot = 9;
 
 bool SaveEnsemblePreset(int slot, const EnsembleSynth::EnsemblePresetData& preset);
 bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset);

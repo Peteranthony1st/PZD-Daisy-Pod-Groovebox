@@ -1,4 +1,5 @@
 #include "sample_synth.h"
+#include "svf_setup.h"
 #include "itcm.h"
 #include <cmath>
 #include <cstring>

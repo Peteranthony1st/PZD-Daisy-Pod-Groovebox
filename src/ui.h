@@ -1013,6 +1013,7 @@ class Ui
         EnsembleEnsemble, // chorus depth + rate, no toggle needed
         EnsembleFilter,
         EnsembleMix,
+        EnsembleMixGain, // Mix page, B2 -- K1 Gain into the limiter
         // Same shape as DexedFxReverb/DexedFxDelay above.
         EnsembleFxReverb,
         EnsembleFxDelay,
@@ -1499,6 +1500,16 @@ class Ui
     // Loads one preset by real slot number (1..factory count = factory,
     // above that = a user save) -- shared by the Preset and User pages.
     void LoadEnsembleSlot(int slot);
+    // ensemble_loaded_preset_slot_ numbering: 0 = nothing/New, user
+    // saves = their own file number (ENSM9..), factory preset i =
+    // kEnsembleFactorySlotBase + i -- a separate range, so the factory
+    // bank can grow without colliding with anyone's user saves.
+    static constexpr int kEnsembleFactorySlotBase = 1000;
+    static bool EnsembleIsFactorySlot(int s) { return s >= kEnsembleFactorySlotBase; }
+    static bool EnsembleIsUserSlot(int s)
+    {
+        return s >= PerformanceStore::kEnsembleFirstUserSlot && s < kEnsembleFactorySlotBase;
+    }
     // User page list: index 0 is "New (blank)", 1.. are the user saves.
     int ensemble_user_cursor_ = 0;
 
@@ -1647,6 +1658,8 @@ class Ui
     bool dexed_vibrato_target_sens_ = false;
     bool granular_fx_target_delay_ = false;
     bool ensemble_fx_target_delay_ = false;
+    // Ensemble Mix page: B1 = Level+Pan, B2 = Gain (see EnsembleSynth::SetGain01()).
+    bool ensemble_mix_target_gain_ = false;
     bool sample_synth_fx_target_delay_ = false;
     // Ensemble's own Env page toggle (Attack/Decay vs Sustain/Release) --
     // same idiom as GranularEnvAD/GranularEnvSR's own toggle.

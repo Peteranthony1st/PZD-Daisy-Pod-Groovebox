@@ -952,9 +952,10 @@ void Ui::HandleButton2(const UiControlEvents& events)
         {
             if(save_load_mode_ != SaveLoadMode::BrowsingLoad)
             {
+                // Built-in presets need no card -- just try a remount in
+                // case one was inserted, for the Imports group.
                 if(!PerformanceStore::IsCardPresent())
                     PerformanceStore::Remount();
-                else
                 {
                     save_load_mode_           = SaveLoadMode::BrowsingLoad;
                     dexed_files_group_open_   = false; // always start at the group list
@@ -1041,7 +1042,7 @@ void Ui::HandleButton2(const UiControlEvents& events)
         if(events.btn2_released)
         {
             if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
-                LoadEnsembleSlot(ensemble_preset_cursor_ + 1);
+                LoadEnsembleSlot(kEnsembleFactorySlotBase + ensemble_preset_cursor_);
             else
                 save_load_mode_ = SaveLoadMode::BrowsingLoad;
             button2_long_fired_ = false;
@@ -1692,6 +1693,8 @@ void Ui::OnButton1Short()
                 ensemble_env_target_sr_ = false; // knobs -> Attack+Decay
             else if(ensemble_param_page_ == EnsembleParamPage::FX)
                 ensemble_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
+            else if(ensemble_param_page_ == EnsembleParamPage::Mix)
+                ensemble_mix_target_gain_ = false; // knobs -> Level+Pan
             else if(ensemble_param_page_ == EnsembleParamPage::Filter && ensemble_)
             {
                 // Same "Button1 cycles" idiom as Layer:Filter/Dexed:Filter.
@@ -1721,8 +1724,7 @@ void Ui::OnButton1Short()
                     // Reveal Overwrite / Save New -- K1 picks, holding
                     // Button2 confirms (see HandleButton2()).
                     save_load_mode_ = SaveLoadMode::ChoosingSave;
-                    save_as_new_
-                        = ensemble_loaded_preset_slot_ <= EnsembleSynth::GetNumFactoryPresets();
+                    save_as_new_    = !EnsembleIsUserSlot(ensemble_loaded_preset_slot_);
                 }
             }
             break;
@@ -1959,6 +1961,8 @@ void Ui::OnButton2Short()
         ensemble_env_target_sr_ = true; // knobs -> Sustain+Release
     else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::FX)
         ensemble_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
+    else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::Mix)
+        ensemble_mix_target_gain_ = true; // knobs -> Gain
     else if(screen_ == Screen::SampleSynth && sample_synth_param_page_ == SampleSynthParamPage::Env)
         sample_synth_adsr_target_sr_ = true; // knobs -> Sustain+Release
     else if(screen_ == Screen::SampleSynth && sample_synth_param_page_ == SampleSynthParamPage::FX)
@@ -2076,7 +2080,9 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                                                       : KnobContext::EnsembleEnvAD;
                 case EnsembleParamPage::Ensemble: return KnobContext::EnsembleEnsemble;
                 case EnsembleParamPage::Filter: return KnobContext::EnsembleFilter;
-                case EnsembleParamPage::Mix: return KnobContext::EnsembleMix;
+                case EnsembleParamPage::Mix:
+                    return ensemble_mix_target_gain_ ? KnobContext::EnsembleMixGain
+                                                     : KnobContext::EnsembleMix;
                 case EnsembleParamPage::FX:
                     return ensemble_fx_target_delay_ ? KnobContext::EnsembleFxDelay
                                                         : KnobContext::EnsembleFxReverb;
@@ -2423,6 +2429,10 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k1_pickup_raw_[i] = ensemble_->GetFilterCutoff01();
                 k2_pickup_raw_[i] = ensemble_->GetFilterResonance01();
             }
+            break;
+        case KnobContext::EnsembleMixGain:
+            if(ensemble_)
+                k1_pickup_raw_[i] = ensemble_->GetGain01();
             break;
         case KnobContext::EnsembleMix:
             if(ensemble_)
@@ -3463,6 +3473,12 @@ void Ui::ApplyKnobs()
                         ensemble_->SetFilterResonance01(k2);
                     break;
                 case EnsembleParamPage::Mix:
+                    if(ensemble_mix_target_gain_)
+                    {
+                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                            ensemble_->SetGain01(k1);
+                        break;
+                    }
                     if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
                         ensemble_->SetOutputLevel01(k1);
                     if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
@@ -3508,10 +3524,9 @@ void Ui::ApplyKnobs()
                     if(save_load_mode_ == SaveLoadMode::ChoosingSave)
                     {
                         // Overwrite only makes sense once a user save is loaded.
-                        save_as_new_
-                            = ensemble_loaded_preset_slot_ <= EnsembleSynth::GetNumFactoryPresets()
-                                  ? true
-                                  : k1 >= 0.5f;
+                        save_as_new_ = !EnsembleIsUserSlot(ensemble_loaded_preset_slot_)
+                                           ? true
+                                           : k1 >= 0.5f;
                     }
                     else if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
                     {
@@ -6532,14 +6547,9 @@ void Ui::DrawDexedScreen()
         }
         case DexedParamPage::Preset:
         {
-            if(!PerformanceStore::IsCardPresent())
-            {
-                disp_->SetCursor(0, 20);
-                WriteUpper("No card");
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
-                break;
-            }
+            // No card check here: Roms and Dexed are built into the
+            // firmware, only the Imports group lives on the card (and
+            // shows "(no card)" itself when it's missing).
             if(dexed_preset_slots_dirty_)
                 RefreshDexedPresetSlots();
 
@@ -6574,7 +6584,7 @@ void Ui::DrawDexedScreen()
                     }
                     else
                     {
-                        name  = "(no imports)";
+                        name  = PerformanceStore::IsCardPresent() ? "(no imports)" : "(no card)";
                         count = 0;
                     }
                 }
@@ -6899,13 +6909,29 @@ void Ui::DrawEnsembleScreen()
         case EnsembleParamPage::Mix:
         {
             DrawOscilloscope(12, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
-            char out_val[8], pan_val[8];
-            snprintf(out_val, sizeof(out_val), "%d%%",
-                      (int)(ensemble_->GetOutputLevel01() * 100.f + 0.5f));
-            snprintf(pan_val, sizeof(pan_val), "%d%%",
-                      (int)(ensemble_->GetPan01() * 100.f + 0.5f));
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, pan_val, "Pan");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+            if(ensemble_mix_target_gain_)
+            {
+                // Shown in dB, 0 to +12 (see EnsembleSynth::SetGain01()) --
+                // tenths in integer maths, since this build's printf has
+                // no float support.
+                char gain_val[12];
+                int  tenths = (int)(ensemble_->GetGain01() * 120.4f + 0.5f);
+                snprintf(gain_val, sizeof(gain_val), "+%d.%ddB", tenths / 10, tenths % 10);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Gain", gain_val, "", "");
+            }
+            else
+            {
+                char out_val[8], pan_val[8];
+                snprintf(out_val, sizeof(out_val), "%d%%",
+                          (int)(ensemble_->GetOutputLevel01() * 100.f + 0.5f));
+                snprintf(pan_val, sizeof(pan_val), "%d%%",
+                          (int)(ensemble_->GetPan01() * 100.f + 0.5f));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, pan_val,
+                                 "Pan");
+            }
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             ensemble_mix_target_gain_ ? "Level" : "Level*", "", "",
+                             ensemble_mix_target_gain_ ? "Gain*" : "Gain");
             break;
         }
         case EnsembleParamPage::FX:
@@ -6955,7 +6981,9 @@ void Ui::DrawEnsembleScreen()
         case EnsembleParamPage::Preset:
         case EnsembleParamPage::User:
         {
-            if(!PerformanceStore::IsCardPresent())
+            // Only the User page needs the card -- the Preset page's
+            // factory sounds are built into the firmware.
+            if(ensemble_param_page_ == EnsembleParamPage::User && !PerformanceStore::IsCardPresent())
             {
                 disp_->SetCursor(0, 20);
                 WriteUpper("No card");
@@ -6971,7 +6999,6 @@ void Ui::DrawEnsembleScreen()
             }
 
             bool is_user       = ensemble_param_page_ == EnsembleParamPage::User;
-            int  factory_count = EnsembleSynth::GetNumFactoryPresets();
             int  loaded        = ensemble_loaded_preset_slot_;
             bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
             bool browsing_load = save_load_mode_ == SaveLoadMode::BrowsingLoad;
@@ -6995,7 +7022,7 @@ void Ui::DrawEnsembleScreen()
 
             if(choosing_save)
             {
-                bool can_overwrite = loaded > factory_count;
+                bool can_overwrite = EnsembleIsUserSlot(loaded);
                 char line1[24], line2[16];
                 snprintf(line1, sizeof(line1), "%c Overwrite%s", !save_as_new_ ? '>' : ' ',
                           can_overwrite ? "" : " (n/a)");
@@ -7012,7 +7039,7 @@ void Ui::DrawEnsembleScreen()
                 char line[24];
                 if(!is_user)
                 {
-                    int slot = ensemble_preset_cursor_ + 1;
+                    int slot = kEnsembleFactorySlotBase + ensemble_preset_cursor_;
                     snprintf(line, sizeof(line), "%s%s", slot == loaded ? "> " : "",
                               EnsembleSynth::GetFactoryPresetName(ensemble_preset_cursor_));
                 }
@@ -7031,9 +7058,10 @@ void Ui::DrawEnsembleScreen()
                 char line1[24];
                 if(loaded <= 0)
                     snprintf(line1, sizeof(line1), "Now: (new)");
-                else if(loaded <= factory_count)
+                else if(EnsembleIsFactorySlot(loaded))
                     snprintf(line1, sizeof(line1), "Now: %s",
-                              EnsembleSynth::GetFactoryPresetName(loaded - 1));
+                              EnsembleSynth::GetFactoryPresetName(loaded
+                                                                  - kEnsembleFactorySlotBase));
                 else
                     snprintf(line1, sizeof(line1), "Now: ENSM%d", loaded);
                 disp_->SetCursor(0, 24);
@@ -10769,8 +10797,7 @@ void Ui::TriggerSaveEnsemblePreset(bool force_new)
     // if it names a real USER slot; a factory slot or nothing loaded (0)
     // has no slot to overwrite, so fall back to a new one -- same
     // reasoning TriggerSaveDexedPreset() uses.
-    int slot = (!force_new
-                 && ensemble_loaded_preset_slot_ > EnsembleSynth::GetNumFactoryPresets())
+    int slot = (!force_new && EnsembleIsUserSlot(ensemble_loaded_preset_slot_))
                    ? ensemble_loaded_preset_slot_
                    : PerformanceStore::NextFreeEnsemblePresetSlot();
     if(slot < 0)
@@ -10812,16 +10839,19 @@ void Ui::LoadEnsembleSlot(int slot)
 {
     if(!ensemble_ || slot < 1)
         return;
-    int factory_count = EnsembleSynth::GetNumFactoryPresets();
+    // Factory presets aren't files -- straight from the firmware table.
+    bool factory = EnsembleIsFactorySlot(slot);
     EnsembleSynth::EnsemblePresetData preset;
-    bool ok = PerformanceStore::LoadEnsemblePreset(slot, &preset);
+    bool ok = factory ? true : PerformanceStore::LoadEnsemblePreset(slot, &preset);
+    if(factory)
+        preset = EnsembleSynth::GetFactoryPreset(slot - kEnsembleFactorySlotBase);
     if(ok)
     {
         ensemble_->ApplyPreset(preset);
         ensemble_loaded_preset_slot_ = slot;
-        if(slot <= factory_count)
+        if(factory)
             snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Loaded %s",
-                      EnsembleSynth::GetFactoryPresetName(slot - 1));
+                      EnsembleSynth::GetFactoryPresetName(slot - kEnsembleFactorySlotBase));
         else
             snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Loaded ENSM%d", slot);
         MarkEnsembleClean();
@@ -10854,6 +10884,7 @@ Ui::EditSnapshot Ui::EnsembleSnapshot() const
     s.Add(p.pan01);
     s.Add(p.reverb_send01);
     s.Add(p.delay_send01);
+    s.Add(p.gain01);
     return s;
 }
 

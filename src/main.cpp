@@ -1,4 +1,5 @@
 #include <cstring>
+#include "svf_setup.h"
 #include "daisy_pod.h"
 #include "daisysp.h"
 #include "dev/oled_ssd130x.h"
@@ -176,7 +177,7 @@ SharedDelay::Bus DSY_SDRAM_BSS fx_delay;
 // reverb, summed) rather than per-layer, so it's a plain Svf pair
 // living in ordinary SRAM (tiny, no big internal buffer like the
 // per-layer effects above) instead of needing SDRAM placement.
-daisysp::Svf fx_master_filter_l, fx_master_filter_r;
+TptSvf fx_master_filter_l, fx_master_filter_r;
 
 // The MIDI-played granular voice (see granular_engine.h -- monophonic,
 // two overlapping-grain layers). Small enough (Grain/Adsr/Svf state, no

@@ -1,4 +1,5 @@
 #include "performance_store.h"
+#include "svf_setup.h"
 #include "dexed_sysex.h"
 #include "dattorro_reverb.h"
 #include <cstdio>
@@ -1379,7 +1380,10 @@ struct EnsemblePresetFileHeader
     char     magic[4]; // "ENSP"
     uint32_t version;
 };
-constexpr uint32_t kEnsemblePresetFileVersion = 1;
+constexpr uint32_t kEnsemblePresetFileVersion   = 2; // v2: + gain01
+constexpr uint32_t kEnsemblePresetFileVersionV1 = 1;
+constexpr size_t   kEnsemblePresetDataV1Size
+    = offsetof(EnsembleSynth::EnsemblePresetData, gain01);
 } // namespace
 
 namespace
@@ -2072,7 +2076,7 @@ bool DuplicateDexedPreset(int slot, int* out_new_slot, ProgressFn on_progress)
 
 bool SaveEnsemblePreset(int slot, const EnsembleSynth::EnsemblePresetData& preset)
 {
-    if(!card_ready || slot <= EnsembleSynth::GetNumFactoryPresets() || slot > kMaxEnsemblePresets)
+    if(!card_ready || slot < kEnsembleFirstUserSlot || slot > kMaxEnsemblePresets)
         return false;
 
     char fname[24];
@@ -2121,14 +2125,8 @@ bool SaveEnsemblePreset(int slot, const EnsembleSynth::EnsemblePresetData& prese
 
 bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
 {
-    if(slot < 1 || slot > kMaxEnsemblePresets || !out_preset)
-        return false;
-    if(slot <= EnsembleSynth::GetNumFactoryPresets())
-    {
-        *out_preset = EnsembleSynth::GetFactoryPreset(slot - 1);
-        return true;
-    }
-    if(!card_ready)
+    if(slot < kEnsembleFirstUserSlot || slot > kMaxEnsemblePresets || !out_preset
+       || !card_ready)
         return false;
 
     char fname[24];
@@ -2148,7 +2146,10 @@ bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
     UINT br;
     fr      = f_read(&file, &hdr, sizeof(hdr), &br);
     bool ok = fr == FR_OK && br == sizeof(hdr);
-    if(ok && (memcmp(hdr.magic, "ENSP", 4) != 0 || hdr.version != kEnsemblePresetFileVersion))
+    if(ok
+       && (memcmp(hdr.magic, "ENSP", 4) != 0
+           || (hdr.version != kEnsemblePresetFileVersion
+               && hdr.version != kEnsemblePresetFileVersionV1)))
     {
         ok = false;
         SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
@@ -2162,8 +2163,12 @@ bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
     data = EnsembleSynth::EnsemblePresetData{};
     if(ok)
     {
-        fr = f_read(&file, &data, sizeof(data), &br);
-        ok = fr == FR_OK && br == sizeof(data);
+        // A v1 file stops just before gain01, which then keeps its
+        // default (0 = unity) -- exactly how it sounded before.
+        UINT want = hdr.version == kEnsemblePresetFileVersionV1 ? (UINT)kEnsemblePresetDataV1Size
+                                                                : (UINT)sizeof(data);
+        fr = f_read(&file, &data, want, &br);
+        ok = fr == FR_OK && br == want;
         if(!ok)
             SetError("data", fr);
     }
@@ -2178,19 +2183,18 @@ bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
 
 int ListEnsemblePresets(int* out_numbers, int max_out)
 {
-    return ListSlotFolder("ENSEMBLE", "PRES", EnsembleSynth::GetNumFactoryPresets() + 1,
-                          kMaxEnsemblePresets, out_numbers, max_out);
+    return ListSlotFolder("ENSEMBLE", "PRES", kEnsembleFirstUserSlot, kMaxEnsemblePresets,
+                          out_numbers, max_out);
 }
 
 int NextFreeEnsemblePresetSlot()
 {
-    return NextFreeSlotFolder("ENSEMBLE", "PRES", EnsembleSynth::GetNumFactoryPresets() + 1,
-                              kMaxEnsemblePresets);
+    return NextFreeSlotFolder("ENSEMBLE", "PRES", kEnsembleFirstUserSlot, kMaxEnsemblePresets);
 }
 
 bool DeleteEnsemblePreset(int slot, int* loaded_slot_inout)
 {
-    if(!card_ready || slot <= EnsembleSynth::GetNumFactoryPresets() || slot > kMaxEnsemblePresets)
+    if(!card_ready || slot < kEnsembleFirstUserSlot || slot > kMaxEnsemblePresets)
         return false;
     char fname[24];
     EnsemblePresetFilename(slot, fname, sizeof(fname));
@@ -2207,7 +2211,7 @@ bool DuplicateEnsemblePreset(int slot, int* out_new_slot, ProgressFn on_progress
     if(!out_new_slot)
         return false;
     *out_new_slot = -1;
-    if(!card_ready || slot <= EnsembleSynth::GetNumFactoryPresets() || slot > kMaxEnsemblePresets)
+    if(!card_ready || slot < kEnsembleFirstUserSlot || slot > kMaxEnsemblePresets)
         return false;
     char    src[24];
     FILINFO fno;
@@ -3801,13 +3805,13 @@ bool ImportAif(const char* filename, float* out_l, float* out_r, size_t audio_ca
     // genuine downsample, which no real op1fun file triggers (they're
     // all 44100), but kept for the same defensive reasoning.
     bool kNeedsAntiAlias = sample_rate > 48000;
-    static daisysp::Svf aa_l1, aa_r1, aa_l2, aa_r2;
+    static TptSvf aa_l1, aa_r1, aa_l2, aa_r2;
     if(kNeedsAntiAlias)
     {
-        aa_l1 = daisysp::Svf{};
-        aa_r1 = daisysp::Svf{};
-        aa_l2 = daisysp::Svf{};
-        aa_r2 = daisysp::Svf{};
+        aa_l1 = TptSvf{};
+        aa_r1 = TptSvf{};
+        aa_l2 = TptSvf{};
+        aa_r2 = TptSvf{};
         aa_l1.Init((float)sample_rate);
         aa_r1.Init((float)sample_rate);
         aa_l2.Init((float)sample_rate);
@@ -4665,7 +4669,7 @@ bool ImportWav(const char* filename, float* out_l, float* out_r, size_t audio_ca
     // (source rate above 48kHz: 88.2/96/176.4/192kHz). Rates at or below
     // 48kHz are pure upsampling (unchanged from the original 44.1kHz-
     // only behavior) with no aliasing risk, so this stays a no-op there.
-    // Two cascaded daisysp::Svf lowpass stages (same filter class every
+    // Two cascaded TptSvf lowpass stages (same filter class every
     // other engine in this project already uses, just reused here
     // offline) for a real ~24dB/octave rolloff -- a single one-pole
     // stage's gentler ~6dB/octave was judged too weak to meaningfully
@@ -4677,13 +4681,13 @@ bool ImportWav(const char* filename, float* out_l, float* out_r, size_t audio_ca
     // new Nyquist, not source-rate-dependent, since it only ever runs
     // when downsampling to this same fixed 48kHz output.
     bool kNeedsAntiAlias = sample_rate > 48000;
-    static daisysp::Svf aa_l1, aa_r1, aa_l2, aa_r2;
+    static TptSvf aa_l1, aa_r1, aa_l2, aa_r2;
     if(kNeedsAntiAlias)
     {
-        aa_l1 = daisysp::Svf{};
-        aa_r1 = daisysp::Svf{};
-        aa_l2 = daisysp::Svf{};
-        aa_r2 = daisysp::Svf{};
+        aa_l1 = TptSvf{};
+        aa_r1 = TptSvf{};
+        aa_l2 = TptSvf{};
+        aa_r2 = TptSvf{};
         aa_l1.Init((float)sample_rate);
         aa_r1.Init((float)sample_rate);
         aa_l2.Init((float)sample_rate);
@@ -5291,7 +5295,7 @@ bool ExportWav(TempoClock&  tempo,
     // live one without plumbing a new cross-module pointer through Ui.
     // Same cutoff curve main.cpp already applies to the live master
     // filter (kFilterMinHz/kFilterMaxHz from looper_layer.h).
-    daisysp::Svf mfilt_l, mfilt_r;
+    TptSvf mfilt_l, mfilt_r;
     mfilt_l.Init((float)sample_rate);
     mfilt_r.Init((float)sample_rate);
     float mfilt_cutoff

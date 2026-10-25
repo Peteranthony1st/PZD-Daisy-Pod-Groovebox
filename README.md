@@ -373,7 +373,7 @@ long-press goes all the way to Home.
 | Env | Attack / Sustain | Decay / Release | — | Toggle AD/SR |
 | Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
-| Mix | Output level | Pan | — | — |
+| Mix | Output level / Gain (0 to +12 dB into the limiter) | Pan | Knobs → Level+Pan | Knobs → Gain |
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
 | Preset | — | Scroll the factory sounds | Back | Load (tap, stays in list) |

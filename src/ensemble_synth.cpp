@@ -1,4 +1,5 @@
 #include "ensemble_synth.h"
+#include "svf_setup.h"
 #include "itcm.h"
 #include <cmath>
 
@@ -263,6 +264,7 @@ EnsembleSynth::EnsemblePresetData EnsembleSynth::CapturePreset() const
     p.pan01                = pan01_;
     p.reverb_send01        = reverb_send01_;
     p.delay_send01         = delay_send01_;
+    p.gain01               = gain01_;
     return p;
 }
 
@@ -297,6 +299,9 @@ EnsembleSynth::EnsemblePresetData EnsembleSynth::GetFactoryPreset(int flat_index
     p.filter_res01                   = f.filter_res01;
     p.output_level01                 = f.output_level01;
     p.pan01                          = f.pan01;
+    p.reverb_send01                  = f.reverb_send01;
+    p.delay_send01                   = f.delay_send01;
+    p.gain01                         = f.gain01;
     return p;
 }
 
@@ -393,6 +398,10 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
         // genuinely stereo (unlike Dexed's own mono-then-panned
         // signal). Same instant-attack/slow-release peak shape
         // main.cpp's own meters use.
+        // Gain into the limiter (see SetGain01()) -- before the meter
+        // below, so the Mixer's clip indicator shows when it's pushed.
+        l *= gain_;
+        r *= gain_;
         float pre_mag = fabsf(l) > fabsf(r) ? fabsf(l) : fabsf(r);
         if(pre_mag > pre_limiter_level_)
             pre_limiter_level_ = pre_mag;

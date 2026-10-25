@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "svf_setup.h"
 #include <cstddef>
 #include "daisysp.h"
 #include "looper_layer.h" // FilterMode, kFilterMinHz/kFilterMaxHz
@@ -107,6 +108,18 @@ class EnsembleSynth
     float GetDelaySend01() const { return delay_send01_; }
     void  SetOutputLevel01(float v01);
     float GetOutputLevel01() const { return output_level01_; }
+    // Gain into the soft limiter, 0 to +12 dB (1x to 4x). Ensemble's
+    // loudness follows how many drawbars are up -- a thin registration
+    // is genuinely quiet, and Output Level (applied AFTER the limiter)
+    // can't make that up without clipping further down the chain. This
+    // brings it up front instead; pushed hard, the limiter starts to
+    // saturate gently, which suits an organ/string machine.
+    void  SetGain01(float v01)
+    {
+        gain01_ = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01);
+        gain_   = powf(4.f, gain01_);
+    }
+    float GetGain01() const { return gain01_; }
     void  SetPan01(float v01);
     float GetPan01() const { return pan01_; }
 
@@ -203,6 +216,9 @@ class EnsembleSynth
         float   pan01                = 0.5f;
         float   reverb_send01        = 0.f;
         float   delay_send01         = 0.f;
+        // Added in preset file v2 -- 0 = unity (how every v1 preset
+        // sounded), see SetGain01().
+        float   gain01               = 0.f;
     };
     void ApplyPreset(const EnsemblePresetData& p)
     {
@@ -221,6 +237,7 @@ class EnsembleSynth
         SetPan01(p.pan01);
         SetReverbSend01(p.reverb_send01);
         SetDelaySend01(p.delay_send01);
+        SetGain01(p.gain01);
     }
     EnsemblePresetData CapturePreset() const;
 
@@ -282,6 +299,8 @@ class EnsembleSynth
 
     // Same curve every other engine's own Output Level uses
     // (GranularEngine::SetOutputLevel01() etc.).
+    float gain01_ = 0.f;
+    float gain_   = 1.f; // powf(4, gain01_), cached by SetGain01()
     float output_level01_ = 0.70f;
     float output_level_   = 1.f; // powf(output_level01_, 2.5f)*1.4f, cached by the setter
 
@@ -298,7 +317,7 @@ class EnsembleSynth
     // Stereo, unlike Dexed's own mono-then-panned filter pair -- each
     // channel processes its own real signal (post-Chorus, genuinely
     // different L/R content), not the same mono input twice.
-    daisysp::Svf filter_l_, filter_r_;
+    TptSvf filter_l_, filter_r_;
     FilterMode   filter_mode_     = FilterMode::Off;
     float        filter_cutoff01_ = 1.f;
     float        filter_res01_    = 0.f;
