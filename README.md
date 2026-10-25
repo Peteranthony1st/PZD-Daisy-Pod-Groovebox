@@ -121,9 +121,13 @@ Chorus/Tremolo/Phaser/AutoWah/Flanger), reverb send, input gain
 (1x–4x).
 
 **Global** — Tempo (50–240 BPM)/Bars (1–16)/metronome, master filter,
-one shared Dattorro-topology plate reverb (Size/Tone/Diffusion pages)
-plus a shared delay, Bypass (live monitoring), and project-wide
-vari-speed with Scrub/Freeze transport modes.
+one shared Dattorro-topology plate reverb (Size/Tone/Diffusion pages),
+one shared stereo delay (free time or tempo-synced note values,
+Ping-Pong, Tone that darkens each repeat, and a Dly-Rev send that puts
+the echoes into the reverb), Bypass (live monitoring) with its own
+reverb and delay sends, and project-wide vari-speed with Scrub/Freeze
+transport modes. Delay settings are saved in performances and startup
+defaults.
 
 **Save/load** — Performances (`Global:Perf`: all 4 layers' audio plus
 every looper/global setting) and every engine's own presets save to SD.
@@ -301,9 +305,13 @@ capture in progress.
 | Global: Tempo | BPM (50–240) | Bars (1–16, lower-capped at slower BPM) | Toggle metronome | Hold 800ms = Save as startup default |
 | Global: Speed | Vari-speed | — | Cycle Normal/Scrub/Freeze | Reset to 1.0x |
 | Global: Filter | Cutoff | Resonance | Cycle filter mode | — |
-| Global: GLB-FX | Size (= Decay) | Bypass reverb send | — | — |
+| Global: Reverb | Size (= Decay) | — | — | — |
 | Global: RevTone | PreDelay / DecayDiffusion | PreFilter / Damping | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
 | Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
+| Global: Dly-Rev | Delay → Reverb (echoes into the reverb) | — | — | — |
+| Global: Delay | Time (Off, 20 ms–3 s, or a note value when synced) | Feedback | Sync on/off (1/16 … 1/2 at the current BPM) | — |
+| Global: DlyTone | Ping-Pong (0% = echoes follow the sound's pan, 100% = always bounce L/R) | Tone (darker repeats) | — | — |
+| Global: Bypass | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | Global: Perf | Saving: Overwrite/Save New | Loading: scroll New + PERF list | Save / Back | Load (tap loads, stays in list) / Hold 800ms = confirm Save |
 | Global: SD Mgmt | Scroll (category grid, folder lists) | Scroll (file list) | Back, Hold = Duplicate | Open, Hold 1500ms = Delete (file list) |
 | Global: Export | — | — | Tap = Export, native 48kHz ("Studio") | Tap = Export, 44.1kHz for MicroDexed ("CD") |
@@ -326,7 +334,7 @@ capture in progress.
 | EnvSpeed | Envelope rate scale (center = as saved) | — | — | — |
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Mix | Reverb send | Output level | — | — |
-| DX-FX | Reverb send / Delay send | Shared reverb size / delay time | Toggle Reverb/Delay | — |
+| DX-FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | DX-FOLD | Fold Amount (0% = bypass) | Output trim | — | — |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Advanced | — | — | — | — (push encoder to enter the operator editor) |
@@ -366,7 +374,7 @@ long-press goes all the way to Home.
 | Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Mix | Output level | Pan | — | — |
-| FX | Reverb send / Delay send | Shared reverb size / delay time | — | Toggle Reverb/Delay |
+| FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
 | Preset | — | Scroll the factory sounds | Back | Load (tap, stays in list) |
 | User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
@@ -387,7 +395,7 @@ loaded.
 | ADSR | Attack / Sustain | Decay / Release | Knobs → Attack+Decay | Knobs → Sustain+Release |
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Mix | Grain volume / Reverb send | Scan volume | Knobs → Grain+Scan | Knobs → Reverb send |
-| GR-FX | Reverb send / Delay send | Shared reverb size / delay time | Toggle Reverb/Delay | — |
+| GR-FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Capture | — | — | Cycle source (Direct/Layer/Import) | Hold = record or capture |
 | Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save capture (Preset → Captured n) |
@@ -406,7 +414,7 @@ Shared by both:
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Env | Attack / Sustain | Decay / Release | Target AD | Target SR |
 | Mix | Output level | Pan | — | — |
-| FX | Reverb send / Delay send | Shared reverb size / delay time | Target Reverb | Target Delay |
+| FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Import | — | — | Cycle target (Drums/Sounds/All) | Hold 800ms = Import |
 | Preset | Scroll folders (SMPVO: Sounds n/Captured n, SMPDR: Kits n/Breaks n) | Scroll items in a folder | Back | Open / Load (tap, stays in folder) |

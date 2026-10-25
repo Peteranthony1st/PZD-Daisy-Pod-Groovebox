@@ -96,8 +96,10 @@ One consistent grammar everywhere:
 Home ──(click layer)──► Layer[n] ──(rotate)──► Status / Gain / Speed /
   │                                             Filter / Effect / LYR-FX
   │                                                     (long-press ⤴ back to Home)
-  └──(long-press)──► Global ──(rotate)──► Tempo / Speed / Filter / GLB-FX /
-       │                                    File / SdMgmt / Export / Dexed /
+  └──(long-press)──► Global ──(rotate)──► Tempo / Speed / Filter / Reverb /
+       │                                    RevTone / RevDiff / Dly-Rev / Delay /
+       │                                    DlyTone / Bypass /
+       │                                    Perf / SdMgmt / Export / Dexed /
        │                                    Ensemble / Granular / Looper / Mixer
        │                                       (long-press ⤴ back to Home)
        ├──(click on Global:Dexed)──► Screen::Dexed ──(rotate)──► Algo / Feedback /
@@ -156,9 +158,13 @@ Full control map:
 | Global: Tempo | BPM (50-240) | Bars per loop (1-16, lower-capped at slower BPM — see *Tempo, metronome, and count-in* below) | Toggle metronome | Hold 800ms = save as startup default |
 | Global: Speed | Project vari-speed (0.3x-2x, deadzone-centered on 1.0x, same curve as Layer:Speed) | — | Cycle transport mode: Normal/Scrub/Freeze (see below) | Reset to 1.0x |
 | Global: Filter | Cutoff (master bus) | Resonance | Cycle filter mode | — |
-| Global: GLB-FX | Size/decay (shared bus, see below) | Bypass reverb send (independent of every layer's own Send) | — | — |
+| Global: Reverb | Size/decay (shared bus, see below) | — | — | — |
 | Global: RevTone | PreDelay (or DecayDiffusion) | PreFilter (or Damping) | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
 | Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
+| Global: Dly-Rev | Delay → Reverb amount | — | — | — |
+| Global: Delay | Time (free ms, or a synced note value) | Feedback | Toggle Sync | — |
+| Global: DlyTone | Ping-Pong | Tone | — | — |
+| Global: Bypass | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Global: Perf | ChoosingSave: Overwrite/Save New | BrowsingLoad: scroll New + PERF list | Idle: Save; else Back | Idle: Load; list: tap loads (stays); ChoosingSave: hold 800ms = confirm |
 | Global: SD Mgmt | Box grid / folder lists (Sampler-or-Grains, banks) | Item list | Back; hold = Duplicate (item list) | Open; hold `kSdMgmtDeleteHoldMs` (1500ms) = Delete (item list) |
 | Global: Export | — | — | Tap = render to native 48kHz WAV ("Studio") | Tap = render to 44.1kHz WAV for MicroDexed ("CD") |
@@ -174,7 +180,7 @@ Full control map:
 | Dexed: EnvSpeed | All-operator envelope rate scale (0x..2x, center = as saved) | — | — | — |
 | Dexed: Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Dexed: Mix | Reverb send | Output level | — | — |
-| Dexed: DX-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Toggle Reverb/Delay target | — |
+| Dexed: DX-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Dexed: DX-FOLD | Fold Amount (0% = exact unity bypass) | Output trim (100% = unchanged) | — | — |
 | Dexed: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Dexed: Advanced | — | — | — | — (push encoder to enter Screen::DexedOperator) |
@@ -194,7 +200,7 @@ Full control map:
 | Ensemble: Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
 | Ensemble: Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Ensemble: Mix | Output level | Pan | — | — |
-| Ensemble: FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | — | Toggle Reverb/Delay target |
+| Ensemble: FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Ensemble: MIDI | MIDI channel (Omni, 1-16) | — | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
 | Ensemble: Preset | — | Scroll the factory presets | Back | Load (tap, stays) |
 | Ensemble: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
@@ -206,7 +212,7 @@ Full control map:
 | Granular: ADSR | Attack (or Sustain) | Decay (or Release) | Knobs → Attack+Decay | Knobs → Sustain+Release |
 | Granular: Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Granular: Mix | Grain volume (or Reverb send) | Scan volume | Knobs → Grain+Scan volume | Knobs → Reverb send |
-| Granular: GR-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Toggle Reverb/Delay target | — |
+| Granular: GR-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Granular: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Granular: Capture | — (Import mode: browse .wav files) | — | Cycle source: Direct Record → Layer 1..N → Import | Hold = record (Direct) or capture/import (Layer/Import) |
 | Granular: Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save capture to `GRAINS/CAPTUREDn/` |
@@ -692,6 +698,54 @@ instance, no measurable extra cost — a multiply-add per sample. Turning
 Bypass off silences this contribution too, and recordings stay
 completely dry regardless of this setting (it only ever feeds the
 monitor-mix reverb tail, never the recording path).
+
+### The shared delay: Ping-Pong, Tone, Sync, Dly-Rev, and its own pages
+
+The Global reverb and delay controls used to share one page (GLB-FX,
+with a button flipping its knobs between reverb Size/Bypass Send and
+delay Time/Feedback). They're now split by job: **Reverb** (Size),
+RevTone, RevDiff, **Dly-Rev**, **Delay** (Time, Feedback, Sync),
+**DlyTone** (Ping-Pong, Tone), and **Bypass** — the live-input monitor's
+own sends, laid out exactly like an engine FX page (B1 Reverb / B2
+Delay, K1 Send, K2 the shared Size/Time). Bypass gained a Delay Send it
+never had.
+
+The delay itself is one `SharedDelay::Bus` (`shared_delay.h`), used by
+both the live audio and WAV export — export used to carry its own copy,
+which had already drifted (it ran the delay even at Time = Off).
+
+- **Why it never audibly ping-ponged.** The two lines always had crossed
+  feedback, but every source sends in stereo, already panned. A centred
+  sound puts the same signal into both lines, and swapping two identical
+  signals changes nothing — only panned sounds bounced. **Ping-Pong**
+  therefore controls the *input*, not the feedback: at 0% each line gets
+  its own side (exactly the old behaviour, so old performances sound
+  the same); at 100% the input is summed to mono (×0.707, roughly equal
+  loudness) into the left line only, so echoes alternate L, R, L, R
+  whatever the pan.
+- **Tone** is a one-pole low-pass (18 kHz down to 800 Hz) on the
+  feedback only: the first echo stays bright, each repeat after it is
+  filtered once more.
+- **Sync** turns the Time knob into note values at the current BPM:
+  1/16, 1/8T, 1/8, 1/4T, 1/8D, 1/4, 1/4D, 1/2 (shortest first; the
+  knob's very bottom is still Off). The buffer grew from 1.5 s to 3 s
+  per side (~1.15 MB of SDRAM) so a 1/2 note fits down to 40 BPM; below
+  that it halves until it fits. Free time now spans 20 ms–3 s.
+- **Dly-Rev.** Reverb and delay ran in parallel, so a note's reverb
+  was there but its echoes were dry. The delay now runs first in each
+  sample and adds `wet × Dly-Rev` into the reverb's input.
+- **Saving.** Time and Feedback were never saved anywhere before. All
+  delay settings plus the Bypass Delay Send are now a 7-field block at
+  the end of the performance/PREFS header — **file version 16**, read as
+  one chunk after the v15 part (guarded by `static_assert`s on its
+  offset and size). v11–v15 files load through the same version chain as
+  before and leave the live delay untouched, since they never stored it.
+  A v16 file won't load on older firmware, same as every earlier header
+  change.
+- **A boot-safety note.** `Bus` deliberately has no default member
+  initializers: it lives in SDRAM, and a constructor that wrote to it
+  would run before `main()` switches SDRAM on. `Init()` clears and sets
+  everything instead.
 
 ### Reverb/delay bypass-at-zero, and a live CPU meter
 
