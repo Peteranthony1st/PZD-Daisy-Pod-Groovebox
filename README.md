@@ -103,7 +103,7 @@ engines are playing. What they do share is the CPU — the meter in
   [`sdcard-template/`](sdcard-template/) for a ready-made folder set to
   copy onto a fresh card (most folders are created automatically as you
   use each feature; the Import staging folders aren't, so the template
-  pre-makes those). Ships 9 starter Grains presets.
+  pre-makes those). Ships 9 starter Grains sounds in `GRAINS/PRESETS/`.
 - **PZD Daisy Pod Case** — free to print on
   [CULTS3D](https://cults3d.com/en/users/Planet_Zero_Designs_PZD/3d-models)
   or [PRINTABLES](https://www.printables.com/@PlanetZeroDe_5266703), or
@@ -125,9 +125,21 @@ one shared Dattorro-topology plate reverb (Size/Tone/Diffusion pages)
 plus a shared delay, Bypass (live monitoring), and project-wide
 vari-speed with Scrub/Freeze transport modes.
 
-**Save/load** — Performances (all 4 layers' audio plus every looper/
-global setting) and every engine's own presets save to SD, each with
-the same Overwrite/Save New convention. Export the current performance
+**Save/load** — Performances (`Global:Perf`: all 4 layers' audio plus
+every looper/global setting) and every engine's own presets save to SD.
+Every engine has the same pair of pages:
+
+- **Preset** — the sounds that come with the engine (and, for Grains and
+  SMPVO, the captures you've saved), load only. B2 opens the folder
+  list; K1 scrolls folders, B2 opens one; inside a folder K2 scrolls the
+  sounds and a B2 tap loads one and stays in the folder, so you can keep
+  auditioning. B1 backs out one level.
+- **User** — your own saves. B1 = Save (K1 picks Overwrite or Save New,
+  hold B2 to confirm); B2 = Load from a list that starts with **New**
+  (K2 scrolls, a tap loads and stays).
+
+`Global:Perf` works like a User page. A small `*` after the page title
+means the sound has changed since it was last loaded or saved. Export the current performance
 as a WAV — full-quality native 48kHz, or 44.1kHz straight into a
 `custom/` folder so the same card drops into MicroDexed Touch's second
 slot with no copying needed.
@@ -138,9 +150,12 @@ final mix, per-channel peak meters with clip indicators, and a live CPU
 meter.
 
 **SD card management** (`Global:SdMgmt`) — a grid of all 8 save
-categories (Performances, Grains/Dexed/Ensemble presets, and
-SampleSynth's Captures/Kits/Voice User/Drum User presets) — duplicate
-or delete any file directly on the device, no computer needed.
+categories (Performances, Grains/Dexed/Ensemble user presets, Captures,
+Kits, and the SMPVO/SMPDR user presets) — duplicate or delete any file
+directly on the device, no computer needed. Captures opens to a choice of
+Sampler or Grains captures. Same browse controls as the Preset pages: K1
+scrolls the grid and folders, B2 opens; in a file list K2 scrolls, B1
+backs out (hold = Duplicate) and holding B2 for 1.5 s deletes.
 
 **Sample library on the card** — SampleSynth content lives in numbered
 folders of up to 32 items under `SAMPLES/`: `SOUNDS1`, `CAPTURED1`,
@@ -288,8 +303,8 @@ capture in progress.
 | Global: GLB-FX | Size (= Decay) | Bypass reverb send | — | — |
 | Global: RevTone | PreDelay / DecayDiffusion | PreFilter / Damping | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
 | Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
-| Global: File | Choosing Save: Overwrite/Save New; Browsing Load: scroll files | — | Save / Select file list (Load) / Back | Hold 800ms = Save or Load, whichever's open |
-| Global: SD Mgmt | Scroll (category grid, folder list, or file list) | — | Tap = drill in/back, Hold 400ms = Duplicate | Tap = open folder (Captures/Kits), Hold 1500ms = Delete |
+| Global: Perf | Saving: Overwrite/Save New | Loading: scroll New + PERF list | Save / Back | Load (tap loads, stays in list) / Hold 800ms = confirm Save |
+| Global: SD Mgmt | Scroll (category grid, folder lists) | Scroll (file list) | Back, Hold = Duplicate | Open, Hold 1500ms = Delete (file list) |
 | Global: Export | — | — | Tap = Export, native 48kHz ("Studio") | Tap = Export, 44.1kHz for MicroDexed ("CD") |
 | Global: Dexed | — | — | Toggle Dexed on/off (off by default) | — (push encoder to enter Screen::Dexed) |
 | Global: Ensemble | — | — | Toggle Ensemble on/off (off by default) | — (push encoder to enter Screen::Ensemble) |
@@ -314,7 +329,9 @@ capture in progress.
 | DX-FOLD | Fold Amount (0% = bypass) | Output trim | — | — |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Advanced | — | — | — | — (push encoder to enter the operator editor) |
-| Preset | Top: Files/Import/New. Files → Roms/Dexed/Imports/User group → folder → presets | — | Save / Select (top) / Back (group+folder) | Open (group+folder) / Hold: Import / Tap: preview, Hold: confirm |
+| Import | — | Scroll `.syx` files in `DEXED IMPORT/` | — | Hold 800ms = Import (becomes a folder under Preset → Imports) |
+| Preset | Scroll Roms/Dexed/Imports, then folders | Scroll presets in a folder | Back | Open / Load (tap, stays in folder) |
+| User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 The Algo page shows a real box-and-arrow diagram of whichever algorithm
 is loaded (filled boxes = carriers, outlined = modulators, "FB" tags the
@@ -350,7 +367,8 @@ long-press goes all the way to Home.
 | Mix | Output level | Pan | — | — |
 | FX | Reverb send / Delay send | Shared reverb size / delay time | — | Toggle Reverb/Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
-| Preset | Top: Files/New. Files → combined factory+user list | — | Save / Back | Select (top) / Tap: preview, Hold: confirm |
+| Preset | — | Scroll the factory sounds | Back | Load (tap, stays in list) |
+| User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 Clicking the encoder on any Ensemble page mutes/unmutes all 4 loop
 layers. Boots with all 7 drawbars flat at 60% before any preset is
@@ -371,8 +389,9 @@ loaded.
 | GR-FX | Reverb send / Delay send | Shared reverb size / delay time | Toggle Reverb/Delay | — |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Capture | — | — | Cycle source (Direct/Layer/Import) | Hold = record or capture |
-| Trim | Trim start | Trim end | Play trimmed section | — |
-| Preset | See Save/load above | — | Save / Select (Load) / Back | Hold 800ms = confirm |
+| Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save capture (Preset → Captured n) |
+| Preset | Scroll Starter/Captured n folders | Scroll sounds in a folder | Back | Open / Load (tap, stays in folder) |
+| User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 Clicking the encoder on any Grains page mutes/unmutes all 4 loop layers.
 
@@ -389,8 +408,8 @@ Shared by both:
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Target Reverb | Target Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Import | — | — | Cycle target (Drums/Sounds/All) | Hold 800ms = Import |
-| Preset | Folder (SMPVO: Sounds n/Captured n, SMPDR: Kits n/Breaks n) → item | — | — (Back while browsing) | Select/Open, Hold 800ms = Load |
-| User | — | — | Save (Overwrite/New, Idle) / Back | Select/Open, Hold 800ms = Load/Save |
+| Preset | Scroll folders (SMPVO: Sounds n/Captured n, SMPDR: Kits n/Breaks n) | Scroll items in a folder | Back | Open / Load (tap, stays in folder) |
+| User | Saving: Overwrite/Save New | Scroll your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 SMPVO-only:
 

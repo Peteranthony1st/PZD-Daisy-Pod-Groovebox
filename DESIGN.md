@@ -159,8 +159,8 @@ Full control map:
 | Global: GLB-FX | Size/decay (shared bus, see below) | Bypass reverb send (independent of every layer's own Send) | — | — |
 | Global: RevTone | PreDelay (or DecayDiffusion) | PreFilter (or Damping) | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
 | Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
-| Global: File | Idle: nothing. ChoosingSave: Overwrite/Save New. BrowsingLoad chooser: Files/New, drilled-in: browse files | — | Idle: tap = reveal Save; chooser: tap = drill into file list (Files) or Back (New); elsewhere: tap = Back | Idle: tap = reveal Load; ChoosingSave/drilled-into-Load: hold 800ms = confirm |
-| Global: SD Mgmt | Folder select / file browse (same list, always "Scroll") | — | Tap = drill into folder / back up a level; hold 800ms = Duplicate the browsed file | Hold `kSdMgmtDeleteHoldMs` (1500ms) = Delete the browsed file |
+| Global: Perf | ChoosingSave: Overwrite/Save New | BrowsingLoad: scroll New + PERF list | Idle: Save; else Back | Idle: Load; list: tap loads (stays); ChoosingSave: hold 800ms = confirm |
+| Global: SD Mgmt | Box grid / folder lists (Sampler-or-Grains, banks) | Item list | Back; hold = Duplicate (item list) | Open; hold `kSdMgmtDeleteHoldMs` (1500ms) = Delete (item list) |
 | Global: Export | — | — | Tap = render to native 48kHz WAV ("Studio") | Tap = render to 44.1kHz WAV for MicroDexed ("CD") |
 | Global: Dexed | — | — | Toggle Dexed on/off | — |
 | Global: Ensemble | — | — | Toggle Ensemble on/off | — |
@@ -178,7 +178,9 @@ Full control map:
 | Dexed: DX-FOLD | Fold Amount (0% = exact unity bypass) | Output trim (100% = unchanged) | — | — |
 | Dexed: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Dexed: Advanced | — | — | — | — (push encoder to enter Screen::DexedOperator) |
-| Dexed: Preset | Top: Files/Import/Load New. Files → group (Roms/Dexed/Imports/User) → folder list (not User) → presets | — | Save / Select (top+group) / Back (group+folder levels) | Open (group+folder levels) / Hold: Import (Import list) / Tap: preview, Hold 800ms: confirm (a real preset) |
+| Dexed: Import | — | Scroll `DEXED IMPORT/` .syx files | — | Hold 800ms = import |
+| Dexed: Preset | Groups (Roms/Dexed/Imports), then folders | Presets in an open folder | Back | Open / tap loads (stays) |
+| Dexed: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
 | DexedOperator: Algo | — (read-only; edit from Dexed:Algo instead) | — | Cycle operator (1-6) | — |
 | DexedOperator: RatioLevel | Coarse ratio (0-31) | Output level | Cycle operator (1-6) | — |
 | DexedOperator: Detune | Detune (0-14, 7=centered) | — | Cycle operator (1-6) | — |
@@ -194,7 +196,8 @@ Full control map:
 | Ensemble: Mix | Output level | Pan | — | — |
 | Ensemble: FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | — | Toggle Reverb/Delay target |
 | Ensemble: MIDI | MIDI channel (Omni, 1-16) | — | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
-| Ensemble: Preset | Top: Files/Load New. Files → combined [factory][user] list | — | Save / Back | Select (top) / Tap: preview, Hold 800ms: confirm |
+| Ensemble: Preset | — | Scroll the factory presets | Back | Load (tap, stays) |
+| Ensemble: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
 | Granular: Grain | Size (or Grain's own Gap) | Fill (or Jitter) | Knobs → Size+Fill | Knobs → Gap+Jitter |
 | Granular: Position | Position (Grain layer's fixed anchor) | Direction (Grain's own, Forward/Reverse/Random) | Cycle Rhythm pattern | Cycle Speed |
 | Granular: Scan | Scan speed/direction (dead-zone-centered, off at center) | Scan's own Fill | Toggle Bounce/Wrap | Cycle Scan's own Direction |
@@ -206,8 +209,9 @@ Full control map:
 | Granular: GR-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Toggle Reverb/Delay target | — |
 | Granular: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Granular: Capture | — (Import mode: browse .wav files) | — | Cycle source: Direct Record → Layer 1..N → Import | Hold = record (Direct) or capture/import (Layer/Import) |
-| Granular: Trim | Trim start | Trim end | Play trimmed section | — |
-| Granular: Preset | Same Files/New chooser and browse-list convention as Global:File | — | Same Save/Load/Back convention as Global:File | Same hold-to-confirm convention as Global:File (live progress bar — audio-inclusive) |
+| Granular: Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save capture to `GRAINS/CAPTUREDn/` |
+| Granular: Preset | Folders (Starter, Captured n) | Sounds in an open folder | Back | Open / tap loads (stays; live progress bar — audio-inclusive) |
+| Granular: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
 | Mixer: Layer/Grains/Dexed/Ensemble/Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
 | Mixer: Master | Volume | Reverb size | — | — |
 
@@ -1235,6 +1239,9 @@ I/O and, unlike the user range, is never subject to Delete/Duplicate's
 own slot-renumbering (`CompactSlotsAfterDelete()` is fundamentally
 incompatible with a fixed factory bank, the same reasoning Grains'
 preset range already established).
+
+*Superseded: a tap now simply loads and stays in the folder, with no
+separate hold-to-commit — see* Shared browse convention *below.*
 
 **Preset folder browsing & live preview**: the identical "a short Button
 2 tap while a folder's open previews the highlighted preset live,
@@ -2712,7 +2719,9 @@ universal rule.
 ## SD card management (Global:SdMgmt)
 
 *The Captures and Kits boxes now browse numbered bank folders rather than
-numbered slots — see* Sample banks *below.*
+numbered slots — see* Sample banks *below. Its controls and the Captures
+box's Sampler/Grains split are described under* Shared browse convention
+*below.*
 
 Lets you browse every real user-save category on the card — currently
 **8**: Performances, Grains Presets, Dexed Presets, Ensemble Presets,
@@ -2822,49 +2831,87 @@ real hardware.
   than guessed at from the caller side, since only the delete function
   itself knows exactly how far each surviving file actually moved.
 
-## The Files/New Load chooser
+## Shared browse convention (Preset / User pages)
 
-Save and Load use a deliberately identical two-step interaction on all 3
-save pages (Global:File, Dexed Preset, Grains Preset), so the
-convention never needs re-learning between them:
+Every engine (Dexed, Grains, Ensemble, SMPVO/SMPDR), `Global:Perf` and
+`Global:SdMgmt` now browse and save the same way, so nothing needs
+re-learning between them. It replaced an older per-page "Files/New Load
+chooser" (a two- or three-line Files / Import / Load New pick, then a
+tap-to-preview, hold-to-commit list), which had grown different extra
+levels on each page.
 
-- **Save** (Button 1 tap from idle): reveals a two-line choice —
-  Overwrite (only offered once something's actually loaded) vs. Save
-  New — picked with Knob 1, confirmed with Button 2 held 800ms.
-- **Load** (Button 2 tap from idle): reveals the *same shape* of
-  two-line choice on Global:File/Grains Preset — **Files** vs. **Load
-  New** — picked with Knob 1; Dexed Preset's own version is three-way
-  (**Files** / **Import** / **Load New**, see *SysEx import* under
-  *Dexed* above for what Import opens onto). Selecting Files and
-  tapping Button 1 drills in: on Global:File/Grains Preset, the chooser
-  is replaced by the actual numbered file list directly, Knob 1 scrolls
-  it, and Button 1 is "Back" from there straight to the chooser. Dexed's
-  own Files goes one level deeper first (group chooser → folder list →
-  presets, see *SysEx import* above) — Button 1 is "Back" and Button 2
-  is "Open" specifically at those two extra levels, a genuine, deliberate
-  exception to this convention's usual "Button 1 drills in" rule, added
-  once Dexed's own browsing grew a level Global:File/Grains Preset never
-  needed. Button 2 held 800ms confirms whichever is actually selected —
-  a specific browsed file, or New — and does nothing yet at a level with
-  no specific target picked ("nothing if it does nothing", the same
-  footer-label rule this project already applies everywhere else). Every
-  one of these Preset pages additionally lets a *short* Button 2 tap
-  preview the highlighted file live without leaving the browser, once
-  actually inside a real file/preset list (see *Preset folder browsing &
-  live preview* under *Dexed* above for where this convention first
-  came from).
-- **New**, reached this way instead of a separate hidden gesture, means:
-  Global:File clears every layer's recorded audio (keeping every
-  setting); Dexed Preset resets to its own first factory patch; Grains
-  Preset clears the captured audio and resets every parameter to the
-  engine's own defaults — each the same "genuine fresh start" as the
-  category's own factory-default state.
+Each engine has two pages:
 
-Both this chooser and Overwrite/Save New share the same forcing rule
-when the "other" option isn't valid: Overwrite forces Save New when
-nothing's loaded; the Load chooser forces New when there's nothing to
-browse (an empty save list) — Knob 1 simply can't land on a choice that
-doesn't exist.
+- **Preset** — load only: the engine's built-in sounds plus, for Grains
+  and SMPVO, saved captures. B2 opens the browser at a folder list.
+  **Folder lists, at any depth:** K1 scrolls, B2 opens, B1 goes back.
+  **Inside a folder:** K2 scrolls and K1 is left alone, so Back lands on
+  the same folder (K1 is an absolute knob, so the highlighted folder is
+  simply wherever K1 points). A **B2 tap loads** and stays in the folder,
+  so the next sound is one K2 turn and a tap away. No hold; the old
+  preview/commit split is gone because loading never overwrites anything
+  on the card.
+- **User** — your own saves. B1 = Save: K1 picks Overwrite / Save New
+  (Overwrite only once one of your own saves is loaded; loading a Preset
+  page sound forces Save New, so a library sound can't be overwritten),
+  and **holding** B2 800ms confirms — saving keeps its hold because it
+  can overwrite. B2 = Load: a list that starts with **New** (a blank
+  sound; Dexed's New is its first factory patch), K2 scrolls, a tap
+  loads and stays.
+
+Per engine:
+
+| Engine | Preset page | User page | Extra |
+|---|---|---|---|
+| Dexed | Roms / Dexed / Imports → folders → presets | `DEXED/` saves not in an import folder | Import page: K2 scrolls `DEXED IMPORT/` .syx, hold B2 imports (becomes a folder under Imports) |
+| Grains | Starter (`GRAINS/PRESETS/`, any `.DAT` listed by file name) / Captured n (`GRAINS/CAPTUREDn/CAPnnn.DAT`, 32 per folder) | `GRAINS/PRESnnn.DAT` | Trim page: hold B2 saves the trimmed capture into the next free Captured slot |
+| Ensemble | the 8 factory presets (no folder level) | `ENSEMBLE/` saves | — |
+| SMPVO / SMPDR | Sounds n / Captured n, or Kits n / Breaks n | Voice / Drum user presets | Trim (SMPVO): hold B2 saves a capture |
+
+Every browser uses the same layout: a Tom Thumb header naming the level
+(e.g. "Roms+Dexed+Imports", or the open folder's name and size), then
+the one highlighted entry in the normal font. `> ` in front of an entry
+marks what's loaded right now.
+
+**Grains captures on the Preset page.** Captures you keep are a library
+of raw sounds, while User saves are usually edited (reverb added, grains
+shaped), so captures live on the Preset page next to the starters.
+Starters moved from `GRAINS/PRES001-009.DAT` to readable names in
+`GRAINS/PRESETS/` (e.g. `Bell Shimmer.DAT`) — same GRNP file format, now
+listed by file name. `PerformanceStore::SaveGranularPreset()`/
+`LoadGranularPreset()` were split into slot wrappers over path-based
+`SaveGranularPresetFile()`/`LoadGranularPresetFile()` so the numbered
+user saves and the named library files share one reader/writer.
+
+**Unsaved-changes marker.** A Tom Thumb `*` after the page title
+(`DrawPageTitle()`) whenever the sound differs from the last load, save
+or New. Each engine builds an `EditSnapshot` — its preset fields appended
+one by one (never `memcmp` of a whole struct, which would compare padding
+bytes) — and compares it to a baseline taken by `Mark*Clean()` on every
+load/save/New. Grains also counts its trim points, and a fresh capture
+(Direct Record, From Layer or Import) sets the marker until it's saved
+anywhere. Dexed's snapshot is the 156-byte patch plus its 9 extra
+fields, which is why `EditSnapshot` holds 256 bytes. `Global:Perf` has
+no marker: "changed since save" for recorded layers isn't the same kind
+of comparison.
+
+Page titles were shortened to `Dxd:` and `Gran:` so the longest page
+names ("Dxd:Feedback", "Gran:Capture") still leave room for the `*`
+before the beat indicator.
+
+**Global:SdMgmt** follows the same rules: K1 scrolls the 4x2 box grid
+and any folder list, B2 opens; in an item list K2 scrolls, B1 is Back
+(hold = Duplicate) and B2 held 1500ms deletes. The CAPT box opens to a
+**Sampler / Grains** choice, then that engine's Captured banks, then the
+files (`DeleteGranularCapture()`/`DuplicateGranularCapture()` mirror the
+Sampler's own pair, including closing the numbering gap after a delete).
+The folder-level cursor (`sd_mgmt_list_cursor_`) and item cursor
+(`sd_mgmt_cursor_`) are separate so K1 and K2 never fight over one index.
+
+**Global:Perf** (renamed from Global:File) is a User page for
+performances: B1 Save, B2 Load from New + PERF list, tap loads and stays.
+Loading a performance replaces every layer's audio, but it's still a tap
+like every other load, for consistency.
 
 ## Save/load
 
@@ -3058,8 +3105,8 @@ no longer take or return any instrument data at all as a result; each
 engine's own `TriggerSave*Preset()`/`TriggerLoad*Preset()` pair is
 completely separate and unaffected by performance Save/Load.
 
-"New" (reached via the Load chooser's own "New" pick on Global:File —
-see *The Files/New Load chooser* above) only wipes each layer's recorded
+"New" (the first entry of Global:Perf's Load list — see *Shared browse
+convention* above) only wipes each layer's recorded
 *audio* (`LooperLayer::Clear()`) — every global and per-layer setting is
 left exactly as it was. It's deliberately not the same as applying the
 startup default (see below); those are two different, independent
