@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "performance_store.h"
 #include "audio_engine.h"
+#include "shared_delay.h"
 #include "granular_engine.h"
 #include "dexed_synth.h"
 #include "sample_synth.h"
@@ -1387,8 +1388,8 @@ void Ui::OnButton1Short()
                 int m = ((int)master_filter_mode_ + 1) % n;
                 master_filter_mode_ = (FilterMode)m;
             }
-            else if(global_page_ == GlobalPage::Reverb)
-                global_fx_target_delay_ = false; // knobs -> Reverb (Size/Bypass Send)
+            else if(global_page_ == GlobalPage::Bypass)
+                bypass_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
             else if(global_page_ == GlobalPage::ReverbTone)
                 global_reverb_tone_target_b_ = false; // knobs -> PreDelay/PreFilter
             else if(global_page_ == GlobalPage::Speed)
@@ -1893,8 +1894,8 @@ void Ui::OnButton2Short()
 {
     if(screen_ == Screen::Home)
         bypass_ = !bypass_;
-    else if(screen_ == Screen::Global && global_page_ == GlobalPage::Reverb)
-        global_fx_target_delay_ = true; // knobs -> Delay (Time/Feedback)
+    else if(screen_ == Screen::Global && global_page_ == GlobalPage::Bypass)
+        bypass_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::ReverbTone)
         global_reverb_tone_target_b_ = true; // knobs -> DecayDiffusion/Damping
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::Speed)
@@ -1996,9 +1997,11 @@ Ui::KnobContext Ui::CurrentKnobContext() const
             {
                 case GlobalPage::Tempo: return KnobContext::GlobalTempo;
                 case GlobalPage::Filter: return KnobContext::GlobalFilter;
-                case GlobalPage::Reverb:
-                    return global_fx_target_delay_ ? KnobContext::GlobalDelay
-                                                      : KnobContext::GlobalReverb;
+                case GlobalPage::Reverb: return KnobContext::GlobalReverb;
+                case GlobalPage::Delay: return KnobContext::GlobalDelay;
+                case GlobalPage::Bypass:
+                    return bypass_fx_target_delay_ ? KnobContext::GlobalBypassDelay
+                                                      : KnobContext::GlobalBypassReverb;
                 case GlobalPage::ReverbTone:
                     return global_reverb_tone_target_b_
                                ? KnobContext::GlobalReverbToneDecayDamping
@@ -2194,7 +2197,14 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             break;
         case KnobContext::GlobalReverb:
             k1_pickup_raw_[i] = reverb_size01_;
-            k2_pickup_raw_[i] = bypass_reverb_send01_;
+            break;
+        case KnobContext::GlobalBypassReverb:
+            k1_pickup_raw_[i] = bypass_reverb_send01_;
+            k2_pickup_raw_[i] = reverb_size01_;
+            break;
+        case KnobContext::GlobalBypassDelay:
+            k1_pickup_raw_[i] = bypass_delay_send01_;
+            k2_pickup_raw_[i] = delay_time01_;
             break;
         case KnobContext::GlobalDelay:
             k1_pickup_raw_[i] = delay_time01_;
@@ -2832,19 +2842,33 @@ void Ui::ApplyKnobs()
             }
             else if(global_page_ == GlobalPage::Reverb)
             {
-                if(!global_fx_target_delay_)
+                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    reverb_size01_ = Clampf(k1, 0.f, 1.f);
+            }
+            else if(global_page_ == GlobalPage::Delay)
+            {
+                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    delay_time01_ = Clampf(k1, 0.f, 1.f);
+                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    delay_feedback01_ = Clampf(k2, 0.f, 1.f);
+            }
+            else if(global_page_ == GlobalPage::Bypass)
+            {
+                // Same shape as every engine's own FX page: K1 = this
+                // source's Send, K2 = the shared bus's Size/Time.
+                if(!bypass_fx_target_delay_)
                 {
                     if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
-                        reverb_size01_ = Clampf(k1, 0.f, 1.f);
+                        bypass_reverb_send01_ = Clampf(k1, 0.f, 1.f);
                     if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
-                        bypass_reverb_send01_ = Clampf(k2, 0.f, 1.f);
+                        reverb_size01_ = Clampf(k2, 0.f, 1.f);
                 }
                 else
                 {
                     if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
-                        delay_time01_ = Clampf(k1, 0.f, 1.f);
+                        bypass_delay_send01_ = Clampf(k1, 0.f, 1.f);
                     if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
-                        delay_feedback01_ = Clampf(k2, 0.f, 1.f);
+                        delay_time01_ = Clampf(k2, 0.f, 1.f);
                 }
             }
             else if(global_page_ == GlobalPage::ReverbTone)
@@ -4671,7 +4695,11 @@ void Ui::DrawGlobalScreen()
     if(global_page_ == GlobalPage::Filter)
         title = "Global:Filter";
     else if(global_page_ == GlobalPage::Reverb)
-        title = "Global:GLB-FX";
+        title = "Global:Reverb";
+    else if(global_page_ == GlobalPage::Delay)
+        title = "Global:Delay";
+    else if(global_page_ == GlobalPage::Bypass)
+        title = "Global:Bypass";
     else if(global_page_ == GlobalPage::ReverbTone)
         title = "Global:RevTone";
     else if(global_page_ == GlobalPage::ReverbDiffusion)
@@ -4766,32 +4794,53 @@ void Ui::DrawGlobalScreen()
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Cutoff", cutoff_val, res_val, "Res");
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Cycle mode", "", "", "");
     }
-    else if(global_page_ == GlobalPage::Reverb && !global_fx_target_delay_)
-    // Reverb pair -- Size/decay for the ONE reverb bus every layer's
-    // Send feeds (see LooperLayer::SetReverbSend01()'s comment for why
-    // this isn't per-layer any more), plus Bypass's own independent
-    // Send into that same bus.
+    else if(global_page_ == GlobalPage::Reverb)
+    // Size/decay for the ONE reverb bus every layer's and engine's Send
+    // feeds (see LooperLayer::SetReverbSend01()'s comment for why this
+    // isn't per-layer any more). Bypass's own Send lives on Global:Bypass.
     {
-        char size_val[8], byp_send_val[8];
+        char size_val[8];
         snprintf(size_val, sizeof(size_val), "%d%%", (int)(reverb_size01_ * 100.f + 0.5f));
-        snprintf(byp_send_val, sizeof(byp_send_val), "%d%%",
-                  (int)(bypass_reverb_send01_ * 100.f + 0.5f));
-        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Size", size_val, byp_send_val,
-                         "Byp Send");
-        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
-                         "Reverb*", "", "", "Delay");
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Size", size_val, "", "");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
     }
-    else if(global_page_ == GlobalPage::Reverb) // global_fx_target_delay_ -- Delay
-         // pair, shared Time/Feedback for the ONE cross-feedback delay bus
-         // both Dexed and Grains send into (see main.cpp's fx_delay_l/r).
+    else if(global_page_ == GlobalPage::Delay)
+    // Shared Time/Feedback for the ONE cross-feedback delay bus every
+    // engine/layer sends into (see main.cpp's fx_delay_l/r).
     {
-        char time_val[8], fb_val[8];
-        snprintf(time_val, sizeof(time_val), "%d%%", (int)(delay_time01_ * 100.f + 0.5f));
+        char time_val[12], fb_val[8];
+        FormatDelayTime(delay_time01_, time_val, sizeof(time_val));
         snprintf(fb_val, sizeof(fb_val), "%d%%", (int)(delay_feedback01_ * 100.f + 0.5f));
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Time", time_val, fb_val,
                          "Feedback");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+    }
+    else if(global_page_ == GlobalPage::Bypass)
+    // Bypass's own sends -- same layout as every engine's own FX page.
+    {
+        disp_->SetCursor(0, 16);
+        WriteUpper(bypass_ ? "Bypass: On" : "Bypass: Off");
+        char send_val[8], shared_val[12];
+        if(!bypass_fx_target_delay_)
+        {
+            snprintf(send_val, sizeof(send_val), "%d%%",
+                      (int)(bypass_reverb_send01_ * 100.f + 0.5f));
+            snprintf(shared_val, sizeof(shared_val), "%d%%",
+                      (int)(reverb_size01_ * 100.f + 0.5f));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Send", send_val, shared_val,
+                             "Size");
+        }
+        else
+        {
+            snprintf(send_val, sizeof(send_val), "%d%%",
+                      (int)(bypass_delay_send01_ * 100.f + 0.5f));
+            FormatDelayTime(delay_time01_, shared_val, sizeof(shared_val));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Send", send_val, shared_val,
+                             "Time");
+        }
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
-                         "Reverb", "", "", "Delay*");
+                         bypass_fx_target_delay_ ? "Reverb" : "Reverb*", "", "",
+                         bypass_fx_target_delay_ ? "Delay*" : "Delay");
     }
     else if(global_page_ == GlobalPage::ReverbTone && !global_reverb_tone_target_b_)
     // PreDelay + PreFilter pair -- gap before the tail starts, and input
@@ -4834,6 +4883,14 @@ void Ui::DrawGlobalScreen()
                          "Diff 2");
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
     }
+}
+
+void Ui::FormatDelayTime(float time01, char* out, size_t out_size)
+{
+    if(SharedDelay::IsOff(time01))
+        snprintf(out, out_size, "Off");
+    else
+        snprintf(out, out_size, "%dms", (int)(SharedDelay::TimeMs(time01) + 0.5f));
 }
 
 void Ui::DrawFileScreen()
@@ -5573,11 +5630,10 @@ void Ui::DrawGranularScreen()
             }
             else
             {
-                char send_val[8], time_val[8];
+                char send_val[8], time_val[12];
                 snprintf(send_val, sizeof(send_val), "%d%%",
                           (int)(granular_->GetDelaySend01() * 100.f + 0.5f));
-                snprintf(time_val, sizeof(time_val), "%d%%",
-                          (int)(delay_time01_ * 100.f + 0.5f));
+                FormatDelayTime(delay_time01_, time_val, sizeof(time_val));
                 disp_->SetCursor(0, 20);
                 WriteUpper("Delay");
                 DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Send", send_val, time_val,
@@ -6357,11 +6413,10 @@ void Ui::DrawDexedScreen()
             }
             else
             {
-                char send_val[8], time_val[8];
+                char send_val[8], time_val[12];
                 snprintf(send_val, sizeof(send_val), "%d%%",
                           (int)(dexed_->GetDelaySend01() * 100.f + 0.5f));
-                snprintf(time_val, sizeof(time_val), "%d%%",
-                          (int)(delay_time01_ * 100.f + 0.5f));
+                FormatDelayTime(delay_time01_, time_val, sizeof(time_val));
                 TomThumbDrawText(disp_, 0, 15, "Delay", true);
                 DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Send", send_val, time_val,
                                  "Time");
@@ -6808,11 +6863,10 @@ void Ui::DrawEnsembleScreen()
             }
             else
             {
-                char send_val[8], time_val[8];
+                char send_val[8], time_val[12];
                 snprintf(send_val, sizeof(send_val), "%d%%",
                           (int)(ensemble_->GetDelaySend01() * 100.f + 0.5f));
-                snprintf(time_val, sizeof(time_val), "%d%%",
-                          (int)(delay_time01_ * 100.f + 0.5f));
+                FormatDelayTime(delay_time01_, time_val, sizeof(time_val));
                 TomThumbDrawText(disp_, 0, 15, "Delay", true);
                 DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Send", send_val, time_val,
                                  "Time");
@@ -7166,11 +7220,10 @@ void Ui::DrawSampleSynthScreen()
             }
             else
             {
-                char send_val[8], time_val[8];
+                char send_val[8], time_val[12];
                 snprintf(send_val, sizeof(send_val), "%d%%",
                           (int)(sample_synth_->GetDelaySend01() * 100.f + 0.5f));
-                snprintf(time_val, sizeof(time_val), "%d%%",
-                          (int)(delay_time01_ * 100.f + 0.5f));
+                FormatDelayTime(delay_time01_, time_val, sizeof(time_val));
                 TomThumbDrawText(disp_, 0, 15, "Delay", true);
                 DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Send", send_val, time_val,
                                  "Time");

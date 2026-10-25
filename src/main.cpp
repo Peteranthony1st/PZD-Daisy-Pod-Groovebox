@@ -7,6 +7,7 @@
 #include "ui.h"
 #include "performance_store.h"
 #include "audio_engine.h"
+#include "shared_delay.h"
 #include "itcm.h"
 #include "granular_engine.h"
 #include "dexed_synth.h"
@@ -174,7 +175,7 @@ DattorroReverbStorage fx_reverb_storage;
 // generously -- at ~562KB total for both channels this is a rounding
 // error against the 64MB SDRAM budget, unlike the reverb instance
 // above.
-constexpr size_t kMaxDelaySamples = 72000;
+constexpr size_t kMaxDelaySamples = SharedDelay::kMaxSamples;
 daisysp::DelayLine<float, kMaxDelaySamples> DSY_SDRAM_BSS fx_delay_l;
 daisysp::DelayLine<float, kMaxDelaySamples> DSY_SDRAM_BSS fx_delay_r;
 
@@ -811,6 +812,7 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     const bool  byp          = ui.IsBypassed();
     const float bypass_gain  = ui.GetBypassGain();
     const float bypass_reverb_send01 = ui.GetBypassReverbSend01();
+    const float bypass_delay_send01  = ui.GetBypassDelaySend01();
     // Screen::Mixer's own Bypass channel -- multiplies on top of
     // bypass_gain above (see Ui::GetBypassMixVolume01()'s own comment for
     // why these are two separate controls), plus a genuine Pan, applied
@@ -859,10 +861,8 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // same curve shape ADSR times use) from 20ms up to kMaxDelaySamples'
     // own ~1.5s ceiling; Feedback is capped below 1.0 to keep the
     // cross-feedback pair from self-oscillating.
-    constexpr float kMinDelayMs      = 20.f;
-    constexpr float kMaxDelayMs      = (float)kMaxDelaySamples / 48000.f * 1000.f;
-    constexpr float kMaxDelayFeedback = 0.9f;
-    float delay_ms      = kMinDelayMs * powf(kMaxDelayMs / kMinDelayMs, ui.GetDelayTime01());
+    constexpr float kMaxDelayFeedback = SharedDelay::kMaxFeedback;
+    float delay_ms      = SharedDelay::TimeMs(ui.GetDelayTime01());
     float delay_samples = delay_ms * 0.001f * hw.AudioSampleRate();
     delay_samples = delay_samples < 1.f ? 1.f
                     : delay_samples > (float)kMaxDelaySamples - 1.f ? (float)kMaxDelaySamples - 1.f
@@ -895,7 +895,7 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // instead keeps "shows 0% on screen" and "is actually bypassed"
     // perfectly in sync.
     const bool reverb_bypassed = ui.GetReverbSize01() < 0.005f;
-    const bool delay_bypassed  = ui.GetDelayTime01() < 0.005f;
+    const bool delay_bypassed  = SharedDelay::IsOff(ui.GetDelayTime01());
 
     for(size_t i = 0; i < size; i++)
     {
@@ -912,6 +912,14 @@ void AudioCallback(AudioHandle::InputBuffer  in,
             float byp_mono_base = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume;
             reverb_send_l[i] += byp_mono_base * bypass_pan_l * bypass_reverb_send01;
             reverb_send_r[i] += byp_mono_base * bypass_pan_r * bypass_reverb_send01;
+        }
+        // Same for Bypass's own Delay Send (Global:Bypass, B2) -- before
+        // the delay reads delay_send_l/r for this sample further down.
+        if(byp && bypass_delay_send01 > 0.f)
+        {
+            float byp_mono_base = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume;
+            delay_send_l[i] += byp_mono_base * bypass_pan_l * bypass_delay_send01;
+            delay_send_r[i] += byp_mono_base * bypass_pan_r * bypass_delay_send01;
         }
 
         // Shared reverb: process the summed sends once per sample and

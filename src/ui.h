@@ -183,6 +183,10 @@ class Ui
     // bus though (see main.cpp's AudioCallback()). 0 (default) = none,
     // matching every per-layer Send's own default.
     float GetBypassReverbSend01() const { return bypass_reverb_send01_; }
+    // Same, into the shared delay bus (Global:Bypass, B2).
+    float GetBypassDelaySend01() const { return bypass_delay_send01_; }
+    // Shared delay Time for the screen: "Off" at 0, otherwise ms.
+    static void FormatDelayTime(float time01, char* out, size_t out_size);
     // Gain applied to the Bypass dry monitor mix -- uses whichever layer
     // is currently selected on the Home screen, since Bypass is mainly
     // used to check levels right before recording into that layer (see
@@ -355,6 +359,12 @@ class Ui
         // Diffusion 1+2) so needs no toggle.
         ReverbTone,
         ReverbDiffusion,
+        // The shared delay bus: K1 Time, K2 Feedback.
+        Delay,
+        // Bypass (live input monitor) sends into the shared busses --
+        // same shape as every engine's own FX page: B1 = Reverb (K1
+        // Send, K2 shared Size), B2 = Delay (K1 Send, K2 shared Time).
+        Bypass,
         File,
         // File management: Knob1 picks which of the 2 save folders
         // (Performances/Grains Presets) then Button1 tap drills in; once
@@ -850,7 +860,7 @@ class Ui
         GlobalTempo,
         GlobalFilter,
         GlobalReverb,
-        GlobalDelay, // Global:FX's Delay pair (Time/Feedback) -- see global_fx_target_delay_
+        GlobalDelay, // Global:Delay -- Time + Feedback
         // Global:Reverb Tone's own Button-toggled pair -- see
         // global_reverb_tone_target_b_.
         GlobalReverbTonePreDelay,     // PreDelay + PreFilter
@@ -858,6 +868,8 @@ class Ui
         // Global:Reverb Diffusion -- only 2 knobs (Input Diffusion 1+2),
         // no toggle needed.
         GlobalReverbDiffusion,
+        GlobalBypassReverb, // Global:Bypass, B1 -- Reverb Send + shared Size
+        GlobalBypassDelay,  // Global:Bypass, B2 -- Delay Send + shared Time
         GlobalSpeed,
         GlobalFile,
         GlobalExport,
@@ -1564,7 +1576,7 @@ class Ui
     float reverb_decay_diffusion01_   = 0.70f;
     float reverb_damping01_           = 0.05f;
     // Global:Reverb Tone's own Button-toggled pair (PreDelay+PreFilter
-    // vs. DecayDiffusion+Damping) -- same idiom as global_fx_target_delay_
+    // vs. DecayDiffusion+Damping) -- same idiom as bypass_fx_target_delay_
     // below. Global:Reverb Diffusion has no toggle (only 2 knobs left).
     bool global_reverb_tone_target_b_ = false;
     float delay_time01_     = 0.f; // shared delay bus's Time, see GetDelayTime01() -- also
@@ -1578,10 +1590,9 @@ class Ui
     int granular_midi_channel_     = -1;
     int ensemble_midi_channel_     = -1;
     int sample_synth_midi_channel_ = -1;
-    // Global:FX's own toggle between the Reverb pair (Size/Bypass Send,
-    // existing) and the Delay pair (Time/Feedback, new) -- same "Button1
-    // = pair A, Button2 = pair B" idiom as Grain's Gap+Scan toggle.
-    bool global_fx_target_delay_ = false;
+    // Global:Bypass's own Reverb/Delay target -- B1 = Reverb, B2 =
+    // Delay, same as every engine's own FX page.
+    bool bypass_fx_target_delay_ = false;
     // Same toggle, one per engine's own new FX page (Reverb Send+Size vs
     // Delay Send+Time) -- independent of Global:FX's own toggle above
     // and of each other.
@@ -1617,6 +1628,7 @@ class Ui
     // really active," not last session's unconfirmed knob position.
     int sample_synth_setup_applied_slices_ = 0;
     float bypass_reverb_send01_ = 0.f; // see GetBypassReverbSend01()
+    float bypass_delay_send01_  = 0.f; // see GetBypassDelaySend01()
     float bypass_mix_volume01_  = 0.8f; // see GetBypassMixVolume01()
     float bypass_mix_volume_    = 1.f;  // curved, set properly in the ctor below
     float bypass_pan01_         = 0.5f; // see GetBypassPan01()
