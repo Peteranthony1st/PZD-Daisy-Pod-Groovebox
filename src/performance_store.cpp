@@ -453,6 +453,15 @@ struct FileHeader
     // backward-compatible" treatment as ensemble_midi_channel above.
     // -1 = Omni. See Ui::GetSampleSynthMidiChannel().
     int32_t  sample_synth_midi_channel;
+    // v16: the shared delay's own settings (never saved before -- see
+    // DelayState) and Bypass's Delay Send.
+    float    delay_time01;
+    float    delay_feedback01;
+    int32_t  delay_sync;
+    float    delay_pingpong01;
+    float    delay_tone01;
+    float    delay_to_reverb01;
+    float    bypass_delay_send01;
 
     // Pad synth settings (added in version 7, removed in version 10 when
     // Pad synth itself was removed from the project) -- a performance
@@ -499,7 +508,8 @@ struct LayerHeader
 // Still version-gated going forward -- anything older than 11 is still a
 // hard, clean reject, same as always; reviving those is explicitly out
 // of scope (see the reverb implementation plan).
-constexpr uint32_t kFileVersion      = 15;
+constexpr uint32_t kFileVersion      = 16;
+constexpr uint32_t kFileVersionV15   = 15;
 constexpr uint32_t kFileVersionV14   = 14;
 constexpr uint32_t kFileVersionV13   = 13;
 constexpr uint32_t kFileVersionV12   = 12;
@@ -529,6 +539,38 @@ constexpr size_t kFileHeaderV13Size
 // kFileHeaderV13Size is what a v14-but-not-v15 file has beyond a v13 one.
 constexpr size_t kFileHeaderV14Size
     = offsetof(FileHeader, ensemble_midi_channel) + sizeof(int32_t);
+// ...and right after the SampleSynth MIDI-channel field (v15's own real
+// size) -- everything past it is v16's delay block.
+constexpr size_t kFileHeaderV15Size
+    = offsetof(FileHeader, sample_synth_midi_channel) + sizeof(int32_t);
+// The v16 delay block is read as one chunk right after v15's -- it must
+// be exactly its 7 four-byte fields, with no padding before or after.
+static_assert(offsetof(FileHeader, delay_time01) == kFileHeaderV15Size,
+              "v16 delay block must start right after the v15 header");
+static_assert(sizeof(FileHeader) == kFileHeaderV15Size + 7 * 4,
+              "v16 delay block must be exactly 7 four-byte fields");
+
+void WriteDelayState(FileHeader& hdr, const DelayState& d)
+{
+    hdr.delay_time01        = d.settings.time01;
+    hdr.delay_feedback01    = d.settings.feedback01;
+    hdr.delay_sync          = d.settings.sync ? 1 : 0;
+    hdr.delay_pingpong01    = d.settings.pingpong01;
+    hdr.delay_tone01        = d.settings.tone01;
+    hdr.delay_to_reverb01   = d.to_reverb01;
+    hdr.bypass_delay_send01 = d.bypass_send01;
+}
+
+void ReadDelayState(const FileHeader& hdr, DelayState* d)
+{
+    d->settings.time01     = hdr.delay_time01;
+    d->settings.feedback01 = hdr.delay_feedback01;
+    d->settings.sync       = hdr.delay_sync != 0;
+    d->settings.pingpong01 = hdr.delay_pingpong01;
+    d->settings.tone01     = hdr.delay_tone01;
+    d->to_reverb01         = hdr.delay_to_reverb01;
+    d->bypass_send01       = hdr.bypass_delay_send01;
+}
 
 } // namespace
 
@@ -866,6 +908,7 @@ bool Save(int                slot,
           int                granular_midi_channel,
           int                ensemble_midi_channel,
           int                sample_synth_midi_channel,
+          const DelayState&  delay,
           ProgressFn         on_progress)
 {
     if(!card_ready || slot < 1 || slot > kMaxSlots)
@@ -932,6 +975,7 @@ bool Save(int                slot,
     hdr.granular_midi_channel          = (int32_t)granular_midi_channel;
     hdr.ensemble_midi_channel          = (int32_t)ensemble_midi_channel;
     hdr.sample_synth_midi_channel      = (int32_t)sample_synth_midi_channel;
+    WriteDelayState(hdr, delay);
 
     UINT bw;
     fr        = f_write(&file, &hdr, sizeof(hdr), &bw);
@@ -1028,6 +1072,7 @@ bool Load(int          slot,
           int*         out_granular_midi_channel,
           int*         out_ensemble_midi_channel,
           int*         out_sample_synth_midi_channel,
+          DelayState*  inout_delay,
           ProgressFn   on_progress)
 {
     if(!card_ready || slot < 1 || slot > kMaxSlots)
@@ -1065,7 +1110,8 @@ bool Load(int          slot,
     bool ok = fr == FR_OK && br == (UINT)kFileHeaderV11Size;
     bool version_ok
         = ok && memcmp(hdr.magic, "OURO", 4) == 0
-          && (hdr.version == kFileVersion || hdr.version == kFileVersionV14
+          && (hdr.version == kFileVersion || hdr.version == kFileVersionV15
+              || hdr.version == kFileVersionV14
               || hdr.version == kFileVersionV13 || hdr.version == kFileVersionV12
               || hdr.version == kFileVersionPrev);
 
@@ -1126,19 +1172,29 @@ bool Load(int          slot,
         hdr.ensemble_midi_channel = -1;
     }
 
-    if(ok && version_ok && hdr.version == kFileVersion)
+    if(ok && version_ok && hdr.version >= kFileVersionV15)
     {
-        // v15 -- the new SampleSynth MIDI-channel field is real, read it too.
+        // v15 or newer -- the SampleSynth MIDI-channel field is real, read it too.
         UINT br5;
-        fr = f_read(&file, &hdr.sample_synth_midi_channel, sizeof(FileHeader) - kFileHeaderV14Size,
+        fr = f_read(&file, &hdr.sample_synth_midi_channel, kFileHeaderV15Size - kFileHeaderV14Size,
                      &br5);
-        ok = fr == FR_OK && br5 == (UINT)(sizeof(FileHeader) - kFileHeaderV14Size);
+        ok = fr == FR_OK && br5 == (UINT)(kFileHeaderV15Size - kFileHeaderV14Size);
     }
     else if(ok && version_ok)
     {
         // v11, v12, v13, or v14 -- no SampleSynth MIDI-channel field on
         // disk yet; default to Omni, same reasoning as the others above.
         hdr.sample_synth_midi_channel = -1;
+    }
+
+    // v16 -- the delay block. Older files never stored it, so it's simply
+    // not read (and the live delay left as it is, see below).
+    bool has_delay = ok && version_ok && hdr.version == kFileVersion;
+    if(has_delay)
+    {
+        UINT br6;
+        fr = f_read(&file, &hdr.delay_time01, sizeof(FileHeader) - kFileHeaderV15Size, &br6);
+        ok = fr == FR_OK && br6 == (UINT)(sizeof(FileHeader) - kFileHeaderV15Size);
     }
 
     if(!ok || !version_ok)
@@ -1192,6 +1248,8 @@ bool Load(int          slot,
         *out_granular_midi_channel          = (int)hdr.granular_midi_channel;
         *out_ensemble_midi_channel          = (int)hdr.ensemble_midi_channel;
         *out_sample_synth_midi_channel      = (int)hdr.sample_synth_midi_channel;
+        if(has_delay && inout_delay)
+            ReadDelayState(hdr, inout_delay);
     }
 
     int n = ok ? (int)hdr.num_layers : 0;
@@ -5506,7 +5564,8 @@ bool SavePrefs(TempoClock&  tempo,
               int          dexed_midi_channel,
               int          granular_midi_channel,
               int          ensemble_midi_channel,
-              int          sample_synth_midi_channel)
+              int          sample_synth_midi_channel,
+              const DelayState& delay)
 {
     if(!card_ready)
         return false;
@@ -5546,6 +5605,7 @@ bool SavePrefs(TempoClock&  tempo,
     hdr.granular_midi_channel          = (int32_t)granular_midi_channel;
     hdr.ensemble_midi_channel          = (int32_t)ensemble_midi_channel;
     hdr.sample_synth_midi_channel      = (int32_t)sample_synth_midi_channel;
+    WriteDelayState(hdr, delay);
 
     UINT bw;
     fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
@@ -5580,7 +5640,8 @@ bool LoadPrefs(float*      out_bpm,
               int*        out_dexed_midi_channel,
               int*        out_granular_midi_channel,
               int*        out_ensemble_midi_channel,
-              int*        out_sample_synth_midi_channel)
+              int*        out_sample_synth_midi_channel,
+              DelayState* inout_delay)
 {
     // No card, no file, or wrong shape -- all silently "nothing saved
     // yet", not an error (see the header comment: the caller's own
@@ -5605,7 +5666,8 @@ bool LoadPrefs(float*      out_bpm,
     bool ok = fr == FR_OK && br == (UINT)kFileHeaderV11Size;
     bool version_ok
         = ok && memcmp(hdr.magic, "PREF", 4) == 0
-          && (hdr.version == kFileVersion || hdr.version == kFileVersionV14
+          && (hdr.version == kFileVersion || hdr.version == kFileVersionV15
+              || hdr.version == kFileVersionV14
               || hdr.version == kFileVersionV13 || hdr.version == kFileVersionV12
               || hdr.version == kFileVersionPrev);
 
@@ -5651,21 +5713,31 @@ bool LoadPrefs(float*      out_bpm,
         hdr.ensemble_midi_channel = -1;
     }
 
-    if(ok && version_ok && hdr.version == kFileVersion)
+    if(ok && version_ok && hdr.version >= kFileVersionV15)
     {
         UINT br5;
-        fr = f_read(&file, &hdr.sample_synth_midi_channel, sizeof(FileHeader) - kFileHeaderV14Size,
+        fr = f_read(&file, &hdr.sample_synth_midi_channel, kFileHeaderV15Size - kFileHeaderV14Size,
                      &br5);
-        ok = fr == FR_OK && br5 == (UINT)(sizeof(FileHeader) - kFileHeaderV14Size);
+        ok = fr == FR_OK && br5 == (UINT)(kFileHeaderV15Size - kFileHeaderV14Size);
     }
     else if(ok && version_ok)
     {
         hdr.sample_synth_midi_channel = -1;
     }
 
+    bool has_delay = ok && version_ok && hdr.version == kFileVersion;
+    if(has_delay)
+    {
+        UINT br6;
+        fr = f_read(&file, &hdr.delay_time01, sizeof(FileHeader) - kFileHeaderV15Size, &br6);
+        ok = fr == FR_OK && br6 == (UINT)(sizeof(FileHeader) - kFileHeaderV15Size);
+    }
+
     f_close(&file);
     if(!ok || !version_ok)
         return false;
+    if(has_delay && inout_delay)
+        ReadDelayState(hdr, inout_delay);
 
     *out_bpm                    = hdr.bpm;
     *out_bars                   = hdr.bars;

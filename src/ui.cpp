@@ -229,12 +229,14 @@ void Ui::ApplyStartupDefaults()
     int        bars, dexed_ch, granular_ch, ensemble_ch, sample_synth_ch;
     bool       byp, metro_on;
     FilterMode mode;
+    // Starts as the current values -- only overwritten by a v16+ file.
+    PerformanceStore::DelayState prefs_delay = GetDelayState();
     if(!PerformanceStore::LoadPrefs(&bpm, &bars, &master_vol01, &byp, &mode, &cutoff01,
                                       &res01, &reverb_sz01, &byp_send01, &metro_on,
                                       &metro_vol01, &rev_predelay01, &rev_prefilter01,
                                       &rev_diff1_01, &rev_diff2_01, &rev_decdiff01,
                                       &rev_damping01, &dexed_ch, &granular_ch, &ensemble_ch,
-                                      &sample_synth_ch))
+                                      &sample_synth_ch, &prefs_delay))
         return; // nothing saved yet -- Init()'s hardcoded defaults already stand
 
     // SetBpm()/SetBars() are no-ops while locked, but nothing can be
@@ -265,6 +267,7 @@ void Ui::ApplyStartupDefaults()
     granular_midi_channel_      = granular_ch;
     ensemble_midi_channel_      = ensemble_ch;
     sample_synth_midi_channel_  = sample_synth_ch;
+    ApplyDelayState(prefs_delay);
 
     // Init() already called this once with the pre-defaults values (see
     // its own comment above) -- re-seed now that the real starting
@@ -8444,7 +8447,7 @@ void Ui::TriggerSave(bool force_new)
                                        reverb_input_diffusion2_01_, reverb_decay_diffusion01_,
                                        reverb_damping01_, dexed_midi_channel_,
                                        granular_midi_channel_, ensemble_midi_channel_,
-                                       sample_synth_midi_channel_,
+                                       sample_synth_midi_channel_, GetDelayState(),
                                        &Ui::OnSaveLoadProgress);
     file_op_in_progress_ = false;
     g_progress_disp       = nullptr;
@@ -8480,6 +8483,9 @@ void Ui::TriggerLoad(int slot)
     // tempo clock keeps ticking) while later layers are still being
     // read, so every layer would resume at a different sample offset.
     // See audio_engine.h and TempoClock::ResetPhase().
+    // Starts as the current values -- a v16+ file overwrites them, an
+    // older one (no delay block) leaves them as they are.
+    PerformanceStore::DelayState loaded_delay = GetDelayState();
     g_audio_suspended    = true;
     g_progress_disp      = disp_;
     file_op_in_progress_ = true;
@@ -8492,7 +8498,7 @@ void Ui::TriggerLoad(int slot)
                                        &reverb_decay_diffusion01_, &reverb_damping01_,
                                        &dexed_midi_channel_, &granular_midi_channel_,
                                        &ensemble_midi_channel_, &sample_synth_midi_channel_,
-                                       &Ui::OnSaveLoadProgress);
+                                       &loaded_delay, &Ui::OnSaveLoadProgress);
     file_op_in_progress_ = false;
     g_progress_disp       = nullptr;
     g_audio_suspended     = false; // every layer + tempo phase is consistent now
@@ -8509,6 +8515,7 @@ void Ui::TriggerLoad(int slot)
     if(ok)
     {
         loaded_slot_ = slot;
+        ApplyDelayState(loaded_delay);
         // PerformanceStore::Load() only writes the raw 0..1 value; Ui
         // owns the volume curve, same as ApplyKnobs()'s Home-screen case.
         master_volume_ = powf(Clampf(master_volume01_, 0.f, 1.f), 2.5f) * 1.43f;
@@ -10860,7 +10867,8 @@ void Ui::TriggerSaveDefaults()
                                             reverb_input_diffusion2_01_,
                                             reverb_decay_diffusion01_, reverb_damping01_,
                                             dexed_midi_channel_, granular_midi_channel_,
-                                            ensemble_midi_channel_, sample_synth_midi_channel_);
+                                            ensemble_midi_channel_, sample_synth_midi_channel_,
+                                            GetDelayState());
     if(ok)
         snprintf(tempo_status_, sizeof(tempo_status_), "Saved as default");
     else

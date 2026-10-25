@@ -59,6 +59,17 @@ int NextFreeSlot();
 
 using ProgressFn = void (*)(float progress01);
 
+// The shared delay's own settings plus Bypass's Delay Send -- saved in
+// performances and startup defaults from file version 16 on. Loading an
+// older file leaves the live values untouched (those files never stored
+// them), so an old performance sounds exactly as it did before.
+struct DelayState
+{
+    SharedDelay::Settings settings;
+    float                 to_reverb01   = 0.f; // Global:Dly-Rev
+    float                 bypass_send01 = 0.f; // Global:Bypass, Delay Send
+};
+
 // Deletes an existing saved performance -- irreversible, same as deleting
 // any other file; the caller (SD MGMT's own hold-to-confirm gesture) owns
 // making that consequence clear before calling this. Also closes the gap
@@ -108,6 +119,7 @@ bool Save(int                slot,
           int                granular_midi_channel,
           int                ensemble_midi_channel,
           int                sample_synth_midi_channel,
+          const DelayState& delay,
           ProgressFn         on_progress = nullptr);
 
 // Accepts kFileVersion (15) and the four previous versions (14, 13, 12,
@@ -141,6 +153,7 @@ bool Load(int          slot,
           int*         out_granular_midi_channel,
           int*         out_ensemble_midi_channel,
           int*         out_sample_synth_midi_channel,
+          DelayState*  inout_delay,
           ProgressFn   on_progress = nullptr);
 
 // Grains (GranularEngine) presets: parameters AND the captured audio
@@ -770,9 +783,10 @@ bool SavePrefs(TempoClock&  tempo,
                int          dexed_midi_channel,
                int          granular_midi_channel,
                int          ensemble_midi_channel,
-               int          sample_synth_midi_channel);
+               int          sample_synth_midi_channel,
+               const DelayState& delay);
 
-// Same v11/v12/v13/v14/v15 backward compatibility as Load() -- see its own comment.
+// Same v11..v16 backward compatibility as Load() -- see its own comment.
 bool LoadPrefs(float*      out_bpm,
                int*        out_bars,
                float*      out_master_volume01,
@@ -793,6 +807,7 @@ bool LoadPrefs(float*      out_bpm,
                int*        out_dexed_midi_channel,
                int*        out_granular_midi_channel,
                int*        out_ensemble_midi_channel,
-               int*        out_sample_synth_midi_channel);
+               int*        out_sample_synth_midi_channel,
+               DelayState* inout_delay);
 
 } // namespace PerformanceStore

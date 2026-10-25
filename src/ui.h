@@ -180,6 +180,27 @@ class Ui
         return s;
     }
     float GetDelayToReverb01() const { return delay_to_reverb01_; }
+    // The same, plus Bypass's Delay Send, as saved in performances and
+    // startup defaults (file version 16+).
+    PerformanceStore::DelayState GetDelayState() const
+    {
+        PerformanceStore::DelayState d;
+        d.settings      = GetDelaySettings();
+        d.to_reverb01   = delay_to_reverb01_;
+        d.bypass_send01 = bypass_delay_send01_;
+        return d;
+    }
+    void ApplyDelayState(const PerformanceStore::DelayState& d)
+    {
+        delay_time01_        = Clamp01(d.settings.time01);
+        delay_feedback01_    = Clamp01(d.settings.feedback01);
+        delay_sync_          = d.settings.sync;
+        delay_pingpong01_    = Clamp01(d.settings.pingpong01);
+        delay_tone01_        = Clamp01(d.settings.tone01);
+        delay_to_reverb01_   = Clamp01(d.to_reverb01);
+        bypass_delay_send01_ = Clamp01(d.bypass_send01);
+    }
+    static float Clamp01(float v) { return v < 0.f ? 0.f : v > 1.f ? 1.f : v; }
     // Which MIDI channel each engine responds to -- -1 = Omni (respond to
     // everything, the default, matching this project's own behavior
     // before per-engine routing existed). 0-15 = a specific channel
