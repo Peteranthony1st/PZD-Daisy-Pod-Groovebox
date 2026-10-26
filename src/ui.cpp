@@ -2258,7 +2258,10 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::GlobalEnsemble: break; // entry point only -- see Screen::Ensemble instead
         case KnobContext::DexedAlgo:
             if(dexed_)
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(134) / 32.f;
+                // Centre of the current algorithm's 1/32 step -- ApplyKnobs()
+                // floors k1*32, so the step's start would hand a knob just
+                // below it the previous algorithm.
+                k1_pickup_raw_[i] = ((float)dexed_->GetPatchByte(134) + 0.5f) / 32.f;
             break;
         case KnobContext::DexedFeedback:
             if(dexed_)
@@ -2658,6 +2661,39 @@ void Ui::SyncPickupTargets(KnobContext ctx)
     }
 }
 
+// Pickup gated on the knob actually being turned since arriving on this
+// page/context. KnobPickUp() alone would engage on the first tick if the
+// knob merely happened to sit within its epsilon of the setting, and
+// then write the knob's own value over it -- arriving on a page could
+// change the sound with no knob touched. Reported on Dexed: browse
+// presets (both knobs move), scroll on, and a page grabs a knob that
+// happens to be close -- the Algorithm page then picked the neighbouring
+// algorithm. A knob now does nothing until it has moved kPickupMove from
+// where it was on arrival.
+bool Ui::PickUpK1(float raw)
+{
+    if(!k1_moved_)
+    {
+        if(fabsf(raw - k1_entry_raw_) < kPickupMove)
+            return false;
+        k1_moved_ = true;
+    }
+    size_t ci = (size_t)last_knob_context_;
+    return KnobPickUp(raw, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]);
+}
+
+bool Ui::PickUpK2(float raw)
+{
+    if(!k2_moved_)
+    {
+        if(fabsf(raw - k2_entry_raw_) < kPickupMove)
+            return false;
+        k2_moved_ = true;
+    }
+    size_t ci = (size_t)last_knob_context_;
+    return KnobPickUp(raw, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]);
+}
+
 bool Ui::KnobPickUp(float raw, float& stored_raw, bool& engaged)
 {
     constexpr float kKnobPickupEpsilon = 0.04f;
@@ -2780,15 +2816,20 @@ void Ui::ApplyKnobs()
         k2_pickup_engaged_[i] = false;
         SyncPickupTargets(ctx);
         last_knob_context_    = ctx;
+        // Where the knobs are on arrival -- see PickUpK1()/PickUpK2().
+        k1_entry_raw_ = k1;
+        k2_entry_raw_ = k2;
+        k1_moved_     = false;
+        k2_moved_     = false;
     }
     size_t ci = (size_t)ctx;
 
     switch(screen_)
     {
         case Screen::Home:
-            if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+            if(PickUpK1(k1))
                 SetMasterVolume01(k1);
-            if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+            if(PickUpK2(k2))
                 tempo_->SetMetronomeVolume01(k2);
             break;
 
@@ -2796,25 +2837,25 @@ void Ui::ApplyKnobs()
             switch(layer_page_)
             {
                 case LayerPage::Status:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         Cur().SetVolume01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         Cur().SetPan01(k2);
                     break;
                 case LayerPage::Speed:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         Cur().SetSpeed01(k1);
                     break;
                 case LayerPage::Filter:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         Cur().SetFilterCutoff01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         Cur().SetFilterResonance01(k2);
                     break;
                 case LayerPage::Effect:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         Cur().SetEffectParamA01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         Cur().SetEffectParamB01(k2);
                     break;
                 case LayerPage::Reverb:
@@ -2823,13 +2864,13 @@ void Ui::ApplyKnobs()
                     // shared-bus comment on LooperLayer::SetReverbSend01()/
                     // SetDelaySend01()), so this page is just the two Send
                     // knobs, no toggle needed.
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         Cur().SetReverbSend01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         Cur().SetDelaySend01(k2);
                     break;
                 case LayerPage::Gain:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         Cur().SetInputGain01(k1);
                     break;
                 default: break;
@@ -2839,9 +2880,9 @@ void Ui::ApplyKnobs()
         case Screen::Global:
             if(global_page_ == GlobalPage::Tempo && !tempo_->IsLocked())
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     tempo_->SetBpm(50.f + k1 * (240.f - 50.f));
-                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                if(PickUpK2(k2))
                 {
                     // Bars' own span is TempoClock::MaxBarsForBpm(bpm) --
                     // turning K2 fully clockwise always reaches whatever's
@@ -2855,33 +2896,33 @@ void Ui::ApplyKnobs()
             }
             else if(global_page_ == GlobalPage::Filter)
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     master_filter_cutoff01_ = Clampf(k1, 0.f, 1.f);
-                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                if(PickUpK2(k2))
                     master_filter_res01_ = Clampf(k2, 0.f, 1.f);
             }
             else if(global_page_ == GlobalPage::Reverb)
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     reverb_size01_ = Clampf(k1, 0.f, 1.f);
             }
             else if(global_page_ == GlobalPage::Delay)
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     delay_time01_ = Clampf(k1, 0.f, 1.f);
-                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                if(PickUpK2(k2))
                     delay_feedback01_ = Clampf(k2, 0.f, 1.f);
             }
             else if(global_page_ == GlobalPage::DelayReverb)
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     delay_to_reverb01_ = Clampf(k1, 0.f, 1.f);
             }
             else if(global_page_ == GlobalPage::DelayTone)
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     delay_pingpong01_ = Clampf(k1, 0.f, 1.f);
-                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                if(PickUpK2(k2))
                     delay_tone01_ = Clampf(k2, 0.f, 1.f);
             }
             else if(global_page_ == GlobalPage::Bypass)
@@ -2890,16 +2931,16 @@ void Ui::ApplyKnobs()
                 // source's Send, K2 = the shared bus's Size/Time.
                 if(!bypass_fx_target_delay_)
                 {
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         bypass_reverb_send01_ = Clampf(k1, 0.f, 1.f);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         reverb_size01_ = Clampf(k2, 0.f, 1.f);
                 }
                 else
                 {
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         bypass_delay_send01_ = Clampf(k1, 0.f, 1.f);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         delay_time01_ = Clampf(k2, 0.f, 1.f);
                 }
             }
@@ -2907,29 +2948,29 @@ void Ui::ApplyKnobs()
             {
                 if(!global_reverb_tone_target_b_)
                 {
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         reverb_predelay01_ = Clampf(k1, 0.f, 1.f);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         reverb_prefilter01_ = Clampf(k2, 0.f, 1.f);
                 }
                 else
                 {
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         reverb_decay_diffusion01_ = Clampf(k1, 0.f, 1.f);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         reverb_damping01_ = Clampf(k2, 0.f, 1.f);
                 }
             }
             else if(global_page_ == GlobalPage::ReverbDiffusion)
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     reverb_input_diffusion1_01_ = Clampf(k1, 0.f, 1.f);
-                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                if(PickUpK2(k2))
                     reverb_input_diffusion2_01_ = Clampf(k2, 0.f, 1.f);
             }
             else if(global_page_ == GlobalPage::Speed)
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     SetProjectSpeed01(k1);
             }
             else if(global_page_ == GlobalPage::File)
@@ -2959,9 +3000,9 @@ void Ui::ApplyKnobs()
                 // Master up a mic monitored through Bypass can feed back
                 // unless Bypass itself is turned down. Same values as
                 // Screen::Mixer's Master and Bypass channels.
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     SetMasterVolume01(k1);
-                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                if(PickUpK2(k2))
                     SetBypassMixVolume01(k2);
             }
             else if(global_page_ == GlobalPage::SdMgmt)
@@ -3007,103 +3048,103 @@ void Ui::ApplyKnobs()
                 case GranularParamPage::Grain:
                     if(!granular_grain_target_gap_jitter_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetSize01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             granular_->SetFill01(k2);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetGap01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             granular_->SetJitter01(k2);
                     }
                     break;
                 case GranularParamPage::Position:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         granular_->SetPosition01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         granular_->SetDirection01(k2);
                     break;
                 case GranularParamPage::ScanRange:
                     if(!granular_scanrange_target_gap_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetScanPosition01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             granular_->SetScanEnd01(k2);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetScanGap01(k1);
                     }
                     break;
                 case GranularParamPage::Scan:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         granular_->SetScan01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         granular_->SetScanFill01(k2);
                     break;
                 case GranularParamPage::Tune:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         granular_->SetGrainTuneSemitones01(k1);
                     break;
                 case GranularParamPage::ADSR:
                     if(!granular_adsr_target_sr_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetAttack01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             granular_->SetDecay01(k2);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetSustain01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             granular_->SetRelease01(k2);
                     }
                     break;
                 case GranularParamPage::Filter:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         granular_->SetFilterCutoff01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         granular_->SetFilterResonance01(k2);
                     break;
                 case GranularParamPage::Mix:
                     if(!granular_mix_target_reverb_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetGrainVolume01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             granular_->SetScanVolume01(k2);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetReverbSend01(k1);
                     }
                     break;
                 case GranularParamPage::FX:
                     if(!granular_fx_target_delay_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetReverbSend01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             reverb_size01_ = Clampf(k2, 0.f, 1.f);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             granular_->SetDelaySend01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             delay_time01_ = Clampf(k2, 0.f, 1.f);
                     }
                     break;
                 case GranularParamPage::MIDI:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         granular_midi_channel_ = -1 + (int)(k1 * 16.99f);
                     break;
                 case GranularParamPage::Capture:
@@ -3130,12 +3171,12 @@ void Ui::ApplyKnobs()
                 case GranularParamPage::Trim:
                 {
                     bool changed = false;
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         granular_trim_start01_ = k1;
                         changed                = true;
                     }
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                     {
                         granular_trim_end01_ = k2;
                         changed              = true;
@@ -3218,7 +3259,7 @@ void Ui::ApplyKnobs()
                 // notes while turning the knob, confirmed on real
                 // hardware.
                 case DexedParamPage::Algo:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         int algo = (int)(Clampf(k1, 0.f, 1.f) * 32.f);
                         algo     = algo > 31 ? 31 : algo;
@@ -3227,7 +3268,7 @@ void Ui::ApplyKnobs()
                     }
                     break;
                 case DexedParamPage::Feedback:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         int fb = (int)(Clampf(k1, 0.f, 1.f) * 7.f + 0.5f);
                         fb     = fb > 7 ? 7 : fb;
@@ -3238,14 +3279,14 @@ void Ui::ApplyKnobs()
                 case DexedParamPage::Vibrato:
                     if(!dexed_vibrato_target_sens_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                         {
                             int speed = (int)(Clampf(k1, 0.f, 1.f) * 99.f + 0.5f);
                             speed     = speed > 99 ? 99 : speed;
                             if((uint8_t)speed != dexed_->GetPatchByte(137))
                                 dexed_->SetPatchByte(137, (uint8_t)speed);
                         }
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                         {
                             int depth = (int)(Clampf(k2, 0.f, 1.f) * 99.f + 0.5f);
                             depth     = depth > 99 ? 99 : depth;
@@ -3253,7 +3294,7 @@ void Ui::ApplyKnobs()
                                 dexed_->SetPatchByte(139, (uint8_t)depth);
                         }
                     }
-                    else if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    else if(PickUpK1(k1))
                     {
                         // Global Pitch Mod Sensitivity -- only bits 0-2 of
                         // this byte are ever read (patch[143] & 7, see
@@ -3266,53 +3307,53 @@ void Ui::ApplyKnobs()
                     }
                     break;
                 case DexedParamPage::Brightness:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci])
+                    if(PickUpK1(k1)
                        && fabsf(k1 - dexed_->GetBrightness01()) > 0.002f)
                         dexed_->SetBrightness01(k1);
                     break;
                 case DexedParamPage::EnvSpeed:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci])
+                    if(PickUpK1(k1)
                        && fabsf(k1 - dexed_->GetEnvSpeed01()) > 0.002f)
                         dexed_->SetEnvSpeed01(k1);
                     break;
                 case DexedParamPage::Filter:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         dexed_->SetFilterCutoff01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         dexed_->SetFilterResonance01(k2);
                     break;
                 case DexedParamPage::Mix:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         dexed_->SetReverbSend01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         dexed_->SetOutputLevel01(k2);
                     break;
                 case DexedParamPage::FX:
                     if(!dexed_fx_target_delay_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             dexed_->SetReverbSend01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             reverb_size01_ = Clampf(k2, 0.f, 1.f);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             dexed_->SetDelaySend01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             delay_time01_ = Clampf(k2, 0.f, 1.f);
                     }
                     break;
                 case DexedParamPage::Fold:
                     // K1 = Fold Amount, K2 = output trim -- no
                     // sub-mode, unlike FX above.
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         dexed_->SetFoldAmount01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         dexed_->SetFoldTrim01(k2);
                     break;
                 case DexedParamPage::MIDI:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         dexed_midi_channel_ = -1 + (int)(k1 * 16.99f);
                     break;
                 case DexedParamPage::Advanced: break; // no knobs, encoder click drills in
@@ -3445,68 +3486,68 @@ void Ui::ApplyKnobs()
                         if(ensemble_)
                             k2_pickup_raw_[ci] = ensemble_->GetDrawbarLevel(ensemble_drawbar_index_);
                     }
-                    if(ensemble_ && KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(ensemble_ && PickUpK2(k2))
                         ensemble_->SetDrawbarLevel(ensemble_drawbar_index_, k2);
                     break;
                 }
                 case EnsembleParamPage::Env:
                     if(!ensemble_env_target_sr_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             ensemble_->SetAttack01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             ensemble_->SetDecay01(k2);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             ensemble_->SetSustain01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             ensemble_->SetRelease01(k2);
                     }
                     break;
                 case EnsembleParamPage::Ensemble:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         ensemble_->SetChorusDepth01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         ensemble_->SetChorusRate01(k2);
                     break;
                 case EnsembleParamPage::Filter:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         ensemble_->SetFilterCutoff01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         ensemble_->SetFilterResonance01(k2);
                     break;
                 case EnsembleParamPage::Mix:
                     if(ensemble_mix_target_gain_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             ensemble_->SetGain01(k1);
                         break;
                     }
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         ensemble_->SetOutputLevel01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         ensemble_->SetPan01(k2);
                     break;
                 case EnsembleParamPage::FX:
                     if(!ensemble_fx_target_delay_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             ensemble_->SetReverbSend01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             reverb_size01_ = Clampf(k2, 0.f, 1.f);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             ensemble_->SetDelaySend01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             delay_time01_ = Clampf(k2, 0.f, 1.f);
                     }
                     break;
                 case EnsembleParamPage::MIDI:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         ensemble_midi_channel_ = -1 + (int)(k1 * 16.99f);
                     break;
                 case EnsembleParamPage::Preset:
@@ -3556,35 +3597,35 @@ void Ui::ApplyKnobs()
             switch(sample_synth_param_page_)
             {
                 case SampleSynthParamPage::Filter:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         sample_synth_->SetFilterCutoff01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         sample_synth_->SetFilterResonance01(k2);
                     break;
                 case SampleSynthParamPage::Env:
                     if(!sample_synth_adsr_target_sr_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             sample_synth_->SetAttack01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             sample_synth_->SetDecay01(k2);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             sample_synth_->SetSustain01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             sample_synth_->SetRelease01(k2);
                     }
                     break;
                 case SampleSynthParamPage::Mix:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         sample_synth_->SetOutputLevel01(k1);
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                         sample_synth_->SetPan01(k2);
                     break;
                 case SampleSynthParamPage::Setup:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         // Same +-24 semitone range/quantization as
                         // SampleSynthParamPage::Tune's own case above --
@@ -3599,7 +3640,7 @@ void Ui::ApplyKnobs()
                             if(sample_synth_->SlotHasSample(si))
                                 sample_synth_->SetSlotPitchOffsetSemis(si, (int8_t)semis);
                     }
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                     {
                         // Pending only -- Button2 held confirms it (see
                         // ApplySampleSynthBreakDivide()'s own comment).
@@ -3611,21 +3652,21 @@ void Ui::ApplyKnobs()
                 case SampleSynthParamPage::FX:
                     if(!sample_synth_fx_target_delay_)
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             sample_synth_->SetReverbSend01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             reverb_size01_ = Clampf(k2, 0.f, 1.f);
                     }
                     else
                     {
-                        if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                        if(PickUpK1(k1))
                             sample_synth_->SetDelaySend01(k1);
-                        if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                        if(PickUpK2(k2))
                             delay_time01_ = Clampf(k2, 0.f, 1.f);
                     }
                     break;
                 case SampleSynthParamPage::MIDI:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                         sample_synth_midi_channel_ = -1 + (int)(k1 * 16.99f);
                     break;
                 case SampleSynthParamPage::Capture:
@@ -3650,12 +3691,12 @@ void Ui::ApplyKnobs()
                 case SampleSynthParamPage::Trim:
                 {
                     bool changed = false;
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         sample_synth_trim_start01_ = k1;
                         changed                     = true;
                     }
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                     {
                         sample_synth_trim_end01_ = k2;
                         changed                   = true;
@@ -3665,7 +3706,7 @@ void Ui::ApplyKnobs()
                     break;
                 }
                 case SampleSynthParamPage::Tune:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         // Same +-24 semitone range/quantization as
                         // GranularEngine::SetGrainTuneSemitones01() --
@@ -3683,7 +3724,7 @@ void Ui::ApplyKnobs()
                         sample_synth_tune_root_note_ = (uint8_t)Clampf((float)note, 0.f, 127.f);
                         ApplySampleSynthTrim();
                     }
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                     {
                         // Tune for whatever's loaded via Import/Preset/
                         // User specifically -- see sample_synth_imp_tune_
@@ -3782,14 +3823,14 @@ void Ui::ApplyKnobs()
             {
                 case DexedOpParamPage::Algo: break; // view-only here -- see its own comment
                 case DexedOpParamPage::RatioLevel:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         int coarse = (int)(Clampf(k1, 0.f, 1.f) * 32.f);
                         coarse     = coarse > 31 ? 31 : coarse;
                         if((uint8_t)coarse != dexed_->GetPatchByte(base + 18))
                             dexed_->SetPatchByte(base + 18, (uint8_t)coarse);
                     }
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                     {
                         int level = (int)(Clampf(k2, 0.f, 1.f) * 99.f + 0.5f);
                         level     = level > 99 ? 99 : level;
@@ -3798,7 +3839,7 @@ void Ui::ApplyKnobs()
                     }
                     break;
                 case DexedOpParamPage::Detune:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         int detune = (int)(Clampf(k1, 0.f, 1.f) * 14.f + 0.5f);
                         detune     = detune > 14 ? 14 : detune;
@@ -3810,14 +3851,14 @@ void Ui::ApplyKnobs()
                 {
                     int off1 = dexed_op_egrate_target_sr_ ? base + 2 : base + 0;
                     int off2 = dexed_op_egrate_target_sr_ ? base + 3 : base + 1;
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         int rate = (int)(Clampf(k1, 0.f, 1.f) * 99.f + 0.5f);
                         rate     = rate > 99 ? 99 : rate;
                         if((uint8_t)rate != dexed_->GetPatchByte(off1))
                             dexed_->SetPatchByte(off1, (uint8_t)rate);
                     }
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                     {
                         int rate = (int)(Clampf(k2, 0.f, 1.f) * 99.f + 0.5f);
                         rate     = rate > 99 ? 99 : rate;
@@ -3830,14 +3871,14 @@ void Ui::ApplyKnobs()
                 {
                     int off1 = dexed_op_eglevel_target_sr_ ? base + 6 : base + 4;
                     int off2 = dexed_op_eglevel_target_sr_ ? base + 7 : base + 5;
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         int level = (int)(Clampf(k1, 0.f, 1.f) * 99.f + 0.5f);
                         level     = level > 99 ? 99 : level;
                         if((uint8_t)level != dexed_->GetPatchByte(off1))
                             dexed_->SetPatchByte(off1, (uint8_t)level);
                     }
-                    if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    if(PickUpK2(k2))
                     {
                         int level = (int)(Clampf(k2, 0.f, 1.f) * 99.f + 0.5f);
                         level     = level > 99 ? 99 : level;
@@ -3847,7 +3888,7 @@ void Ui::ApplyKnobs()
                     break;
                 }
                 case DexedOpParamPage::AmpModSens:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         // Only bits 0-1 of this byte are ever read
                         // (patch[off+14] & 3, see msfa's own
@@ -3860,7 +3901,7 @@ void Ui::ApplyKnobs()
                     }
                     break;
                 case DexedOpParamPage::VelocitySens:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         // Real DX7 key velocity sensitivity range, read
                         // directly (unmasked) by ScaleVelocity().
@@ -3871,7 +3912,7 @@ void Ui::ApplyKnobs()
                     }
                     break;
                 case DexedOpParamPage::KeybRateScale:
-                    if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    if(PickUpK1(k1))
                     {
                         // Real DX7 keyboard rate scaling range, read
                         // directly (unmasked) by ScaleRate().
@@ -3893,26 +3934,26 @@ void Ui::ApplyKnobs()
                 break;
             if(ch == kNumMixerChannels - 1) // Master: Volume + Reverb Size, no toggle
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                 {
                     master_volume01_ = Clampf(k1, 0.f, 1.f);
                     master_volume_   = powf(master_volume01_, 2.5f) * 1.43f;
                     if(master_volume_ < 0.f)
                         master_volume_ = 0.f;
                 }
-                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                if(PickUpK2(k2))
                     reverb_size01_ = Clampf(k2, 0.f, 1.f);
             }
             else if(!mixer_target_reverb_)
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     MixerSetVolume01(ch, k1);
-                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                if(PickUpK2(k2))
                     MixerSetPan01(ch, k2);
             }
             else
             {
-                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                if(PickUpK1(k1))
                     MixerSetSend01(ch, k1);
             }
             break;

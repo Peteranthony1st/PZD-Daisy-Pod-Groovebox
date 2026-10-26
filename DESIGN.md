@@ -2735,6 +2735,24 @@ entry above for the real odd-channel-count layout bug adding this 9th
 channel surfaced, and why it's named "ESB" rather than the originally-
 shipped "ENSB."
 
+### Knob pickup only after the knob is turned
+
+Every page's knobs use soft pickup (`KnobPickUp()`): a knob takes over a
+setting only once it reaches the setting's value, so changing page never
+yanks a value to wherever the knob sits. But it engaged on the first tick
+if the knob merely *happened* to be within its 4% epsilon of the value
+-- and then wrote the knob's own value over it, with nothing touched.
+Reported on Dexed: load a preset, scroll on, and the sound changed
+completely. Browsing presets moves both knobs to arbitrary positions,
+and on the Algorithm page the target was the *start* of the current
+algorithm's 1/32 step while the knob maps by `floor(k1 * 32)`, so a knob
+just below it selected the previous algorithm.
+
+All 132 pickup calls now go through `PickUpK1()`/`PickUpK2()`: a knob
+does nothing on a page until it has moved `kPickupMove` (2%) from where
+it was on arrival, then picks up as before. Algorithm's pickup target is
+also the centre of its step now.
+
 ### Gain staging: equal-power pan, a master limiter, dB meters
 
 Reported: synths sounded fine live but quiet once recorded into a

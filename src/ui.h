@@ -1056,6 +1056,14 @@ class Ui
     // *to* -- same idea as a Pocket Operator's knob catch behavior.
     // Returns true if the caller should apply `raw` this tick.
     static bool KnobPickUp(float raw, float& stored_raw, bool& engaged);
+    // What ApplyKnobs() actually calls: KnobPickUp() for the current
+    // context, but only once that knob has been turned since arriving
+    // here (see their own comment in ui.cpp).
+    bool PickUpK1(float raw);
+    bool PickUpK2(float raw);
+    static constexpr float kPickupMove = 0.02f; // 2% of travel -- well above pot noise
+    float k1_entry_raw_ = 0.f, k2_entry_raw_ = 0.f;
+    bool  k1_moved_ = false, k2_moved_ = false;
     // Shared by Global:Speed's knob path (ApplyKnobs()) and its Button2
     // reset-to-1.0x -- two call sites, unlike most other global knobs
     // which only ever get set from one place.
