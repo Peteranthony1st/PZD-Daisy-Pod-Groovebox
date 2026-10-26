@@ -1,4 +1,5 @@
 #include "granular_engine.h"
+#include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
 #include <atomic>
@@ -122,8 +123,7 @@ void GranularEngine::SetOutputLevel01(float v01)
 void GranularEngine::SetPan01(float v01)
 {
     pan01_      = Clampf(v01, 0.f, 1.f);
-    pan_l_gain_ = 1.f - pan01_;
-    pan_r_gain_ = pan01_;
+    EqualPowerPan(pan01_, &pan_l_gain_, &pan_r_gain_);
 }
 
 void GranularEngine::BuildShadow(const float* buf_l, const float* buf_r, size_t len)

@@ -172,7 +172,7 @@ Full control map:
 | Global: Ensemble | — | — | Toggle Ensemble on/off | — |
 | Global: Granular | — | — | Toggle Grains on/off | — |
 | Global: Looper | — | — | Toggle the whole 4-layer loop system on/off (also resets `TempoClock`'s phase) | — |
-| Global: Mixer | — (entry point + at-a-glance overview grid, see *Screen::Mixer* below) | — | — | — |
+| Global: Mixer | Master Vol (same value as Home's K1 and the Mixer's Master channel) | Bypass Vol (same as the Mixer's Bypass channel) | — | — (entry point + overview grid; bottom row = CPU avg/peak, see *Screen::Mixer* below) |
 | Dexed: Algo | Cycle algorithm (quantized bucket selection, all 32) | — | Cycle algorithm back | Cycle algorithm forward |
 | Dexed: Feedback | Feedback amount (0-7) | — | — | — |
 | Dexed: Vibrato | LFO speed | LFO pitch-mod depth | — | — |
@@ -2734,6 +2734,42 @@ bar, via `DrawMixerOverviewGrid()`). See *Ensemble*'s own *Screen::Mixer*
 entry above for the real odd-channel-count layout bug adding this 9th
 channel surfaced, and why it's named "ESB" rather than the originally-
 shipped "ENSB."
+
+### Gain staging: equal-power pan, a master limiter, dB meters
+
+Reported: synths sounded fine live but quiet once recorded into a
+layer, mic/guitar takes too, and the Mixer's bars "never got past half
+way". Three things combined:
+
+- **Linear pan law, everywhere.** Every channel used left = 1 - pan,
+  right = pan, so a centred source sat at -6 dB per side -- and a synth
+  recorded into a layer paid it twice: its own pan on the way in, then
+  the layer's on playback (only partly offset by the layer Volume
+  curve's 1.4x). Every channel -- the 4 layers, all engines and Bypass --
+  now uses one equal-power law (`pan_law.h`: cos/sin, -3 dB in the
+  centre, unity hard left/right), so centred sources gain 3 dB and a
+  sound keeps the same loudness as it pans. WAV export renders through
+  the same layer code, so it follows automatically.
+- **Nothing protected the output**, which is why levels had been kept
+  conservative. `MasterSoftLimit()` (main.cpp) is now the last stage:
+  untouched below 0.8 (-2 dBFS), then a tanh knee rounding everything
+  above into +-1.0 -- a tanhf() only on the rare samples above the
+  knee. The Master meter reads *before* it, so its clip light now means
+  "the limiter is working hard". Export doesn't need it: it normalises
+  its own peak.
+- **Linear meters.** A bar at half height was -6 dBFS, a healthy level
+  that read as quiet. `MeterBar01()` maps peak level onto -48..0 dB, so
+  the bars read like a studio meter. (Volume/Send bars still show knob
+  settings, unchanged.)
+
+`Global:Mixer` also gained knobs: **K1 Master Vol, K2 Bypass Vol** --
+Bypass runs through Master, so with Master up a mic monitored through
+Bypass could feed back; now it can be pulled down right there. Bypass
+Vol defaults to 60% at power-on (it isn't saved in performances or
+startup defaults). The CPU readout moved to that page's bottom row,
+drawn without a centre icon since it's a readout, not a control
+(`DrawControlRow(..., show_icon = false)`). The overview grid's 10 bars
+went from 4 px to 5 px apart, still centred.
 
 ### Peak level + clip indicator
 

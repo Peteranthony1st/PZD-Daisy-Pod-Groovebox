@@ -1,4 +1,5 @@
 #include "dexed_synth.h"
+#include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
 #include "dexed_sysex.h"
@@ -227,8 +228,7 @@ void DexedSynth::SetOutputLevel01(float v01)
 void DexedSynth::SetPan01(float v01)
 {
     pan01_      = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01);
-    pan_l_gain_ = 1.f - pan01_;
-    pan_r_gain_ = pan01_;
+    EqualPowerPan(pan01_, &pan_l_gain_, &pan_r_gain_);
 }
 
 void DexedSynth::SetFoldAmount01(float v01)

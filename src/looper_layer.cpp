@@ -1,4 +1,5 @@
 #include "looper_layer.h"
+#include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
 #include <math.h>
@@ -491,8 +492,8 @@ void LooperLayer::Process(AudioHandle::InputBuffer  in,
                           TempoClock&                  tempo,
                           float                        project_speed)
 {
-    const float panL = 1.f - pan_;
-    const float panR = pan_;
+    float panL, panR;
+    EqualPowerPan(pan_, &panL, &panR); // see pan_law.h
 
     for(size_t i = 0; i < size; i++)
     {

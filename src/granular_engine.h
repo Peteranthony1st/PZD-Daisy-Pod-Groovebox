@@ -656,8 +656,8 @@ class GranularEngine
     float delay_send01_    = 0.f;
 
     float pan01_      = 0.5f;
-    float pan_l_gain_ = 0.5f; // 1-pan01_, control-rate cache
-    float pan_r_gain_ = 0.5f; // pan01_
+    float pan_l_gain_ = 0.7071f; // EqualPowerPan(pan01_), control-rate cache
+    float pan_r_gain_ = 0.7071f;
 
     // Read nearest-entry (no interpolation) -- 1024 points keeps the
     // stepping error ~-56dB below each grain, masked by its own content.

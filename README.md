@@ -150,8 +150,12 @@ slot with no copying needed.
 
 **Mixer** (`Global:Mixer`) — one screen with Volume/Pan/Reverb-send for
 all 4 layers plus every engine and Bypass, a live oscilloscope of the
-final mix, per-channel peak meters with clip indicators, and a live CPU
-meter.
+final mix, per-channel peak meters in dB (−48 dB to 0 dBFS, with clip
+indicators), and a live CPU meter. `Global:Mixer` itself puts **Master
+Vol** and **Bypass Vol** on K1/K2, so you can pull a live mic down
+without touching the mix (Bypass starts at 60% at power-on). Every
+channel pans with an equal-power law (−3 dB in the centre), and a soft
+limiter on the master output catches loud peaks instead of clipping.
 
 **SD card management** (`Global:SdMgmt`) — a grid of all 8 save
 categories (Performances, Grains/Dexed/Ensemble user presets, Captures,
@@ -208,8 +212,8 @@ habits keep it on your side:
 - Dial in reverb/delay last, once you know what's actually being kept —
   several engines sending into effects at once is the heaviest realistic
   combination.
-- `Global:Mixer`'s own footer shows a live CPU meter if you want to
-  check headroom directly.
+- `Global:Mixer`'s bottom row shows a live CPU meter (average and
+  peak) if you want to check headroom directly.
 
 ## How to use it
 
@@ -321,7 +325,7 @@ capture in progress.
 | Global: SMPVO | — | — | Toggle SMPVO on/off (disables SMPDR) | — (push encoder to enter Screen::SampleSynth) |
 | Global: SMPDR | — | — | Toggle SMPDR on/off (disables SMPVO) | — (push encoder to enter Screen::SampleSynth) |
 | Global: Looper | — | — | Toggle the whole 4-layer looper on/off | — |
-| Global: Mixer | — | — | — | — (push encoder to enter the Mixer screen) |
+| Global: Mixer | Master Vol | Bypass Vol | — | — (push encoder to enter the Mixer screen; bottom row shows CPU avg/peak) |
 
 **Dexed (`Screen::Dexed`, rotate to cycle pages)**
 

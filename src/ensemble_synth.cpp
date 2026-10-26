@@ -1,4 +1,5 @@
 #include "ensemble_synth.h"
+#include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
 #include <cmath>
@@ -242,8 +243,7 @@ void EnsembleSynth::SetOutputLevel01(float v01)
 void EnsembleSynth::SetPan01(float v01)
 {
     pan01_      = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01);
-    pan_l_gain_ = 1.f - pan01_;
-    pan_r_gain_ = pan01_;
+    EqualPowerPan(pan01_, &pan_l_gain_, &pan_r_gain_);
 }
 
 EnsembleSynth::EnsemblePresetData EnsembleSynth::CapturePreset() const
@@ -419,18 +419,8 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
         l = tanhf(l) * eff_output_level_;
         r = tanhf(r) * eff_output_level_;
 
-        // Same linear pan law/gain formula every other engine's own
-        // Pan uses (pan_l_gain_/pan_r_gain_ = 1-v/v), applied directly
-        // and literally identically to this already-stereo pair --
-        // deliberately NOT a different "balance" law that would keep
-        // one side at unity, so this knob feels consistent across
-        // every instrument in this project. Real consequence worth
-        // knowing: center (the default) attenuates both channels to
-        // 0.5x, same as it does for every other engine's own mono
-        // signal being split -- here that's a real level drop on an
-        // already-stereo source, not just a style choice, so this is
-        // one more thing the real hardware tuning pass needs to catch,
-        // not something to compensate for blindly here.
+        // Same equal-power pan law as every other channel (see
+        // pan_law.h), applied to this already-stereo pair.
         float sl = l * pan_l_gain_;
         float sr = r * pan_r_gain_;
         out_l[i] = sl;

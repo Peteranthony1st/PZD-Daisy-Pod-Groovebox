@@ -2249,7 +2249,10 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::GlobalExport: break; // no continuous knob values, Button1 triggers it
         case KnobContext::GlobalGranular: break; // entry point only -- see Screen::Granular instead
         case KnobContext::GlobalLooper: break; // no continuous knobs, Button1 toggle only
-        case KnobContext::GlobalMixer: break; // entry point only -- see Screen::Mixer instead
+        case KnobContext::GlobalMixer:
+            k1_pickup_raw_[i] = master_volume01_;
+            k2_pickup_raw_[i] = bypass_mix_volume01_;
+            break;
         case KnobContext::GlobalSdMgmt: break; // browses a list directly, no pickup used
         case KnobContext::GlobalDexed: break; // entry point only -- see Screen::Dexed instead
         case KnobContext::GlobalEnsemble: break; // entry point only -- see Screen::Ensemble instead
@@ -2784,14 +2787,7 @@ void Ui::ApplyKnobs()
     {
         case Screen::Home:
             if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
-            {
-                // Same 0..1.43x curve the original firmware used for
-                // master volume, so overall loudness feels consistent.
-                master_volume01_ = Clampf(k1, 0.f, 1.f);
-                master_volume_   = powf(master_volume01_, 2.5f) * 1.43f;
-                if(master_volume_ < 0.f)
-                    master_volume_ = 0.f;
-            }
+                SetMasterVolume01(k1);
             if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
                 tempo_->SetMetronomeVolume01(k2);
             break;
@@ -2956,9 +2952,18 @@ void Ui::ApplyKnobs()
                     file_cursor_ = idx;
                 }
             }
-            // (GlobalPage::Mixer has no knobs of its own any more -- entry
-            // point only, same as GlobalPage::Granular; see Screen::Mixer
-            // for the real editing surface. No branch needed for it here.)
+            else if(global_page_ == GlobalPage::Mixer)
+            {
+                // The two volumes you reach for live: Master, and Bypass
+                // on its own -- Bypass also goes through Master, so with
+                // Master up a mic monitored through Bypass can feed back
+                // unless Bypass itself is turned down. Same values as
+                // Screen::Mixer's Master and Bypass channels.
+                if(KnobPickUp(k1, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]))
+                    SetMasterVolume01(k1);
+                if(KnobPickUp(k2, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]))
+                    SetBypassMixVolume01(k2);
+            }
             else if(global_page_ == GlobalPage::SdMgmt)
             {
                 // Shared browse convention: K1 scrolls the box grid and
@@ -4072,7 +4077,8 @@ void Ui::DrawControlRow(int         row_y,
                          const char* left_label,
                          const char* left_value,
                          const char* right_value,
-                         const char* right_label)
+                         const char* right_label,
+                         bool       show_icon)
 {
     // Geometry verified pixel-by-pixel against the real font metrics
     // (see the chat history this was designed in, or font_tomthumb.h):
@@ -4111,11 +4117,23 @@ void Ui::DrawControlRow(int         row_y,
         TomThumbDrawText(disp_, right_start, baseline, right_value, true);
     }
 
+    if(!show_icon)
+        return;
     if(square_icon)
         disp_->DrawRect(icon_cx - kIconR, icon_cy - kIconR, icon_cx + kIconR,
                          icon_cy + kIconR, true, false);
     else
         disp_->DrawCircle(icon_cx, icon_cy, kIconR, true);
+}
+
+void Ui::SetMasterVolume01(float v01)
+{
+    // Same 0..1.43x curve the original firmware used for master volume,
+    // so overall loudness feels consistent.
+    master_volume01_ = Clampf(v01, 0.f, 1.f);
+    master_volume_   = powf(master_volume01_, 2.5f) * 1.43f;
+    if(master_volume_ < 0.f)
+        master_volume_ = 0.f;
 }
 
 void Ui::DrawBeatIndicator(int x, int y, int dot_size)
@@ -4201,7 +4219,8 @@ void Ui::DrawHome()
     snprintf(vol_val, sizeof(vol_val), "%d%%", (int)(master_volume01_ * 100.f + 0.5f));
     snprintf(metro_val, sizeof(metro_val), "%d%%",
               (int)(tempo_->GetMetronomeVolume01() * 100.f + 0.5f));
-    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Vol", vol_val, metro_val, "Metro");
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Master Vol", vol_val, metro_val,
+                     "Metro");
 
     // Button1's label reflects what a tap/hold will actually do right now
     // (see LooperLayer::OnRecordButtonPressed/LongPress) rather than a
@@ -4642,21 +4661,26 @@ void Ui::DrawGlobalScreen()
             TomThumbDrawText(disp_, (disp_->Width() - hw) / 2, 44, hint, true);
         }
 
-        // Live CPU load -- both footer rows were otherwise empty on this
-        // page (no knobs/buttons of their own), so this costs no extra
-        // screen space. Avg is a continuously-smoothed reading (see
-        // daisy::CpuLoadMeter's own 1-pole filter); Peak rolls over
-        // every ~10s (see main.cpp's kCpuPeakResetSeconds) so it reads
-        // fresh again shortly after you change something, rather than
-        // staying stuck on the worst moment from several minutes ago.
+        // K1 Master Vol / K2 Bypass Vol, and the live CPU load on the
+        // bottom row (no buttons on this page, so that row is free -- no
+        // centre icon, since it's a readout, not a control). Avg is a
+        // continuously-smoothed reading (see daisy::CpuLoadMeter's own
+        // 1-pole filter); Peak rolls over every ~10s (see main.cpp's
+        // kCpuPeakResetSeconds) so it reads fresh again shortly after you
+        // change something.
         {
+            char mvol_val[8], bvol_val[8];
+            snprintf(mvol_val, sizeof(mvol_val), "%d%%", (int)(master_volume01_ * 100.f + 0.5f));
+            snprintf(bvol_val, sizeof(bvol_val), "%d%%",
+                      (int)(bypass_mix_volume01_ * 100.f + 0.5f));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Master Vol", mvol_val, bvol_val,
+                             "Bypass Vol");
             char avg_val[8], peak_val[8];
             snprintf(avg_val, sizeof(avg_val), "%d%%", (int)(g_cpu_avg_load * 100.f + 0.5f));
             snprintf(peak_val, sizeof(peak_val), "%d%%", (int)(g_cpu_peak_load * 100.f + 0.5f));
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "CPU", avg_val, peak_val,
-                             "Peak");
+            DrawControlRow(kFooterRow2Y, false, kFooterInterRowDividerY, "CPU", avg_val, peak_val,
+                             "Peak", /*show_icon=*/false);
         }
-        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
         return;
     }
     if(global_page_ == GlobalPage::Dexed)
@@ -6260,6 +6284,19 @@ bool Ui::MixerIsClipping(int ch) const
 // from the BOTTOM up (unlike every other bar in this project, which fills
 // left-to-right -- see the Mixer design discussion this was built from
 // for why a vertical fader reads better for a per-channel level here).
+float Ui::MeterBar01(float level)
+{
+    // Peak level -> bar height on a dB scale, like a studio meter:
+    // -48 dB at the bottom to 0 dBFS at the top, so a healthy -6 dB sits
+    // near the top (it used to be a linear scale, where -6 dB looked
+    // "half way" and normal levels read as quiet).
+    constexpr float kFloorDb = -48.f;
+    if(level <= 0.f)
+        return 0.f;
+    float db = 20.f * log10f(level);
+    return db <= kFloorDb ? 0.f : (db >= 0.f ? 1.f : 1.f - db / kFloorDb);
+}
+
 void Ui::DrawMixerVBar(int x0, int y0, int w, int h, float v01, bool clip_lit)
 {
     int x1 = x0 + w - 1;
@@ -6302,21 +6339,23 @@ void Ui::DrawMixerOverviewGrid(int top_y)
     // as dead space on the right, making the row look unevenly spaced.
     // kLeftMargin centers the whole block instead, splitting the
     // leftover evenly on both sides.
-    const int kColW       = disp_->Width() / kNumMixerChannels;
-    const int kLeftMargin = (disp_->Width() - kColW * kNumMixerChannels) / 2;
-    const int kBarW  = 8;
-    const int kBarY0 = top_y + 4;
-    const int kBarH  = 37 - kBarY0;
+    // Bars kBarGap apart, the whole row centred on the screen.
+    const int kBarW       = 8;
+    const int kBarGap     = 5;
+    const int kPitch      = kBarW + kBarGap;
+    const int kRowW       = kBarW * kNumMixerChannels + kBarGap * (kNumMixerChannels - 1);
+    const int kLeftMargin = (disp_->Width() - kRowW) / 2;
+    const int kBarY0      = top_y + 4;
+    const int kBarH       = 37 - kBarY0;
     for(int ch = 0; ch < kNumMixerChannels; ch++)
     {
-        int col_x    = kLeftMargin + kColW * ch;
-        int center_x = col_x + kColW / 2;
+        int center_x = kLeftMargin + kPitch * ch + kBarW / 2;
 
         const char* name = MixerChannelName(ch);
         int         nw   = TomThumbAdvanceWidth(name);
         TomThumbDrawText(disp_, center_x - nw / 2, top_y + 1, name, true);
 
-        DrawMixerVBar(center_x - kBarW / 2, kBarY0, kBarW, kBarH, MixerGetLevel01(ch),
+        DrawMixerVBar(center_x - kBarW / 2, kBarY0, kBarW, kBarH, MeterBar01(MixerGetLevel01(ch)),
                        MixerIsClipping(ch));
     }
 }
@@ -8001,7 +8040,7 @@ void Ui::DrawMixerScreen()
         // lives on this bar specifically, not Vol/Rev, so it's always
         // unambiguous which bar is "the meter."
         DrawMixerVBar(bars_x0 + (kBarW + kBarGap) * 2, kBarY0, kBarW, kBarH,
-                       MixerGetLevel01(ch), MixerIsClipping(ch));
+                       MeterBar01(MixerGetLevel01(ch)), MixerIsClipping(ch));
 
         if(MixerChannelHasPan(ch))
         {

@@ -1,4 +1,5 @@
 #include <cstring>
+#include "pan_law.h"
 #include "svf_setup.h"
 #include "daisy_pod.h"
 #include "daisysp.h"
@@ -264,6 +265,20 @@ constexpr float kMeterReleaseSeconds = 0.3f;
 // the meters above -- factored out since it's the same lines x 4
 // channels otherwise. Inlined in practice (DSY_ITCM_TEXT callers, tiny
 // body), so this costs nothing over writing it out longhand each time.
+// Last stage before the codec: untouched below 0.8 (-2 dB), then a
+// tanh knee that rounds everything above smoothly into +-1.0, so turning
+// the mix up can't hard-clip at the output. Costs a tanhf() only on the
+// rare samples above the knee.
+static inline float MasterSoftLimit(float x)
+{
+    constexpr float kKnee = 0.8f;
+    float           a     = fabsf(x);
+    if(a <= kKnee)
+        return x;
+    float y = kKnee + (1.f - kKnee) * tanhf((a - kKnee) / (1.f - kKnee));
+    return x < 0.f ? -y : y;
+}
+
 static inline void UpdateLevelMeter(float& level, float& clip_hold, float sample,
                                       float sample_rate)
 {
@@ -815,8 +830,8 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // uses for every loop layer).
     const float bypass_mix_volume = ui.GetBypassMixVolume();
     const float bypass_pan01      = ui.GetBypassPan01();
-    const float bypass_pan_l      = 1.f - bypass_pan01;
-    const float bypass_pan_r      = bypass_pan01;
+    float bypass_pan_l, bypass_pan_r;
+    EqualPowerPan(bypass_pan01, &bypass_pan_l, &bypass_pan_r); // see pan_law.h
     const FilterMode mfilt_mode = ui.GetMasterFilterMode();
 
     // Block-rate controls (matches LooperLayer's own per-layer filter
@@ -1011,9 +1026,13 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         // captured last, same "write every block, wrap" pattern as
         // g_pad_scope_l/g_granular_scope_l above. Also feeds the Master
         // channel's own level/clip meter on the same page.
+        // Master meter reads BEFORE the limiter, so its clip light shows
+        // when the limiter below is working hard.
+        UpdateLevelMeter(g_master_level, g_master_clip_hold, out[0][i], sample_rate);
+        out[0][i] = MasterSoftLimit(out[0][i]);
+        out[1][i] = MasterSoftLimit(out[1][i]);
         g_master_scope_l[g_master_scope_write_pos] = out[0][i];
         g_master_scope_write_pos = (g_master_scope_write_pos + 1) % kMasterScopeSamples;
-        UpdateLevelMeter(g_master_level, g_master_clip_hold, out[0][i], sample_rate);
     }
 
     FinishCpuMeterBlock(size, sample_rate);

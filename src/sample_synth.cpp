@@ -1,4 +1,5 @@
 #include "sample_synth.h"
+#include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
 #include <cmath>
@@ -372,8 +373,7 @@ void SampleSynth::SetOutputLevel01(float v01)
 void SampleSynth::SetPan01(float v01)
 {
     pan01_      = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01);
-    pan_l_gain_ = 1.f - pan01_;
-    pan_r_gain_ = pan01_;
+    EqualPowerPan(pan01_, &pan_l_gain_, &pan_r_gain_);
 }
 
 void SampleSynth::ApplyPreset(const SampleSynthPresetData& p)

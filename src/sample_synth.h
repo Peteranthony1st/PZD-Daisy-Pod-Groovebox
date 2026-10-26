@@ -327,8 +327,8 @@ class SampleSynth
     float output_level01_ = 0.70f;
     float output_level_   = 1.f; // powf(output_level01_,2.5f)*1.4f, cached by the setter
     float pan01_          = 0.5f;
-    float pan_l_gain_     = 0.5f;
-    float pan_r_gain_     = 0.5f;
+    float pan_l_gain_ = 0.7071f; // EqualPowerPan(pan01_), control-rate cache
+    float pan_r_gain_ = 0.7071f;
 
     float reverb_send01_ = 0.f;
     float delay_send01_  = 0.f;

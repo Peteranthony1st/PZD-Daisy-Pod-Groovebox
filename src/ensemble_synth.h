@@ -311,8 +311,8 @@ class EnsembleSynth
     float pre_limiter_level_     = 0.f; // see GetPreLimiterLevel01()
 
     float pan01_      = 0.5f;
-    float pan_l_gain_ = 0.5f;
-    float pan_r_gain_ = 0.5f;
+    float pan_l_gain_ = 0.7071f; // EqualPowerPan(pan01_), control-rate cache
+    float pan_r_gain_ = 0.7071f;
 
     // Stereo, unlike Dexed's own mono-then-panned filter pair -- each
     // channel processes its own real signal (post-Chorus, genuinely

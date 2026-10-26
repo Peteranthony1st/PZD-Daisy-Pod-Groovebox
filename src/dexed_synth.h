@@ -444,8 +444,8 @@ class DexedSynth
     float pre_limiter_level_     = 0.f; // see GetPreLimiterLevel01()
 
     float pan01_      = 0.5f;
-    float pan_l_gain_ = 0.5f; // 1-pan01_, control-rate cache
-    float pan_r_gain_ = 0.5f; // pan01_
+    float pan_l_gain_ = 0.7071f; // EqualPowerPan(pan01_), control-rate cache
+    float pan_r_gain_ = 0.7071f;
 
     TptSvf filter_l_, filter_r_;
     FilterMode   filter_mode_     = FilterMode::Off;

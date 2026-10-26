@@ -1139,6 +1139,8 @@ class Ui
     // (rather than a separate element) so it costs no extra screen
     // space on either page.
     void DrawMixerVBar(int x0, int y0, int w, int h, float v01, bool clip_lit = false);
+    // Live peak level -> 0..1 bar height on a -48..0 dB scale.
+    static float MeterBar01(float level);
     // All 8 channels' names across one row, each with a real vertical
     // Volume bar (no numeric readout) -- GlobalPage::Mixer's at-a-glance
     // summary (see DrawGlobalScreen()). `top_y` is the name row's
@@ -1544,7 +1546,10 @@ class Ui
                          const char* left_label,
                          const char* left_value,
                          const char* right_value,
-                         const char* right_label);
+                         const char* right_label,
+                         bool       show_icon = true); // false: a readout, not a control
+    // Master volume knob -> master_volume01_ and its cached curve.
+    void SetMasterVolume01(float v01);
     // Fixed footer geometry, verified against the real Tom Thumb metrics
     // (row_h=6, baseline at the row's bottom pixel, icon vertically
     // centered on the rows text actually occupies -- see DrawControlRow()
@@ -1688,7 +1693,7 @@ class Ui
     int sample_synth_setup_applied_slices_ = 0;
     float bypass_reverb_send01_ = 0.f; // see GetBypassReverbSend01()
     float bypass_delay_send01_  = 0.f; // see GetBypassDelaySend01()
-    float bypass_mix_volume01_  = 0.8f; // see GetBypassMixVolume01()
+    float bypass_mix_volume01_  = 0.6f; // see GetBypassMixVolume01() -- 60% at boot, kept low against mic feedback
     float bypass_mix_volume_    = 1.f;  // curved, set properly in the ctor below
     float bypass_pan01_         = 0.5f; // see GetBypassPan01()
 
