@@ -20,5 +20,15 @@ custom/, SAMPLES/...) are included too so a fresh card already looks
 like a populated one and you can see at a glance what each folder is
 for -- see the README.txt inside each one.
 
+SAMPLES/ holds the Sampler's banks, up to 32 items each, numbered
+automatically as they fill (SOUNDS1, SOUNDS2, ...):
+
+  SOUNDSn/     single .wav Sounds (SMPVO)
+  CAPTUREDn/   Capture/Trim saves (SMPVO)
+  MULTISMPn/   multi-samples, a folder of note-named WAVs each (SMPVO) --
+               MULTISMP1/ comes with "Upright Piano" (CC0)
+  KITSn/       drum kits, a folder each (SMPDR)
+  BREAKSn/     breaks and loops, a folder each (SMPDR)
+
 See this project's own README.md ("Building and flashing") for how to
 get the firmware itself (main.bin) onto the card.

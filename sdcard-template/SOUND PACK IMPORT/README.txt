@@ -1,13 +1,14 @@
-Drop OP-1 sampler-pack .aif (or .aiff) files here (downloaded from
-op1fun, or exported from the OP-1 pack builder) -- one file per sound.
+Drop OP-1 sampler-pack .aif (or .aiff) files here (from op1.fun, or the
+OP-1 pack builder) -- one file per sound. Only "sampler" patches import:
+OP-1 synth presets (e.g. "cluster", "string") hold engine settings and a
+short preview, not a sample, and are skipped.
 
-Screen::SampleSynth -> Import page: Button1 picks Drums/Sounds/All,
-Button2 held converts every file in here into a playable Sound
-(Screen::SampleSynth -> Preset page -> Sounds n), tuned to the pack's
-own real pitch automatically. A plain recording with no OP-1 pitch data
-still imports fine, at a sensible default pitch. Sounds fill
-SAMPLES/SOUNDS1/ first, then SOUNDS2/, ... (32 per folder).
+SMPVO -> Import page: K1 picks where they go (a new Sounds bank, or an
+existing one with room for all of them), hold Button2 to import. Each
+becomes a Sound tuned to the pack's own pitch (Screen::SampleSynth ->
+Preset page -> Sounds). Plain .wav files don't need importing -- copy them
+straight into a SAMPLES/SOUNDSn folder.
 
 However many files are in here, one Import processes them all.
-Successfully-imported files move into their own Done/ subfolder. A file
-that fails is tried twice, then left here for the next Import.
+Imported files move into Done/ (a name already there is kept as
+"name (2)"). A file that fails is tried twice, then left here.
