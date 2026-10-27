@@ -1,4 +1,5 @@
 #include "sample_synth.h"
+#include "fast_math.h"
 #include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
@@ -414,6 +415,9 @@ DSY_ITCM_TEXT
 void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_send_l,
                             float* reverb_send_r, float* delay_send_l, float* delay_send_r)
 {
+    // Per-block constants (were divisions every sample).
+    const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
+    const float inv_sr        = 1.f / sample_rate_;
     float cutoff_hz = kFilterMinHz * powf(kFilterMaxHz / kFilterMinHz, filter_cutoff01_);
     float nyquist_guard = sample_rate_ / 3.f - 1.f;
     cutoff_hz = cutoff_hz < kFilterMinHz ? kFilterMinHz
@@ -444,7 +448,7 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
         // vibrato_phase_ still advances either way (cheap, one add +
         // compare) so re-engaging the mod wheel mid-note doesn't jump
         // from a stale phase.
-        vibrato_phase_ += kVibratoHz / sample_rate_;
+        vibrato_phase_ += kVibratoHz * inv_sr;
         if(vibrato_phase_ >= 1.f)
             vibrato_phase_ -= 1.f;
         if(mod_wheel01_ > 0.f)
@@ -571,20 +575,20 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
         fr *= output_level_;
 
         // Same PRE-limiter tap convention as DexedSynth::IsLimiting()/
-        // GetPreLimiterLevel01() -- read before tanhf()/pan, see those
+        // GetPreLimiterLevel01() -- read before FastTanh()/pan, see those
         // for the full reasoning.
         float pre_mag = fabsf(fl) > fabsf(fr) ? fabsf(fl) : fabsf(fr);
         if(pre_mag > pre_limiter_level_)
             pre_limiter_level_ = pre_mag;
         else
-            pre_limiter_level_ -= pre_limiter_level_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
+            pre_limiter_level_ -= pre_limiter_level_ * meter_release;
         if(pre_mag >= kPreLimiterClipThreshold)
             pre_limiter_clip_hold_ = kClipHoldSeconds;
         else if(pre_limiter_clip_hold_ > 0.f)
-            pre_limiter_clip_hold_ -= 1.f / sample_rate_;
+            pre_limiter_clip_hold_ -= inv_sr;
 
-        fl = tanhf(fl);
-        fr = tanhf(fr);
+        fl = FastTanh(fl);
+        fr = FastTanh(fr);
 
         float sl = fl * pan_l_gain_;
         float sr = fr * pan_r_gain_;

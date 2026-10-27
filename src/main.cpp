@@ -1,6 +1,7 @@
 #include <cstring>
 #include "pan_law.h"
 #include "profiler.h"
+#include "fast_math.h"
 #include "svf_setup.h"
 #include "daisy_pod.h"
 #include "daisysp.h"
@@ -278,7 +279,7 @@ static inline float MasterSoftLimit(float x)
     float           a     = fabsf(x);
     if(a <= kKnee)
         return x;
-    float y = kKnee + (1.f - kKnee) * tanhf((a - kKnee) / (1.f - kKnee));
+    float y = kKnee + (1.f - kKnee) * FastTanh((a - kKnee) * (1.f / (1.f - kKnee)));
     return x < 0.f ? -y : y;
 }
 

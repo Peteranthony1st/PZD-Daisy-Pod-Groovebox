@@ -1,4 +1,5 @@
 #include "granular_engine.h"
+#include "fast_math.h"
 #include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
@@ -887,6 +888,9 @@ DSY_ITCM_TEXT
 void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* reverb_send_l,
                               float* reverb_send_r, float* delay_send_l, float* delay_send_r)
 {
+    // Per-block constants (were divisions every sample).
+    const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
+    const float inv_sr        = 1.f / sample_rate_;
     bool has_source = src_len_ > 0;
 
     float cutoff_hz = kFilterMinHz * powf(kFilterMaxHz / kFilterMinHz, filter_cutoff01_);
@@ -1038,7 +1042,7 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
                 if(scan_active)
                 {
                     scan_position_samples_ += scan_direction_sign_ * scan_speed_
-                                               * (1.f / sample_rate_) * (float)src_len_;
+                                               * inv_sr * (float)src_len_;
                     if(scan_position_samples_ > scan_hi)
                     {
                         // Bounce: reverse direction at the edge (today's
@@ -1164,7 +1168,7 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
             // the filter (previewing the raw trim selection, not a filtered
             // or panned version of it), so its loudness stays predictable
             // regardless of how Output Level or Grain Volume happen to be
-            // set. Still runs through the pre-limiter tracking and tanhf()
+            // set. Still runs through the pre-limiter tracking and FastTanh()
             // safety net just below, same as everything else.
             constexpr float kPreviewGain = 0.5f;
             if(preview_active_)
@@ -1182,7 +1186,7 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
             }
 
             // See IsLimiting()'s/GetPreLimiterLevel01()'s own comments --
-            // both read the PRE-limiter value specifically, since tanhf()
+            // both read the PRE-limiter value specifically, since FastTanh()
             // below bounds its own output to (-1,1) no matter how hard
             // this is driving it.
             float pre_limiter_mag = fabsf(fl) > fabsf(fr) ? fabsf(fl) : fabsf(fr);
@@ -1190,23 +1194,23 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
                 pre_limiter_level_ = pre_limiter_mag;
             else
                 pre_limiter_level_
-                    -= pre_limiter_level_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
+                    -= pre_limiter_level_ * meter_release;
             if(pre_limiter_mag >= kPreLimiterClipThreshold)
                 pre_limiter_clip_hold_ = kClipHoldSeconds;
             else if(pre_limiter_clip_hold_ > 0.f)
-                pre_limiter_clip_hold_ -= 1.f / sample_rate_;
+                pre_limiter_clip_hold_ -= inv_sr;
 
             // Soft limiter -- output_level_'s own ceiling was raised well past
             // unity (see SetOutputLevel01()'s comment) specifically so the
             // Output Level knob has enough real headroom to compensate for
             // this engine's own overlap-gain and center-pan attenuation, which
             // Dexed/the loop layers don't have -- this is what makes pushing
-            // that knob all the way up loud instead of just clipping. tanhf()
+            // that knob all the way up loud instead of just clipping. FastTanh()
             // is near-transparent at normal levels and only compresses once a
             // peak actually approaches/exceeds unity, same convention as
             // DexedSynth::Process()'s own limiter.
-            fl = tanhf(fl);
-            fr = tanhf(fr);
+            fl = FastTanh(fl);
+            fr = FastTanh(fr);
 
             out_l[i] = fl;
             out_r[i] = fr;

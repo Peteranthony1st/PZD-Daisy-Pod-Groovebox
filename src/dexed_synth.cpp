@@ -1,4 +1,5 @@
 #include "dexed_synth.h"
+#include "fast_math.h"
 #include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
@@ -444,6 +445,9 @@ DSY_ITCM_TEXT
 void DexedSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_send_l,
                         float* reverb_send_r, float* delay_send_l, float* delay_send_r)
 {
+    // Per-block constants (were divisions every sample).
+    const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
+    const float inv_sr        = 1.f / sample_rate_;
     // Block-rate filter cutoff/res -- same curve/guard every other
     // engine's own bus filter uses (see GranularEngine::Process()).
     if(filter_mode_ != FilterMode::Off)
@@ -526,7 +530,7 @@ void DexedSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_
         s = fold_.Process(s) * fold_trim_;
 
         // See IsLimiting()'s/GetPreLimiterLevel01()'s own comments --
-        // both read the PRE-limiter value specifically, since tanhf()
+        // both read the PRE-limiter value specifically, since FastTanh()
         // below bounds its own output to (-1,1) no matter how hard
         // this is driving it, so either check on the result could
         // never usefully fire. Same instant-attack/slow-release peak
@@ -535,11 +539,11 @@ void DexedSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_
         if(pre_mag > pre_limiter_level_)
             pre_limiter_level_ = pre_mag;
         else
-            pre_limiter_level_ -= pre_limiter_level_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
+            pre_limiter_level_ -= pre_limiter_level_ * meter_release;
         if(pre_mag >= kPreLimiterClipThreshold)
             pre_limiter_clip_hold_ = kClipHoldSeconds;
         else if(pre_limiter_clip_hold_ > 0.f)
-            pre_limiter_clip_hold_ -= 1.f / sample_rate_;
+            pre_limiter_clip_hold_ -= inv_sr;
 
         // Soft limiter, on top of kHeadroomScale's own real-measured
         // correction above -- catches genuinely rare peaks beyond what
@@ -547,10 +551,10 @@ void DexedSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_
         // phase alignment, or a resonant filter peak) so those compress
         // gracefully instead of hard-clipping, without needing this
         // fixed scale to chase every last possible worst case on its
-        // own. tanhf() is near-transparent for normal signal levels
-        // (tanhf(0.5) attenuates only ~8%) and only compresses hard once
+        // own. FastTanh() is near-transparent for normal signal levels
+        // (FastTanh(0.5) attenuates only ~8%) and only compresses hard once
         // a peak actually approaches/exceeds unity.
-        s = tanhf(s) * output_level_;
+        s = FastTanh(s) * output_level_;
         // Pan applied last, same position GranularEngine's own Process()
         // uses (post-limiter/output-level, feeding both the dry output
         // and the reverb send) -- both channels fed the same mono s

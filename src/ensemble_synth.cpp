@@ -1,4 +1,5 @@
 #include "ensemble_synth.h"
+#include "fast_math.h"
 #include "pan_law.h"
 #include "svf_setup.h"
 #include "itcm.h"
@@ -309,6 +310,9 @@ DSY_ITCM_TEXT
 void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_send_l,
                              float* reverb_send_r, float* delay_send_l, float* delay_send_r)
 {
+    // Per-block constants (were divisions every sample).
+    const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
+    const float inv_sr        = 1.f / sample_rate_;
     // Mod wheel -- off by default (ModWheelTarget::Off), explicitly
     // picked via CycleModWheelTarget(). Pushes whichever target is
     // selected UP from its own knob-set base value toward 1.0, scaled
@@ -406,18 +410,18 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
         if(pre_mag > pre_limiter_level_)
             pre_limiter_level_ = pre_mag;
         else
-            pre_limiter_level_ -= pre_limiter_level_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
+            pre_limiter_level_ -= pre_limiter_level_ * meter_release;
         if(pre_mag >= kPreLimiterClipThreshold)
             pre_limiter_clip_hold_ = kClipHoldSeconds;
         else if(pre_limiter_clip_hold_ > 0.f)
-            pre_limiter_clip_hold_ -= 1.f / sample_rate_;
+            pre_limiter_clip_hold_ -= inv_sr;
 
-        // Soft limiter -- same tanhf()-as-safety-net convention every
+        // Soft limiter -- same FastTanh()-as-safety-net convention every
         // other engine here uses, on top of each voice's own fixed
         // kVoiceGain margin (see that constant's own comment) rather
         // than a separate post-sum headroom multiplier.
-        l = tanhf(l) * eff_output_level_;
-        r = tanhf(r) * eff_output_level_;
+        l = FastTanh(l) * eff_output_level_;
+        r = FastTanh(r) * eff_output_level_;
 
         // Same equal-power pan law as every other channel (see
         // pan_law.h), applied to this already-stereo pair.
