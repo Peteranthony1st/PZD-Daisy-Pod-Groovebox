@@ -790,7 +790,46 @@ void GranularEngine::RenderGrainSpan(Grain& g, float* fade, float fade_inc, floa
     const float    gain      = g.gain * src_inv_scale_;
     float        f        = fade ? *fade : 1.f;
 
-    for(size_t j = 0; j < count; j++)
+    // Fast path: how many samples this grain can run before its read
+    // position nears either end of the source or its window finishes --
+    // worked out once, so those samples need none of the per-sample edge
+    // clamps or end checks below. One sample of margin each way absorbs
+    // float rounding in the running sums. A release grain (fade != null)
+    // also stops short of its fade reaching zero.
+    size_t j = 0;
+    if(len > 2 && phase_inc > 0.f && read_pos >= 0.f && read_pos < (float)(len - 2))
+    {
+        float by_phase = (1.f - phase) / phase_inc - 1.f;
+        float by_read  = read_inc > 0.f   ? ((float)(len - 2) - read_pos) / read_inc - 1.f
+                         : read_inc < 0.f ? read_pos / -read_inc - 1.f
+                                          : (float)count;
+        float safe_f   = by_phase < by_read ? by_phase : by_read;
+        if(fade)
+        {
+            float by_fade = fade_inc > 0.f ? f / fade_inc - 1.f : (float)count;
+            if(by_fade < safe_f)
+                safe_f = by_fade;
+        }
+        size_t safe = safe_f <= 0.f ? 0 : (safe_f >= (float)count ? count : (size_t)safe_f);
+        const float hann_scale = (float)(kHannTableSize - 1);
+        const float f_step     = fade ? fade_inc : 0.f;
+        for(; j < safe; j++)
+        {
+            int            idx0 = (int)read_pos;
+            float          frac = read_pos - (float)idx0;
+            const int16_t* p0   = src + 2 * idx0;
+            float l   = (float)p0[0] + ((float)p0[2] - (float)p0[0]) * frac;
+            float r   = (float)p0[1] + ((float)p0[3] - (float)p0[1]) * frac;
+            float env = hann_table_[(int)(phase * hann_scale + 0.5f)] * gain * f;
+            out_l[j] += l * env;
+            out_r[j] += r * env;
+            read_pos += read_inc;
+            phase += phase_inc;
+            f -= f_step;
+        }
+    }
+
+    for(; j < count; j++)
     {
         int   idx0 = (int)read_pos;
         float frac = read_pos - (float)idx0;
@@ -891,6 +930,56 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
     // Per-block constants (were divisions every sample).
     const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
     const float inv_sr        = 1.f / sample_rate_;
+
+    // Silent and nothing pending: skip all the per-sample work. Silent
+    // means no held note, the envelope finished, no grain still playing
+    // or fading, no preview, and last block's output already at zero (so
+    // a resonant filter's tail has died away). Output is plain zero, the
+    // sends get nothing, and the meters decay as they would have. The
+    // scan position still advances, exactly as the full path moves it,
+    // since the screen shows it.
+    {
+        bool any_grain = false;
+        for(int gi = 0; gi < kGrainsPerVoice && !any_grain; gi++)
+            any_grain = grain_cluster_.grains[gi].active || grain_cluster_.release_fades[gi] > 0.f
+                        || scan_cluster_.grains[gi].active || scan_cluster_.release_fades[gi] > 0.f;
+        if(held_note_ < 0 && !adsr_.IsRunning() && !any_grain && !preview_active_
+           && last_block_peak_ < 1e-6f)
+        {
+            for(size_t i = 0; i < size; i++)
+                out_l[i] = out_r[i] = 0.f;
+            pre_limiter_level_ -= pre_limiter_level_ * meter_release * (float)size;
+            if(pre_limiter_level_ < 0.f)
+                pre_limiter_level_ = 0.f;
+            if(pre_limiter_clip_hold_ > 0.f)
+                pre_limiter_clip_hold_ -= inv_sr * (float)size;
+            if(src_len_ > 0 && !IsScanMuted())
+            {
+                float a  = Clampf(scan_start01_, 0.f, 1.f) * (float)src_len_;
+                float b  = Clampf(scan_end01_, 0.f, 1.f) * (float)src_len_;
+                float lo = fminf(a, b), hi = fmaxf(a, b);
+                for(size_t i = 0; i < size; i++)
+                {
+                    scan_position_samples_
+                        += scan_direction_sign_ * scan_speed_ * inv_sr * (float)src_len_;
+                    if(scan_position_samples_ > hi)
+                    {
+                        scan_position_samples_ = scan_bounce_ ? hi : lo;
+                        if(scan_bounce_)
+                            scan_direction_sign_ = -1.f;
+                    }
+                    else if(scan_position_samples_ < lo)
+                    {
+                        scan_position_samples_ = scan_bounce_ ? lo : hi;
+                        if(scan_bounce_)
+                            scan_direction_sign_ = 1.f;
+                    }
+                }
+            }
+            return;
+        }
+    }
+    float block_peak = 0.f;
     bool has_source = src_len_ > 0;
 
     float cutoff_hz = kFilterMinHz * powf(kFilterMaxHz / kFilterMinHz, filter_cutoff01_);
@@ -1211,6 +1300,9 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
             // DexedSynth::Process()'s own limiter.
             fl = FastTanh(fl);
             fr = FastTanh(fr);
+            float pk = fabsf(fl) > fabsf(fr) ? fabsf(fl) : fabsf(fr);
+            if(pk > block_peak)
+                block_peak = pk;
 
             out_l[i] = fl;
             out_r[i] = fr;
@@ -1220,6 +1312,7 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
             delay_send_r[i] += fr * delay_send01_;
         }
     }
+    last_block_peak_ = block_peak;
 }
 
 void GranularEngine::ApplyPreset(const GranularPresetData& p)

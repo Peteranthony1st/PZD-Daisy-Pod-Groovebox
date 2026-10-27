@@ -651,6 +651,9 @@ class GranularEngine
     // DexedSynth's own equivalent (and every other clip latch in this
     // project).
     float pre_limiter_clip_hold_ = 0.f;
+    // Loudest output sample of the last block -- Process() only skips while
+    // this is silent, so a filter's ringing tail is never cut off.
+    float last_block_peak_ = 0.f;
     float pre_limiter_level_     = 0.f; // see GetPreLimiterLevel01()
     float reverb_send01_   = 0.f; // was an unconditional full send before this existed
     float delay_send01_    = 0.f;

@@ -10440,23 +10440,6 @@ void Ui::TriggerSampleSynthBreakDivideConfirm()
                                               : 0; // no-op on a loaded Sound -- see that setter
 }
 
-namespace
-{
-// ".snd" vs plain ".wav" -- see PerformanceStore::LoadSampleSynthSound()'s
-// own doc comment for what a .snd manifest is.
-bool HasExtension(const char* filename, const char* ext_lower)
-{
-    size_t flen = strlen(filename);
-    size_t elen = strlen(ext_lower);
-    if(flen < elen)
-        return false;
-    for(size_t i = 0; i < elen; i++)
-        if((char)tolower((unsigned char)filename[flen - elen + i]) != ext_lower[i])
-            return false;
-    return true;
-}
-} // namespace
-
 // Shared by TriggerLoadSampleSynthSound() (category_folder comes from
 // sample_synth_sound_category_, the category currently being browsed),
 // TriggerLoadSampleSynthVoiceUserPreset() (comes from the saved User
