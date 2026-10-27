@@ -371,6 +371,11 @@ class DexedSynth
         // implicit voice property the way real hardware would.
         uint8_t  velocity     = 100;
         uint32_t triggered_at = 0;
+        // Set by the first real NoteOn(). Before that a voice holds only
+        // Init()'s silent pre-warm patch, whose envelope sits at sustain
+        // forever -- so VoiceIsIdle() counts an unplayed voice as idle,
+        // or every voice would be rendered (as silence) until first used.
+        bool     played       = false;
     };
     Voice       voices_[kMaxVoices];
     // Monotonic, so "oldest" is always a plain min() over this -- same
@@ -441,6 +446,9 @@ class DexedSynth
     // only compresses hard once a peak actually approaches/exceeds
     // unity", see Process()'s own comment on the limiter).
     float pre_limiter_clip_hold_ = 0.f;
+    // Loudest output sample of the last block -- Process() only skips while
+    // this is silent, so a filter/chorus/fold tail is never cut off.
+    float last_block_peak_ = 0.f;
     float pre_limiter_level_     = 0.f; // see GetPreLimiterLevel01()
 
     float pan01_      = 0.5f;

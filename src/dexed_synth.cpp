@@ -258,6 +258,8 @@ void DexedSynth::SetFoldTrim01(float v01)
 DSY_ITCM_TEXT
 bool DexedSynth::VoiceIsIdle(int voice_index)
 {
+    if(!voices_[voice_index].played)
+        return true;
     VoiceStatus st;
     voices_[voice_index].note.peekVoiceStatus(st);
     for(int op = 0; op < 6; op++)
@@ -325,6 +327,7 @@ void DexedSynth::NoteOn(uint8_t note, uint8_t velocity)
     // that ISR's own timing.
     __disable_irq();
     v.note.init(patch_, note, velocity, note, -1, &ctrls_);
+    v.played = true;
     v.held_note    = note;
     v.velocity     = velocity;
     v.triggered_at = ++trigger_seq_;
@@ -448,6 +451,28 @@ void DexedSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_
     // Per-block constants (were divisions every sample).
     const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
     const float inv_sr        = 1.f / sample_rate_;
+
+    // Silent and nothing pending: skip all the per-sample work (the same
+    // rule as GranularEngine::Process()). Output is plain zero, the sends
+    // get nothing, and the meters decay as they would have.
+    {
+        bool any_voice = false;
+        for(int vi = 0; vi < kMaxVoices && !any_voice; vi++)
+            any_voice = voices_[vi].held_note != -1 || !VoiceIsIdle(vi);
+        bool silent = !any_voice;
+        if(silent && last_block_peak_ < 1e-6f)
+        {
+            for(size_t i = 0; i < size; i++)
+                out_l[i] = out_r[i] = 0.f;
+            pre_limiter_level_ -= pre_limiter_level_ * meter_release * (float)size;
+            if(pre_limiter_level_ < 0.f)
+                pre_limiter_level_ = 0.f;
+            if(pre_limiter_clip_hold_ > 0.f)
+                pre_limiter_clip_hold_ -= inv_sr * (float)size;
+            return;
+        }
+    }
+    float block_peak = 0.f;
     // Block-rate filter cutoff/res -- same curve/guard every other
     // engine's own bus filter uses (see GranularEngine::Process()).
     if(filter_mode_ != FilterMode::Off)
@@ -562,6 +587,9 @@ void DexedSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_
         // before this point (no per-voice stereo positioning).
         float sl = s * pan_l_gain_;
         float sr = s * pan_r_gain_;
+        float pk = fabsf(sl) > fabsf(sr) ? fabsf(sl) : fabsf(sr);
+        if(pk > block_peak)
+            block_peak = pk;
         out_l[i] = sl;
         out_r[i] = sr;
         if(send > 0.f)
@@ -575,6 +603,7 @@ void DexedSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_
             delay_send_r[i] += sr * delay_send;
         }
     }
+    last_block_peak_ = block_peak;
 }
 
 void DexedSynth::ApplyPatchToHeldVoices()

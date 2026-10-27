@@ -418,6 +418,28 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
     // Per-block constants (were divisions every sample).
     const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
     const float inv_sr        = 1.f / sample_rate_;
+
+    // Silent and nothing pending: skip all the per-sample work (the same
+    // rule as GranularEngine::Process()). Output is plain zero, the sends
+    // get nothing, and the meters decay as they would have.
+    {
+        bool any_voice = preview_active_;
+        for(int vi = 0; vi < kMaxVoices && !any_voice; vi++)
+            any_voice = voices_[vi].slot >= 0;
+        bool silent = !any_voice;
+        if(silent && last_block_peak_ < 1e-6f)
+        {
+            for(size_t i = 0; i < size; i++)
+                out_l[i] = out_r[i] = 0.f;
+            pre_limiter_level_ -= pre_limiter_level_ * meter_release * (float)size;
+            if(pre_limiter_level_ < 0.f)
+                pre_limiter_level_ = 0.f;
+            if(pre_limiter_clip_hold_ > 0.f)
+                pre_limiter_clip_hold_ -= inv_sr * (float)size;
+            return;
+        }
+    }
+    float block_peak = 0.f;
     float cutoff_hz = kFilterMinHz * powf(kFilterMaxHz / kFilterMinHz, filter_cutoff01_);
     float nyquist_guard = sample_rate_ / 3.f - 1.f;
     cutoff_hz = cutoff_hz < kFilterMinHz ? kFilterMinHz
@@ -592,6 +614,9 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
 
         float sl = fl * pan_l_gain_;
         float sr = fr * pan_r_gain_;
+        float pk = fabsf(sl) > fabsf(sr) ? fabsf(sl) : fabsf(sr);
+        if(pk > block_peak)
+            block_peak = pk;
         out_l[i] = sl;
         out_r[i] = sr;
         if(send > 0.f)
@@ -605,4 +630,5 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
             delay_send_r[i] += sr * delay_send;
         }
     }
+    last_block_peak_ = block_peak;
 }

@@ -338,6 +338,9 @@ class SampleSynth
     static constexpr float kClipHoldSeconds         = 0.5f;
     static constexpr float kMeterReleaseSeconds     = 0.3f;
     float pre_limiter_clip_hold_ = 0.f;
+    // Loudest output sample of the last block -- Process() only skips while
+    // this is silent, so a filter/chorus/fold tail is never cut off.
+    float last_block_peak_ = 0.f;
     float pre_limiter_level_     = 0.f;
 
     // See PlayPreview()'s own comment.

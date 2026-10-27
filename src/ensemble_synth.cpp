@@ -313,6 +313,28 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
     // Per-block constants (were divisions every sample).
     const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
     const float inv_sr        = 1.f / sample_rate_;
+
+    // Silent and nothing pending: skip all the per-sample work (the same
+    // rule as GranularEngine::Process()). Output is plain zero, the sends
+    // get nothing, and the meters decay as they would have.
+    {
+        bool any_voice = false;
+        for(int vi = 0; vi < kMaxVoices && !any_voice; vi++)
+            any_voice = voices_[vi].held_note >= 0 || voices_[vi].adsr.IsRunning();
+        bool silent = !any_voice;
+        if(silent && last_block_peak_ < 1e-6f)
+        {
+            for(size_t i = 0; i < size; i++)
+                out_l[i] = out_r[i] = 0.f;
+            pre_limiter_level_ -= pre_limiter_level_ * meter_release * (float)size;
+            if(pre_limiter_level_ < 0.f)
+                pre_limiter_level_ = 0.f;
+            if(pre_limiter_clip_hold_ > 0.f)
+                pre_limiter_clip_hold_ -= inv_sr * (float)size;
+            return;
+        }
+    }
+    float block_peak = 0.f;
     // Mod wheel -- off by default (ModWheelTarget::Off), explicitly
     // picked via CycleModWheelTarget(). Pushes whichever target is
     // selected UP from its own knob-set base value toward 1.0, scaled
@@ -427,6 +449,9 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
         // pan_law.h), applied to this already-stereo pair.
         float sl = l * pan_l_gain_;
         float sr = r * pan_r_gain_;
+        float pk = fabsf(sl) > fabsf(sr) ? fabsf(sl) : fabsf(sr);
+        if(pk > block_peak)
+            block_peak = pk;
         out_l[i] = sl;
         out_r[i] = sr;
         if(send > 0.f)
@@ -440,4 +465,5 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
             delay_send_r[i] += sr * delay_send;
         }
     }
+    last_block_peak_ = block_peak;
 }
