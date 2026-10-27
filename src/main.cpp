@@ -116,7 +116,9 @@ volatile size_t g_granular_capture_write_pos = 0;
 // that fills this from WAV files on load; loading a new kit resets the
 // write cursor and re-fills from the start). ~1,000,000 samples/channel
 // (~20.8s @ 48kHz) -- generous for a 24-slot kit of short/medium hits.
-constexpr size_t kSampleSynthArenaSamples = 1000000;
+// Raised to 1,600,000 (~33s) once ImportAif()/ImportWav() shared one
+// decode buffer -- real one-shot kits (EP-133 exports) ran past 20s.
+constexpr size_t kSampleSynthArenaSamples = 1600000;
 float DSY_SDRAM_BSS g_sample_synth_arena_l[kSampleSynthArenaSamples];
 float DSY_SDRAM_BSS g_sample_synth_arena_r[kSampleSynthArenaSamples];
 
@@ -1289,19 +1291,34 @@ int main(void)
     uint32_t last_btn1_releases       = 0;
     uint32_t last_btn2_releases       = 0;
 
+    // The Daisy Seed's own onboard LED stays lit from boot -- leave it as a
+    // "just powered up" sign for 10 seconds, then switch it off.
+    bool seed_led_off = false;
+
     for(;;)
     {
+        if(!seed_led_off && System::GetNow() > 10000)
+        {
+            hw.seed.SetLed(false);
+            seed_led_off = true;
+        }
         UiControlEvents events;
         events.encoder_delta      = g_encoder_pos - last_encoder_pos;
         events.encoder_click_fell = g_encoder_click_falls != last_encoder_click_falls;
+        // One button release per pass: two quick taps that both land while
+        // a pass is busy (e.g. B2 to open a folder, B2 again to load) used
+        // to merge into a single event, so the second tap did nothing. The
+        // extra release now waits for the next pass instead.
         events.btn1_released      = g_btn1_releases != last_btn1_releases;
         events.btn2_released      = g_btn2_releases != last_btn2_releases;
         events.btn1_held_ms       = g_btn1_held_ms;
         events.btn2_held_ms       = g_btn2_held_ms;
         last_encoder_pos          = g_encoder_pos;
         last_encoder_click_falls  = g_encoder_click_falls;
-        last_btn1_releases        = g_btn1_releases;
-        last_btn2_releases        = g_btn2_releases;
+        if(events.btn1_released)
+            last_btn1_releases++;
+        if(events.btn2_released)
+            last_btn2_releases++;
 
         // MIDI is polled from ControlTimerCallback() (TIM5 ISR) now, not
         // here -- see its own comment for why.

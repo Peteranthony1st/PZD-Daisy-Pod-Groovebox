@@ -224,11 +224,10 @@ class SampleSynth
         // every kit saved before this existed, and a real drum kit's
         // independent kick/snare/hihat pads should keep overlapping
         // freely) -- PerformanceStore::ImportAifDrumPack() turns it on
-        // for its own fresh imports specifically, since every pad
-        // there is a sequential slice of one continuous recording
-        // (confirmed against real op1fun break packs), not an
-        // independent sound, so two of them ringing at once is never
-        // musically intended.
+        // for imported Breaks only, since every pad there is a
+        // sequential slice of one continuous recording (confirmed
+        // against real op1fun break packs), not an independent sound,
+        // so two of them ringing at once is never musically intended.
         bool mono_choke = false;
     };
     void                   ApplyPreset(const SampleSynthPresetData& p);

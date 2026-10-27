@@ -479,13 +479,11 @@ class Ui
         // Kits, NOT ordinary Sounds, just the CAPTUREDn bank files.
         // Browsed bank first, then file -- see SdMgmtIsBankFolder().
         SampleSynthCaptures,       // row1 col0
-        // SampleSynth's own Kits and Breaks (SAMPLES/KITSn/, BREAKSn/,
-        // one folder per kit) -- every one today is created by Pack
-        // Import or Duplicate, but once saved
-        // it's the persisted thing a user loads and keeps, same
-        // "manageable saved result, not raw import-staging material"
-        // status as a Dexed preset created via SysEx import.
-        SampleSynthKits,           // row1 col1
+        // SMPIMP: everything imported into the Sampler -- Voice -> the
+        // SOUNDSn banks' sound files and MULTISMPn multi-sample folders, Drum ->
+        // Kits / Breaks -> the KITSn/BREAKSn banks' kit folders. Captures
+        // stay in their own CAPT box.
+        SampleSynthImports,        // row1 col1
         // SampleSynth's own SMPVO User presets (SAMPLES/VOICE PRESETS/)
         // -- deliberately its own box, not combined with Drum User the
         // way Kits combines KITSn/BREAKSn, since these two
@@ -1294,7 +1292,7 @@ class Ui
     bool SdMgmtIsBankFolder() const
     {
         return sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures
-               || sd_mgmt_folder_ == SdMgmtFolder::SampleSynthKits;
+               || sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports;
     }
     // CAPT box only: browsing Grains captures (GRAINS/CAPTUREDn) rather
     // than the Sampler's (SAMPLES/CAPTUREDn).
@@ -1307,7 +1305,30 @@ class Ui
     // it's the item list: K2 scrolls, B1 hold duplicates, B2 hold deletes.
     bool SdMgmtAtFolderList() const
     {
-        return sd_mgmt_in_folder_ && SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0;
+        return sd_mgmt_in_folder_
+               && ((SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0)
+                   || (SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ < 0));
+    }
+    // SMPDR box: user saves split into Kits / Breaks folders first, same
+    // as the SMPDR User page (see sample_synth_drum_user_is_break_).
+    // SMPIMP box, on one of its two choice levels (Voice/Drum, then
+    // Sounds/Multi or Kits/Breaks).
+    bool SdMgmtSmpChoosing() const
+    {
+        return sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports
+               && (sd_mgmt_smp_kind_ < 0 || sd_mgmt_smp_sub_kind_ < 0);
+    }
+    bool SdMgmtDrumUserBox() const
+    {
+        return sd_mgmt_folder_ == SdMgmtFolder::SampleSynthDrumUserPresets;
+    }
+    // Entries at the current level (folder list or items) for K1/K2, and
+    // the item cursor as an index into SdMgmtSlots()'s own array.
+    int SdMgmtListCount();
+    int SdMgmtItemIndex() const
+    {
+        return SdMgmtDrumUserBox() ? DrumUserGlobalIndex(sd_mgmt_drum_kind_, sd_mgmt_cursor_)
+                                   : sd_mgmt_cursor_;
     }
     // Item count at whichever level SdMgmt is on inside a bank box.
     int  SdMgmtBankLevelCount();
@@ -1831,6 +1852,11 @@ class Ui
     int          sd_mgmt_cursor_    = 0;     // item list cursor (K2)
     int          sd_mgmt_list_cursor_ = 0;   // folder-list cursor (K1): Sampler/Grains, banks
     int          sd_mgmt_capt_kind_   = -1;  // CAPT box: -1 = choosing, 0 = Sampler, 1 = Grains
+    int          sd_mgmt_drum_kind_   = -1;  // SMPDR box: -1 = choosing, 0 = Kits, 1 = Breaks
+    int          sd_mgmt_smp_kind_      = -1; // SMPIMP box: -1 = choosing, 0 = Voice, 1 = Drum
+    // SMPIMP's second choice: -1 = choosing; Voice -> 0 Sounds, 1 Multi;
+    // Drum -> 0 Kits, 1 Breaks.
+    int          sd_mgmt_smp_sub_kind_ = -1;
     char         sd_mgmt_status_[24] = {};   // last duplicate/delete result
 
     // --- WAV export (Global:Export page) ------------------------------
@@ -2025,11 +2051,13 @@ class Ui
     // Index WITHIN the open folder (not a flat index) -- resolved to a
     // real 1-based PerformanceStore slot by ResolveDexedPresetSlot().
     int  dexed_preset_cursor_ = 0;
-    // PerformanceStore::kMaxDexedPresets (3500) minus the current 3129
-    // factory presets (54 folders total) leaves up to 371 possible user
-    // slots -- 200 gives real headroom without needing to keep this in
-    // exact lockstep with the factory bank's own size.
+    // Size of the User page's own list (hand-made saves only, imports
+    // filtered out).
     static constexpr int kMaxDexedPresetSlots = 200;
+    // Every slot above the 3129 factory presets, up to
+    // PerformanceStore::kMaxDexedPresets (5500) -- what RefreshDexedPresetSlots()
+    // scans before filtering imports out.
+    static constexpr int kMaxDexedRawSlots = 2400;
     // Filtered to EXCLUDE any slot that belongs to a recorded import
     // folder (see RefreshDexedPresetSlots()) -- this is specifically the
     // User group's own slot list, not every user slot on the card.
@@ -2279,14 +2307,16 @@ class Ui
     {
         PerformanceStore::SampleBank type = PerformanceStore::SampleBank::Sounds;
         uint8_t                      number = 1;
+        int8_t                       items  = -1; // -1 = not counted; else shown as "(N free)"
     };
     // "SOUNDS2" etc. -- the real folder under SAMPLES/.
     static void SampleBankEntryFolder(const SampleBankEntry& e, char* out, size_t out_size);
     // "Sounds 2", "Captured 1", "Kits 3", "Breaks 1" -- what the screen shows.
     static void SampleBankEntryLabel(const SampleBankEntry& e, char* out, size_t out_size);
-    // Fills out[] with Voice's banks (every SOUNDSn then CAPTUREDn) or
-    // Drum's (KITSn then BREAKSn), each type ascending.
-    static int ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out);
+    // Fills out[] with Drum's banks (KITSn then BREAKSn), or Voice's banks
+    // of voice_type (see kNumVoiceBankTypes), each type ascending.
+    static int ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out,
+                                   int voice_type = 0);
     // Marks every SampleSynth bank/item listing stale (Preset browser and
     // SdMgmt alike) -- after anything that adds/removes content.
     void MarkSampleSynthListsDirty();
@@ -2367,6 +2397,31 @@ class Ui
     int  sample_synth_drum_user_count_       = 0;
     int  sample_synth_drum_user_cursor_      = 0;
     int  sample_synth_drum_user_loaded_slot_ = 0;
+    // SMPDR User page: Kits / Breaks folders in front of the saves (shared
+    // browse convention). Each save is sorted by the kit folder it was
+    // made from (its kit_ref starts "KITS" or "BREAKS"), read once per
+    // RefreshSampleSynthDrumUserSlots().
+    int  sample_synth_drum_user_folder_        = -1; // -1 = folder list, 0 = Kits, 1 = Breaks
+    int  sample_synth_drum_user_folder_cursor_ = 0;
+    bool sample_synth_drum_user_is_break_[PerformanceStore::kMaxSampleSynthDrumUserPresets] = {};
+    int  sample_synth_drum_user_folder_count_[2] = {};
+    // Screen names for the SMPVO/SMPDR user saves, same idea as Dexed's: the
+    // sound file (SMPVO) or kit/break folder (SMPDR) each was made from,
+    // without path or extension -- filled by the Refresh*UserSlots() above.
+    static constexpr int kUserSaveNameLen = 20;
+    char sample_synth_voice_user_names_[PerformanceStore::kMaxSampleSynthVoiceUserPresets]
+                                       [kUserSaveNameLen] = {};
+    char sample_synth_drum_user_names_[PerformanceStore::kMaxSampleSynthDrumUserPresets]
+                                      [kUserSaveNameLen] = {};
+    // "BREAKS1/Amenbreak" / "SKOGSFIOL C4.wav" -> "Amenbreak" / "SKOGSFIOL C4".
+    static void SourceDisplayName(const char* src, char* out, size_t out_size);
+    // The name to show for user save i of either face, falling back to
+    // "SMPVOn"/"SMPDRn" if it has none.
+    void SampleSynthUserSaveName(bool voice, int i, char* out, size_t out_size) const;
+    // k-th save inside a folder -> its index in sample_synth_drum_user_numbers_
+    // (-1 if none), and the reverse.
+    int DrumUserGlobalIndex(int folder, int k) const;
+    int DrumUserFolderPos(int global) const;
     char sample_synth_drum_user_status_[24]  = {};
     void TriggerSaveSampleSynthDrumUserPreset(bool force_new);
     void TriggerLoadSampleSynthDrumUserPreset();
@@ -2384,6 +2439,24 @@ class Ui
     // own reset already follows.
     int sample_synth_sound_category_        = -1;
     int sample_synth_sound_category_cursor_ = 0;
+    // Voice only, one level above the banks: which type -- 0 Sounds,
+    // 1 Captured, 2 Multi (kVoiceBankTypes); -1 = still choosing (Knob1
+    // scrolls sample_synth_voice_type_cursor_). Drum lists Kits and Breaks
+    // banks together, so it has no such level.
+    int sample_synth_voice_type_        = -1;
+    int sample_synth_voice_type_cursor_ = 0;
+    int sample_synth_banks_voice_type_  = -1; // what sample_synth_banks_ was listed for
+    static constexpr int kNumVoiceBankTypes = 3;
+    static PerformanceStore::SampleBank VoiceBankType(int i)
+    {
+        using PerformanceStore::SampleBank;
+        return i == 0 ? SampleBank::Sounds : i == 1 ? SampleBank::Captured : SampleBank::Multi;
+    }
+    // At SMPVO's type list (Sounds/Captured/Multi) rather than its banks.
+    bool AtSampleSynthVoiceTypeSelect() const
+    {
+        return sample_synth_preset_mode_sounds_ && sample_synth_voice_type_ < 0;
+    }
 
     // --- SampleSynth Capture/Trim/Tune (SampleSynthParamPage::Capture/
     // Trim/Tune) -- same Direct Record/From Layer/Import workflow as
@@ -2556,19 +2629,45 @@ class Ui
     void TriggerSaveSampleSynthCapture();
 
     // --- SampleSynth pack import (SampleSynthParamPage::Import) ---------
-    // See that enum entry's own comment for how this differs from
-    // Capture's unrelated Import source. target_ cycles Kit/Sound/All
-    // via Button1; Button2 held 800ms runs TriggerSampleSynthPackImport().
-    enum class SampleSynthImportTarget
-    {
-        Kit,
-        Sound,
-        All,
-        kCount
-    };
-    SampleSynthImportTarget sample_synth_import_target_ = SampleSynthImportTarget::All;
-    // Longer than every other status line in this file (24) -- this one
-    // reports two counts at once ("Kits: 3 ok, 1 skip / Sounds: 2 ok").
+    // Follows the face: SMPVO imports Sounds (SOUND PACK IMPORT/); SMPDR
+    // first picks Kits or Breaks (K1, B2 opens, B1 back) -- each its own
+    // folder, DRUM PACK IMPORT/KITS/ and /BREAKS/, so the folder a pack
+    // was dropped in is what decides, nothing is sorted automatically.
+    // Then K1 picks where it goes -- a New bank (default), or an existing
+    // bank of that type with room for ALL of it -- and Button2 held 800ms
+    // runs TriggerSampleSynthPackImport().
     char sample_synth_pack_import_status_[48] = {};
     void TriggerSampleSynthPackImport();
+    // Re-scans the waiting files and rebuilds the destination list.
+    void RefreshSampleSynthImport();
+    // SMPDR: true once Kits or Breaks is opened (always true on SMPVO).
+    bool SampleSynthImportReady() const
+    {
+        return sample_synth_mode_ == SampleSynthMode::Voice || sample_synth_import_drum_open_;
+    }
+    bool sample_synth_import_dirty_       = true;
+    bool sample_synth_import_drum_open_   = false;
+    bool sample_synth_import_drum_breaks_ = false; // which one is selected/open
+    int  sample_synth_import_sounds_      = 0;     // waiting, per type
+    int  sample_synth_import_kits_        = 0;
+    int  sample_synth_import_breaks_      = 0;
+    // .aif left where drum packs went before KITS/ and BREAKS/ existed
+    // (loose in DRUM PACK IMPORT/, or BREAK PACK IMPORT/) -- not imported.
+    int sample_synth_import_loose_ = 0;
+    struct ImportDest
+    {
+        int number = 0; // 0 = New bank
+        int free   = 0;
+    };
+    ImportDest sample_synth_import_dests_[1 + PerformanceStore::kMaxSampleBanks];
+    int        sample_synth_import_dest_count_  = 1;
+    int        sample_synth_import_dest_cursor_ = 0;
+    // The bank type being imported: Sounds, or Kits/Breaks as opened.
+    PerformanceStore::SampleBank SampleSynthImportType() const
+    {
+        using PerformanceStore::SampleBank;
+        return sample_synth_mode_ == SampleSynthMode::Voice ? SampleBank::Sounds
+               : sample_synth_import_drum_breaks_           ? SampleBank::Breaks
+                                                            : SampleBank::Kits;
+    }
 };

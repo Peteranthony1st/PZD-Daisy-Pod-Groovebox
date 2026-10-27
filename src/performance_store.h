@@ -251,7 +251,10 @@ bool DuplicateGranularCapture(int bank, int n, int* out_new_n, ProgressFn on_pro
 // after that range. Unlike the removed Fm/Pad presets' fixed factory
 // count, this range is sized from the real embedded data (704 patches
 // as of writing) rather than a compile-time constant.
-constexpr int kMaxDexedPresets = 3500; // headroom above the current 3129 factory presets
+// User range above the 3129 factory presets: 2371 slots -- room for all
+// kMaxDexedImportFolders (64) imports of 32 voices plus a few hundred of
+// your own saves. (Was 3500, which 8 imported banks already 2/3 filled.)
+constexpr int kMaxDexedPresets = 5500;
 
 bool SaveDexedPreset(int slot, const DexedSynth::DexedPresetData& preset);
 bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset);
@@ -434,19 +437,28 @@ constexpr int         kMaxSampleSynthWavNameLen = kMaxImportWavNameLen;
 // folder's worth (the browser and SdMgmt only ever list one bank at a
 // time). Imports and saves fill the lowest-numbered bank with space and
 // create the next one automatically once every existing bank is full.
-// Sounds/Captured items are files (.wav/.snd, CAPnnn.wav); Kits/Breaks
-// items are folders, one per kit, each holding KIT.DAT plus its own pad
-// WAVs (see SaveSampleSynthKit()).
+// Sounds/Captured items are files (.wav, CAPnnn.wav); Kits/Breaks items
+// are folders, one per kit, holding its pad WAVs plus (usually) KIT.DAT
+// (see SaveSampleSynthKit()); Multi items are folders of note-named WAVs
+// (see BuildMultiSampleZones()).
 enum class SampleBank : uint8_t
 {
     Sounds,
     Captured,
     Kits,
     Breaks,
+    // Multi-samples: one folder per instrument, holding a WAV per sampled
+    // note, the note in each name -- see BuildMultiSampleZones().
+    Multi,
 };
+// Banks whose items are folders (Kits, Breaks, Multi), not files.
+inline bool IsFolderSampleBank(SampleBank b)
+{
+    return b == SampleBank::Kits || b == SampleBank::Breaks || b == SampleBank::Multi;
+}
 constexpr int kSampleBankCapacity = 32; // items a save/import fills a bank to
 constexpr int kMaxSampleBanks     = 99; // per SampleBank type
-// "SOUNDS", "CAPTURED", "KITS", "BREAKS".
+// "SOUNDS", "CAPTURED", "KITS", "BREAKS", "MULTISMP".
 const char* SampleBankPrefix(SampleBank b);
 // Folder name relative to kSampleSynthFolder, e.g. "KITS3".
 void SampleBankFolder(SampleBank b, int n, char* out, size_t out_size);
@@ -459,10 +471,22 @@ int ListSampleBanks(SampleBank b, uint8_t* out_numbers, int max_out);
 // ListImportWavFiles().
 int ListSampleBankItems(SampleBank b, int n, char out_names[][kMaxSampleSynthWavNameLen + 1],
                         int max_out);
-// Lowest-numbered bank with fewer than kSampleBankCapacity items,
-// creating the next unused number when every existing one is full.
-// Returns -1 (error set) if all kMaxSampleBanks are full or mkdir fails.
-int FindSampleBankWithSpace(SampleBank b);
+// Where the next new item of this type goes (creating the bank folder if
+// needed): `prefer` if it has room (Duplicate keeps a copy in its own
+// bank); else the Import page's chosen destination (SetImportDestination())
+// if it has room; else the HIGHEST-numbered bank if it has room; else a new
+// bank numbered one above it. Older banks -- including ones a user made,
+// or ones with gaps left by deletions -- are never filled automatically.
+// Returns -1 (error set) if bank kMaxSampleBanks is reached or mkdir fails.
+int FindSampleBankWithSpace(SampleBank b, int prefer = 0);
+// The Import page's destination for each type, 0 = none (the rule above).
+void SetImportDestination(SampleBank b, int bank_number);
+void ClearImportDestinations();
+// The number a "New bank" gets: one above the highest existing (1 if
+// none), or -1 past kMaxSampleBanks.
+int NextNewSampleBank(SampleBank b);
+// Items currently in one bank (free = kSampleBankCapacity - this).
+int SampleBankItemCount(SampleBank b, int n);
 
 // Several sample-pack files state their own recorded pitch right in the
 // filename (e.g. "SKOGSFIOL C4.wav", "DRAGSPEL A2.wav") -- scans for a
@@ -513,30 +537,24 @@ bool SaveSampleSynthKit(const char* kit_ref, const char* name,
 bool LoadSampleSynthKit(const char* kit_ref, char* out_name, size_t out_name_size,
                          SampleSynth::SampleSynthPresetData* out_params,
                          SampleSynthKitSlot out_slots[kMaxSampleSynthSlots]);
+// A Multi bank item, ref "MULTISMPn/<folder>": one zone per WAV whose
+// name states a note (see ParseNoteNameFromFilename()), sorted by note,
+// each reaching halfway to its neighbours (the lowest and highest to the
+// keyboard's ends). Filenames are relative to the folder. Up to
+// kMaxSampleSynthSlots zones; WAVs with no note, a repeated note, or past
+// the limit are counted in *out_skipped. false if no WAV states a note.
+bool BuildMultiSampleZones(const char* ref, SampleSynthKitSlot out_slots[kMaxSampleSynthSlots],
+                           int* out_skipped);
 // "SAMPLES/<kit_ref>" -- the folder a kit's own slot filenames are
 // relative to (what Ui passes to ImportWav() as its folder).
 void SampleSynthKitDir(const char* kit_ref, char* out, size_t out_size);
 // Which bank type a kit_ref lives in (Kits or Breaks), from its prefix.
 SampleBank SampleSynthKitBank(const char* kit_ref);
 
-// A multi-sample melodic "Sound" -- several recordings of the SAME
-// instrument at different pitches (e.g. a violin sampled at F3 and C4),
-// each covering its own zone of the keyboard so a note is always played
-// from its nearest real recording instead of one sample stretched
-// across all 88 keys. Lives in a SOUNDSn bank with a ".SND" extension,
-// right alongside plain .wav files (its zone filenames are relative to
-// SAMPLES/ itself) -- ListSampleBankItems() lists both side by side, and
-// Ui::TriggerLoadSampleSynthSound() dispatches on the extension: a
-// plain .wav loads as before (one chromatic sample, full range); a
-// .SND file loads every zone it lists via LoadSampleSynthSound() below.
-// Reuses SampleSynthKitSlot verbatim for each zone (same byte-verified
-// layout) -- no preset params, no name field (the filename itself is
-// the display name, same as a plain .wav "Sound"), since this is
-// still "audition a sound," not "recall a configuration" the way a
-// Kit load is.
-// subfolder works exactly like ListSampleSynthFiles()'s own -- a
-// category subfolder under kSampleSynthFolder (e.g. "OTHER" for
-// "SAMPLES/OTHER"), nullptr/empty for kSampleSynthFolder itself.
+// The old multi-sample format: a ".SND" manifest in a SOUNDSn bank listing
+// zones (SampleSynthKitSlot each, filenames relative to SAMPLES/, usually
+// ZONES/<name>/). Only read now to convert one into a MULTISMPn folder --
+// see MigrateSndSoundsToMulti(). subfolder is the bank folder.
 bool LoadSampleSynthSound(const char* filename, SampleSynthKitSlot out_slots[kMaxSampleSynthSlots],
                            const char* subfolder = nullptr);
 
@@ -625,16 +643,23 @@ bool DuplicateSampleSynthCapture(const char* category_folder, int n, int* out_ne
 // pack builder) -- SD root, separate from kSampleSynthFolder itself,
 // user-managed drop-off points. Capped at kMaxSampleSynthImportPackFiles
 // (32) like every other real-folder listing in this project.
-constexpr const char* kSampleKitImportFolder    = "DRUM PACK IMPORT";
-constexpr const char* kSampleBreakImportFolder  = "BREAK PACK IMPORT";
+constexpr const char* kSampleDrumImportFolder   = "DRUM PACK IMPORT";
+// Drum packs are sorted by the folder the user drops them in -- nothing
+// is classified automatically (no slice-length rule can tell a finely
+// chopped break from a kit). Each has its own Done/.
+constexpr const char* kSampleKitImportFolder    = "DRUM PACK IMPORT/KITS";
+constexpr const char* kSampleBreakImportFolder  = "DRUM PACK IMPORT/BREAKS";
+// Where drum packs went before that split: loose in DRUM PACK IMPORT/,
+// and the separate BREAK PACK IMPORT/. Never imported from -- the
+// Import page only counts them so it can say to move them.
+constexpr const char* kSampleLegacyBreakImportFolder = "BREAK PACK IMPORT";
 constexpr const char* kSampleSoundImportFolder  = "SOUND PACK IMPORT";
 // Per listing pass, not per Import press -- Ui re-lists and keeps going
 // until nothing unprocessed is left (see Ui::TriggerSampleSynthPackImport()).
 constexpr int         kMaxSampleSynthImportPackFiles = 32;
-// A drum pack whose median slice is at least this long is filed as a
-// Break rather than a Kit -- a full 4/4 bar is 1s even at 240 BPM, while
-// a kit's typical hit is well under that.
-constexpr float kSampleBreakMinMedianSeconds = 1.f;
+// Makes DRUM PACK IMPORT/, its KITS/ and BREAKS/, and their Done/ folders
+// (harmless if present).
+void EnsureDrumImportFolders();
 
 // Lists .aif files directly under `folder` (one of the two staging
 // folders above, SD root -- NOT under kSampleSynthFolder), up to
@@ -658,6 +683,12 @@ bool ImportAif(const char* filename, float* out_l, float* out_r, size_t audio_ca
 // it into the lowest bank of the same type (Kits/Breaks) with space, as
 // "<name> 2" (or the next free number), and returns the new kit_ref.
 bool DeleteSampleSynthKit(const char* kit_ref);
+// Global:SdMgmt's SMPIMP -> Voice view: one imported Sound (.wav) in a
+// SOUNDSn bank. Duplicate copies into the same bank as "<name> 2",
+// "<name> 3", ... (A Multi bank's folders use the Kit functions above.)
+bool DeleteSampleSound(const char* bank_folder, const char* name);
+bool DuplicateSampleSound(const char* bank_folder, const char* name, char* out_name,
+                          size_t out_name_size, ProgressFn on_progress = nullptr);
 bool DuplicateSampleSynthKit(const char* kit_ref, char* out_new_ref, size_t out_new_ref_size,
                               ProgressFn on_progress = nullptr);
 
@@ -666,9 +697,8 @@ bool DuplicateSampleSynthKit(const char* kit_ref, char* out_new_ref, size_t out_
 // one audio stream at the real splice points (see this file's own
 // commit history for the full op-1 JSON schema write-up) -- or, with no
 // op-1 drum data at all (a plain recording, or a sampler patch), takes
-// the whole file as one slice. Files the result as a Break if
-// force_break or its median slice is at least
-// kSampleBreakMinMedianSeconds long, otherwise as a Kit: a new folder
+// the whole file as one slice. Files the result as a Break if is_break,
+// otherwise as a Kit: a new folder
 // named after the pack in the lowest bank of that type with space,
 // holding each real slice as 01.wav, 02.wav, ... plus KIT.DAT. scratch_l/r (and their
 // shared scratch_capacity) are the caller's own large decode buffer --
@@ -687,7 +717,7 @@ bool DuplicateSampleSynthKit(const char* kit_ref, char* out_new_ref, size_t out_
 // Import page's own progress bar actually move smoothly within a
 // single file instead of sitting still for however long that file
 // takes, then jumping straight to the next file's own share.
-bool ImportAifDrumPack(const char* filename, const char* folder, bool force_break,
+bool ImportAifDrumPack(const char* filename, const char* folder, bool is_break,
                         float* scratch_l, float* scratch_r, size_t scratch_capacity,
                         char* out_status, size_t out_status_size,
                         ProgressFn progress_cb = nullptr);

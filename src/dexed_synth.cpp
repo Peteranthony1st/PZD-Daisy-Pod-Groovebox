@@ -595,7 +595,16 @@ void DexedSynth::ApplyPatchToHeldVoices()
 void DexedSynth::SetPatch(const uint8_t new_patch[156], float reverb_send01, float output_level01)
 {
     std::memcpy(patch_, new_patch, 156);
-    std::memcpy(patch_baseline_, new_patch, 156);
+    // A release level (EG L4) above the DX7's 99 -- found in banks from the
+    // web, and a dozen factory voices -- converts to a target LOUDER than
+    // full in Env::advance(), so the release rises instead of decaying and
+    // the note never ends (reported: VRC110A's EP.SawBel). Treat it as 0,
+    // silence, which is what these patches clearly meant. Every other
+    // value is left exactly as stored.
+    for(int op = 0; op < 6; op++)
+        if(patch_[op * 21 + 7] > 99)
+            patch_[op * 21 + 7] = 0;
+    std::memcpy(patch_baseline_, patch_, 156);
     brightness01_ = 0.5f; // re-center -- "as stored" for the freshly loaded patch
     env_speed01_  = 0.5f;
     lfo_.reset(&patch_[137]);

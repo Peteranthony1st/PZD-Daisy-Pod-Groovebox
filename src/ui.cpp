@@ -444,6 +444,13 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             {
                 MarkSampleSynthListsDirty(); // re-scan the card on entry
             }
+            else if(new_page == SampleSynthParamPage::Import
+                    && sample_synth_param_page_ != SampleSynthParamPage::Import)
+            {
+                sample_synth_import_dirty_          = true; // re-scan what's waiting
+                sample_synth_import_drum_open_      = false;
+                sample_synth_pack_import_status_[0] = '\0';
+            }
             else if(new_page == SampleSynthParamPage::User
                     && sample_synth_param_page_ != SampleSynthParamPage::User)
             {
@@ -734,6 +741,12 @@ void Ui::HandleButton2(const UiControlEvents& events)
         {
             if(!sd_mgmt_in_folder_)
                 SdMgmtOpenBox();
+            else if(!in_items && SdMgmtDrumUserBox())
+            {
+                sd_mgmt_drum_kind_ = sd_mgmt_list_cursor_ > 0 ? 1 : 0; // 0 Kits, 1 Breaks
+                sd_mgmt_cursor_    = 0;
+                sd_mgmt_status_[0] = '\0';
+            }
             else if(!in_items)
             {
                 int n = SdMgmtBankLevelCount();
@@ -743,6 +756,14 @@ void Ui::HandleButton2(const UiControlEvents& events)
                        && sd_mgmt_capt_kind_ < 0)
                     {
                         sd_mgmt_capt_kind_   = sd_mgmt_list_cursor_; // 0 Sampler, 1 Grains
+                        sd_mgmt_banks_dirty_ = true;
+                    }
+                    else if(SdMgmtSmpChoosing())
+                    {
+                        if(sd_mgmt_smp_kind_ < 0)
+                            sd_mgmt_smp_kind_ = sd_mgmt_list_cursor_; // 0 Voice, 1 Drum
+                        else
+                            sd_mgmt_smp_sub_kind_ = sd_mgmt_list_cursor_; // Sounds/Multi, Kits/Breaks
                         sd_mgmt_banks_dirty_ = true;
                     }
                     else
@@ -1178,7 +1199,15 @@ void Ui::HandleButton2(const UiControlEvents& events)
         }
         if(events.btn2_released)
         {
-            if(!button2_long_fired_ && events.btn2_held_ms > 800.f)
+            if(!SampleSynthImportReady())
+            {
+                // SMPDR: a tap opens the selected type.
+                sample_synth_import_drum_open_      = true;
+                sample_synth_import_dest_cursor_    = 0; // New bank
+                sample_synth_import_dirty_          = true;
+                sample_synth_pack_import_status_[0] = '\0';
+            }
+            else if(!button2_long_fired_ && events.btn2_held_ms > 800.f)
                 TriggerSampleSynthPackImport();
             button2_long_fired_ = false;
         }
@@ -1229,6 +1258,15 @@ void Ui::HandleButton2(const UiControlEvents& events)
                 else
                     TriggerLoadSampleSynthKit();
             }
+            else if(save_load_mode_ == SaveLoadMode::BrowsingLoad
+                    && AtSampleSynthVoiceTypeSelect())
+            {
+                // SMPVO: open Sounds, Captured or Multi -- its banks next.
+                sample_synth_voice_type_            = sample_synth_voice_type_cursor_;
+                sample_synth_sound_category_        = -1;
+                sample_synth_sound_category_cursor_ = 0;
+                sample_synth_banks_dirty_           = true;
+            }
             else if(at_category_select
                     && save_load_mode_ == SaveLoadMode::BrowsingLoad
                     && sample_synth_bank_count_ > 0)
@@ -1251,6 +1289,7 @@ void Ui::HandleButton2(const UiControlEvents& events)
                     load_browsing_files_     = true; // no "Files vs New" chooser -- straight to the list
                     sample_synth_kit_status_[0] = '\0'; // clear any stale result
                     sample_synth_sound_category_ = -1; // always start at category-select
+                    sample_synth_voice_type_     = -1; // ...and on SMPVO, at the type list
                 }
             }
             button2_long_fired_ = false;
@@ -1289,11 +1328,21 @@ void Ui::HandleButton2(const UiControlEvents& events)
                 save_load_mode_ = SaveLoadMode::Idle;
             }
             else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad
+                     && !is_voice && sample_synth_drum_user_folder_ < 0)
+            {
+                // SMPDR: open the highlighted Kits/Breaks folder.
+                sample_synth_drum_user_folder_ = sample_synth_drum_user_folder_cursor_;
+                int first = DrumUserGlobalIndex(sample_synth_drum_user_folder_, 0);
+                if(first >= 0)
+                    sample_synth_drum_user_cursor_ = first;
+                status[0] = '\0';
+            }
+            else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::BrowsingLoad
                      && count > 0)
             {
                 if(is_voice)
                     TriggerLoadSampleSynthVoiceUserPreset();
-                else
+                else if(sample_synth_drum_user_folder_count_[sample_synth_drum_user_folder_] > 0)
                     TriggerLoadSampleSynthDrumUserPreset();
             }
             else if(!button2_long_fired_ && save_load_mode_ == SaveLoadMode::Idle)
@@ -1302,8 +1351,9 @@ void Ui::HandleButton2(const UiControlEvents& events)
                     PerformanceStore::Remount();
                 else
                 {
-                    save_load_mode_ = SaveLoadMode::BrowsingLoad;
-                    status[0]       = '\0'; // clear any stale result
+                    save_load_mode_                = SaveLoadMode::BrowsingLoad;
+                    sample_synth_drum_user_folder_ = -1; // SMPDR: start at Kits/Breaks
+                    status[0]                      = '\0'; // clear any stale result
                 }
             }
             button2_long_fired_ = false;
@@ -1543,6 +1593,18 @@ void Ui::OnButton1Short()
                 // Duplicate in an item list (see OnButton1Long()).
                 if(SdMgmtIsBankFolder() && sd_mgmt_bank_ >= 0)
                     sd_mgmt_bank_ = -1;
+                else if(SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ >= 0)
+                    sd_mgmt_drum_kind_ = -1;
+                else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports
+                        && sd_mgmt_smp_kind_ >= 0)
+                {
+                    // bank list -> Sounds/Multi or Kits/Breaks -> Voice/Drum
+                    if(sd_mgmt_smp_sub_kind_ >= 0)
+                        sd_mgmt_smp_sub_kind_ = -1;
+                    else
+                        sd_mgmt_smp_kind_ = -1;
+                    sd_mgmt_banks_dirty_ = true;
+                }
                 else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures
                         && sd_mgmt_capt_kind_ >= 0)
                 {
@@ -1780,6 +1842,13 @@ void Ui::OnButton1Short()
                 // Button1/Button2 go back to unused.
                 sample_synth_->SetMonoChoke(!sample_synth_->GetMonoChoke());
             }
+            else if(sample_synth_param_page_ == SampleSynthParamPage::Import
+                    && sample_synth_import_drum_open_)
+            {
+                sample_synth_import_drum_open_      = false; // back to Kits/Breaks
+                sample_synth_import_dirty_          = true;
+                sample_synth_pack_import_status_[0] = '\0';
+            }
             else if(sample_synth_param_page_ == SampleSynthParamPage::Env)
                 sample_synth_adsr_target_sr_ = false; // knobs -> Attack+Decay
             else if(sample_synth_param_page_ == SampleSynthParamPage::FX)
@@ -1813,13 +1882,6 @@ void Ui::OnButton1Short()
                 if(sample_synth_voice_source_ == SampleSynthVoiceSource::Captured)
                     sample_synth_->SetChromaticMono(sample_synth_cap_mono_);
             }
-            else if(sample_synth_param_page_ == SampleSynthParamPage::Import)
-            {
-                int n = (int)SampleSynthImportTarget::kCount;
-                int p = (((int)sample_synth_import_target_ + 1) % n + n) % n;
-                sample_synth_import_target_        = (SampleSynthImportTarget)p;
-                sample_synth_pack_import_status_[0] = '\0'; // stale result from the other target
-            }
             else if(sample_synth_param_page_ == SampleSynthParamPage::Preset)
             {
                 if(save_load_mode_ != SaveLoadMode::Idle)
@@ -1829,6 +1891,8 @@ void Ui::OnButton1Short()
                     // stays highlighted) -> out of the browser.
                     if(sample_synth_sound_category_ >= 0)
                         sample_synth_sound_category_ = -1;
+                    else if(sample_synth_preset_mode_sounds_ && sample_synth_voice_type_ >= 0)
+                        sample_synth_voice_type_ = -1; // banks -> Sounds/Captured/Multi
                     else
                         save_load_mode_ = SaveLoadMode::Idle;
                 }
@@ -1851,7 +1915,13 @@ void Ui::OnButton1Short()
                 // concept here (same reasoning Preset's own Kits/Sounds
                 // lists already have none), so this is the simpler
                 // flat-list version of that same idiom.
-                if(save_load_mode_ != SaveLoadMode::Idle)
+                if(save_load_mode_ == SaveLoadMode::BrowsingLoad
+                   && sample_synth_mode_ == SampleSynthMode::Drum
+                   && sample_synth_drum_user_folder_ >= 0)
+                {
+                    sample_synth_drum_user_folder_ = -1; // Back to Kits/Breaks, same folder highlighted
+                }
+                else if(save_load_mode_ != SaveLoadMode::Idle)
                 {
                     save_load_mode_ = SaveLoadMode::Idle; // Back, same as every other Preset page
                 }
@@ -2699,7 +2769,11 @@ bool Ui::KnobPickUp(float raw, float& stored_raw, bool& engaged)
     constexpr float kKnobPickupEpsilon = 0.04f;
     if(!engaged)
     {
-        if(fabsf(raw - stored_raw) > kKnobPickupEpsilon)
+        // A setting outside the knob's range (e.g. an imported DX7 value
+        // of 127 against a 0..99 knob) would otherwise be unreachable --
+        // the knob could never catch it, so it could never be turned down.
+        float target = stored_raw < 0.f ? 0.f : (stored_raw > 1.f ? 1.f : stored_raw);
+        if(fabsf(raw - target) > kKnobPickupEpsilon)
             return false;
         engaged = true;
     }
@@ -3021,11 +3095,7 @@ void Ui::ApplyKnobs()
                 else
                 {
                     bool at_list = SdMgmtAtFolderList();
-                    int  count   = 0;
-                    if(SdMgmtIsBankFolder())
-                        count = SdMgmtBankLevelCount();
-                    else
-                        SdMgmtSlots(&count);
+                    int  count   = SdMgmtListCount();
                     if(count > 0)
                     {
                         int idx = (int)(Clampf(at_list ? k1 : k2, 0.f, 1.f) * count);
@@ -3743,7 +3813,23 @@ void Ui::ApplyKnobs()
                                     sample_synth_->SetSlotPitchOffsetSemis(si, (int8_t)semis);
                     }
                     break;
-                case SampleSynthParamPage::Import: break; // no continuous knobs
+                case SampleSynthParamPage::Import:
+                {
+                    // K1 picks Kits/Breaks first on SMPDR, then the
+                    // destination (absolute, like every list).
+                    if(!SampleSynthImportReady())
+                    {
+                        sample_synth_import_drum_breaks_ = Clampf(k1, 0.f, 1.f) >= 0.5f;
+                        break;
+                    }
+                    int n = sample_synth_import_dest_count_;
+                    if(n > 0)
+                    {
+                        int idx = (int)(Clampf(k1, 0.f, 1.f) * n);
+                        sample_synth_import_dest_cursor_ = idx >= n ? n - 1 : idx;
+                    }
+                    break;
+                }
                 case SampleSynthParamPage::Preset:
                 {
                     // Direct "browse a list" idiom, no pickup -- same
@@ -3751,6 +3837,13 @@ void Ui::ApplyKnobs()
                     // At the bank level (sample_synth_sound_category_
                     // < 0) this same knob browses the bank list instead
                     // -- see sample_synth_sound_category_'s own comment.
+                    if(AtSampleSynthVoiceTypeSelect())
+                    {
+                        int idx = (int)(Clampf(k1, 0.f, 1.f) * kNumVoiceBankTypes);
+                        sample_synth_voice_type_cursor_
+                            = idx >= kNumVoiceBankTypes ? kNumVoiceBankTypes - 1 : idx;
+                        break;
+                    }
                     if(sample_synth_sound_category_ < 0)
                     {
                         int n = sample_synth_bank_count_;
@@ -3798,7 +3891,28 @@ void Ui::ApplyKnobs()
                                               : sample_synth_drum_user_loaded_slot_;
                         save_as_new_ = loaded <= 0 ? true : k1 >= 0.5f;
                     }
-                    if(count > 0 && save_load_mode_ == SaveLoadMode::BrowsingLoad)
+                    if(save_load_mode_ == SaveLoadMode::BrowsingLoad && !is_voice)
+                    {
+                        // SMPDR: K1 scrolls Kits/Breaks, K2 the saves in an
+                        // open folder (K1 left alone, so Back lands on it).
+                        if(sample_synth_drum_user_folder_ < 0)
+                            sample_synth_drum_user_folder_cursor_ = Clampf(k1, 0.f, 1.f) >= 0.5f ? 1 : 0;
+                        else
+                        {
+                            int n = sample_synth_drum_user_folder_count_[sample_synth_drum_user_folder_];
+                            if(n > 0)
+                            {
+                                int k = (int)(Clampf(k2, 0.f, 1.f) * n);
+                                if(k >= n)
+                                    k = n - 1;
+                                int idx = DrumUserGlobalIndex(sample_synth_drum_user_folder_, k);
+                                if(idx != cursor)
+                                    status[0] = '\0';
+                                cursor = idx;
+                            }
+                        }
+                    }
+                    else if(count > 0 && save_load_mode_ == SaveLoadMode::BrowsingLoad)
                     {
                         int idx = (int)(Clampf(k2, 0.f, 1.f) * count);
                         if(idx >= count)
@@ -5139,7 +5253,7 @@ const char* Ui::SdMgmtFolderName(SdMgmtFolder f)
         case SdMgmtFolder::DexedPresets: return "Dexed Presets";
         case SdMgmtFolder::EnsemblePresets: return "Ensemble Presets";
         case SdMgmtFolder::SampleSynthCaptures: return "Captures";
-        case SdMgmtFolder::SampleSynthKits: return "Sampler Kits";
+        case SdMgmtFolder::SampleSynthImports: return "Sampler Imports";
         case SdMgmtFolder::SampleSynthVoiceUserPresets: return "SMPVO User";
         case SdMgmtFolder::SampleSynthDrumUserPresets: return "SMPDR User";
         default: return "?";
@@ -5155,7 +5269,7 @@ const char* Ui::SdMgmtFolderShortLabel(SdMgmtFolder f)
         case SdMgmtFolder::DexedPresets: return "DEXED";
         case SdMgmtFolder::EnsemblePresets: return "ENSM";
         case SdMgmtFolder::SampleSynthCaptures: return "CAPT";
-        case SdMgmtFolder::SampleSynthKits: return "KITS";
+        case SdMgmtFolder::SampleSynthImports: return "SMPIMP"; // sampler imports -- sounds, kits, breaks
         case SdMgmtFolder::SampleSynthVoiceUserPresets: return "SMPVO";
         case SdMgmtFolder::SampleSynthDrumUserPresets: return "SMPDR";
         default: return "?";
@@ -5268,6 +5382,18 @@ void Ui::DrawSdMgmtScreen()
         else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures && !choosing_kind)
             snprintf(line1, sizeof(line1), "%s Captures:",
                       sd_mgmt_capt_kind_ == 1 ? "Grains" : "Sampler");
+        else if(SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ >= 0)
+            snprintf(line1, sizeof(line1), "SMPDR %s:", sd_mgmt_drum_kind_ == 1 ? "Breaks" : "Kits");
+        else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports && sd_mgmt_smp_kind_ == 0)
+            snprintf(line1, sizeof(line1), "%s:",
+                      sd_mgmt_smp_sub_kind_ < 0  ? "Voice Imports"
+                      : sd_mgmt_smp_sub_kind_ == 1 ? "Multi Samples"
+                                                   : "Sound Imports");
+        else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports && sd_mgmt_smp_kind_ == 1)
+            snprintf(line1, sizeof(line1), "%s:",
+                      sd_mgmt_smp_sub_kind_ < 0  ? "Drum Imports"
+                      : sd_mgmt_smp_sub_kind_ == 1 ? "Break Imports"
+                                                    : "Kit Imports");
         else
             snprintf(line1, sizeof(line1), "%s:", SdMgmtFolderName(sd_mgmt_folder_));
         disp_->SetCursor(0, 14);
@@ -5283,6 +5409,11 @@ void Ui::DrawSdMgmtScreen()
             char line2[64];
             if(choosing_kind)
                 snprintf(line2, sizeof(line2), "%s", cur == 0 ? "Sampler" : "Grains");
+            else if(SdMgmtSmpChoosing())
+                snprintf(line2, sizeof(line2), "%s",
+                          sd_mgmt_smp_kind_ < 0    ? (cur == 0 ? "Voice" : "Drum")
+                          : sd_mgmt_smp_kind_ == 0 ? (cur == 0 ? "Sounds" : "Multi")
+                                                   : (cur == 0 ? "Kits" : "Breaks"));
             else if(bank_level_count == 0)
                 snprintf(line2, sizeof(line2), "(empty)");
             else if(sd_mgmt_bank_ < 0)
@@ -5298,8 +5429,34 @@ void Ui::DrawSdMgmtScreen()
         {
             int        count = 0;
             const int* slots = SdMgmtSlots(&count);
-            char       line2[16];
-            if(slots && count > 0)
+            char       line2[24];
+            static const char* const kDrumKinds[2] = {"Kits", "Breaks"};
+            if(SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ < 0)
+            {
+                int k = sd_mgmt_list_cursor_ > 0 ? 1 : 0;
+                snprintf(line2, sizeof(line2), "%s (%d)", kDrumKinds[k],
+                          sample_synth_drum_user_folder_count_[k]);
+            }
+            else if(SdMgmtDrumUserBox())
+            {
+                int n = sample_synth_drum_user_folder_count_[sd_mgmt_drum_kind_];
+                if(sd_mgmt_cursor_ >= n)
+                    sd_mgmt_cursor_ = n > 0 ? n - 1 : 0;
+                if(n > 0)
+                    SampleSynthUserSaveName(false, SdMgmtItemIndex(), line2, sizeof(line2));
+                else
+                    snprintf(line2, sizeof(line2), "(empty)");
+            }
+            else if(slots && count > 0 && sd_mgmt_folder_ == SdMgmtFolder::DexedPresets)
+                // Dexed saves carry their own name -- same as the User page.
+                snprintf(line2, sizeof(line2), "%s", DexedSlotName(slots[sd_mgmt_cursor_]));
+            else if(slots && count > 0
+                    && (sd_mgmt_folder_ == SdMgmtFolder::SampleSynthVoiceUserPresets
+                        || sd_mgmt_folder_ == SdMgmtFolder::SampleSynthDrumUserPresets))
+                // Same names as the SMPVO/SMPDR User pages.
+                SampleSynthUserSaveName(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthVoiceUserPresets,
+                                        sd_mgmt_cursor_, line2, sizeof(line2));
+            else if(slots && count > 0)
                 snprintf(line2, sizeof(line2), "%d", slots[sd_mgmt_cursor_]);
             else
                 snprintf(line2, sizeof(line2), "(empty)");
@@ -7590,7 +7747,7 @@ void Ui::DrawSampleSynthScreen()
         {
             // Wholly separate from Capture's own Import source -- see
             // SampleSynthParamPage::Import's own doc comment in ui.h.
-            if(pod_->button2.Pressed())
+            if(pod_->button2.Pressed() && SampleSynthImportReady())
             {
                 float held = pod_->button2.TimeHeldMs();
                 int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
@@ -7603,27 +7760,83 @@ void Ui::DrawSampleSynthScreen()
                 break;
             }
 
-            const char* target_name = "All";
-            if(sample_synth_import_target_ == SampleSynthImportTarget::Kit)
-                target_name = "Drums"; // DRUM PACK + BREAK PACK IMPORT
-            else if(sample_synth_import_target_ == SampleSynthImportTarget::Sound)
-                target_name = "Sounds";
-            char target_line[24];
-            snprintf(target_line, sizeof(target_line), "Target: %s", target_name);
-            TomThumbDrawText(disp_, 0, 15, target_line, true);
-
-            disp_->SetCursor(0, 24);
-            WriteUpper("From * PACK IMPORT");
-
-            if(sample_synth_pack_import_status_[0] != '\0')
+            if(!PerformanceStore::IsCardPresent())
             {
-                disp_->SetCursor(0, 36);
-                WriteUpper(sample_synth_pack_import_status_);
+                disp_->SetCursor(0, 20);
+                WriteUpper("No card");
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
+                break;
+            }
+            if(sample_synth_import_dirty_)
+                RefreshSampleSynthImport();
+            bool voice = sample_synth_mode_ == SampleSynthMode::Voice;
+            TomThumbDrawText(disp_, 0, 15, voice ? "Import Sounds" : "Import Drums", true);
+            char line[40];
+
+            // SMPDR, first step: Kits or Breaks.
+            if(!SampleSynthImportReady())
+            {
+                for(int row = 0; row < 2; row++)
+                {
+                    bool brk = row == 1;
+                    int  n   = brk ? sample_synth_import_breaks_ : sample_synth_import_kits_;
+                    snprintf(line, sizeof(line), "%c%-7s%d waiting",
+                              brk == sample_synth_import_drum_breaks_ ? '>' : ' ',
+                              brk ? "Breaks" : "Kits", n);
+                    TomThumbDrawText(disp_, 0, 22 + row * 6, line, true);
+                }
+                if(sample_synth_import_loose_ > 0)
+                {
+                    snprintf(line, sizeof(line), "%d old .aif: move to", sample_synth_import_loose_);
+                    TomThumbDrawText(disp_, 0, 37, line, true);
+                    TomThumbDrawText(disp_, 0, 43, "DRUM PACK IMPORT/KITS|BREAKS", true);
+                }
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Type", "", "", "");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "Open");
+                break;
             }
 
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Cycle target", "", "",
-                             "Hold=Import");
+            bool breaks  = !voice && sample_synth_import_drum_breaks_;
+            int  waiting = voice    ? sample_synth_import_sounds_
+                           : breaks ? sample_synth_import_breaks_
+                                    : sample_synth_import_kits_;
+            const char* noun = voice ? "sound" : breaks ? "break" : "kit";
+            if(waiting == 0)
+                snprintf(line, sizeof(line), "No %ss waiting", noun);
+            else
+                snprintf(line, sizeof(line), "%d %s%s waiting", waiting, noun,
+                          waiting == 1 ? "" : "s");
+            disp_->SetCursor(0, 22);
+            WriteUpper(line);
+
+            // Where it will go.
+            if(waiting > 0)
+            {
+                const ImportDest& d = sample_synth_import_dests_[sample_synth_import_dest_cursor_];
+                char              dline[40];
+                if(d.number == 0)
+                    snprintf(dline, sizeof(dline), "Dest: New %ss bank", noun);
+                else
+                {
+                    SampleBankEntry e;
+                    e.type   = SampleSynthImportType();
+                    e.number = (uint8_t)d.number;
+                    e.items  = (int8_t)(PerformanceStore::kSampleBankCapacity - d.free);
+                    char label[32];
+                    SampleBankEntryLabel(e, label, sizeof(label));
+                    snprintf(dline, sizeof(dline), "Dest: %s", label);
+                }
+                TomThumbDrawText(disp_, 0, 37, dline, true);
+            }
+            if(sample_synth_pack_import_status_[0] != '\0')
+                TomThumbDrawText(disp_, 0, 44, sample_synth_pack_import_status_, true);
+
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
+                             waiting > 0 && sample_synth_import_dest_count_ > 1 ? "Dest" : "", "",
+                             "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, voice ? "" : "Back", "",
+                             "", waiting > 0 ? "Hold=Import" : "");
             break;
         }
         case SampleSynthParamPage::Preset:
@@ -7645,11 +7858,15 @@ void Ui::DrawSampleSynthScreen()
             bool drum_face          = !sample_synth_preset_mode_sounds_;
             bool at_category_select = sample_synth_sound_category_ < 0;
 
-            if(sample_synth_banks_dirty_ || sample_synth_banks_drum_ != drum_face)
+            bool at_type_select = AtSampleSynthVoiceTypeSelect();
+            if(!at_type_select
+               && (sample_synth_banks_dirty_ || sample_synth_banks_drum_ != drum_face
+                   || (!drum_face && sample_synth_banks_voice_type_ != sample_synth_voice_type_)))
             {
-                sample_synth_bank_count_
-                    = ListFaceSampleBanks(drum_face, sample_synth_banks_, kMaxListedSampleBanks);
-                sample_synth_banks_drum_  = drum_face;
+                sample_synth_bank_count_ = ListFaceSampleBanks(
+                    drum_face, sample_synth_banks_, kMaxListedSampleBanks, sample_synth_voice_type_);
+                sample_synth_banks_drum_       = drum_face;
+                sample_synth_banks_voice_type_ = sample_synth_voice_type_;
                 sample_synth_banks_dirty_ = false;
                 if(sample_synth_sound_category_cursor_ >= sample_synth_bank_count_)
                     sample_synth_sound_category_cursor_ = 0;
@@ -7672,19 +7889,28 @@ void Ui::DrawSampleSynthScreen()
             bool in_folder     = browsing_load && !at_category_select;
 
             // Which face's content, and once drilled in, which bank.
+            static const char* const kVoiceTypeNames[kNumVoiceBankTypes]
+                = {"Sounds", "Captured", "Multi"};
             char mode_line[24];
-            if(!at_category_select)
+            if(browsing_load && at_type_select)
+                snprintf(mode_line, sizeof(mode_line), "Sounds/Captured/Multi");
+            else if(!at_category_select)
                 SampleBankEntryLabel(sample_synth_banks_[sample_synth_sound_category_], mode_line,
                                      sizeof(mode_line));
             else
                 snprintf(mode_line, sizeof(mode_line), "%s",
-                          drum_face ? "Kits+Breaks" : "Sounds+Captured");
+                          drum_face ? "Kits+Breaks" : kVoiceTypeNames[sample_synth_voice_type_ < 0
+                                                                          ? 0
+                                                                          : sample_synth_voice_type_]);
             TomThumbDrawText(disp_, 0, 15, mode_line, true);
 
             if(browsing_load)
             {
                 char line2[24];
-                if(at_category_select && sample_synth_bank_count_ > 0)
+                if(at_type_select)
+                    snprintf(line2, sizeof(line2), "%s",
+                              kVoiceTypeNames[sample_synth_voice_type_cursor_]);
+                else if(at_category_select && sample_synth_bank_count_ > 0)
                     SampleBankEntryLabel(sample_synth_banks_[sample_synth_sound_category_cursor_],
                                          line2, sizeof(line2));
                 else if(!at_category_select && total > 0)
@@ -7731,7 +7957,8 @@ void Ui::DrawSampleSynthScreen()
                              save_load_mode_ == SaveLoadMode::Idle ? "" : "Back", "", "",
                              save_load_mode_ == SaveLoadMode::Idle
                                  ? "Load"
-                                 : (at_category_select
+                                 : (at_type_select ? "Open"
+                                    : at_category_select
                                         ? (sample_synth_bank_count_ > 0 ? "Open" : "")
                                         : (total > 0 ? "Load" : "")));
             break;
@@ -7751,26 +7978,9 @@ void Ui::DrawSampleSynthScreen()
             // own comments.
             bool is_voice = sample_synth_mode_ == SampleSynthMode::Voice;
             if(is_voice && sample_synth_voice_user_dirty_)
-            {
-                sample_synth_voice_user_count_ = PerformanceStore::ListSampleSynthVoiceUserPresets(
-                    sample_synth_voice_user_numbers_,
-                    PerformanceStore::kMaxSampleSynthVoiceUserPresets);
-                if(sample_synth_voice_user_cursor_ >= sample_synth_voice_user_count_)
-                    sample_synth_voice_user_cursor_
-                        = sample_synth_voice_user_count_ > 0 ? sample_synth_voice_user_count_ - 1
-                                                                 : 0;
-                sample_synth_voice_user_dirty_ = false;
-            }
+                RefreshSampleSynthVoiceUserSlots(); // also reads each save's name
             else if(!is_voice && sample_synth_drum_user_dirty_)
-            {
-                sample_synth_drum_user_count_ = PerformanceStore::ListSampleSynthDrumUserPresets(
-                    sample_synth_drum_user_numbers_,
-                    PerformanceStore::kMaxSampleSynthDrumUserPresets);
-                if(sample_synth_drum_user_cursor_ >= sample_synth_drum_user_count_)
-                    sample_synth_drum_user_cursor_
-                        = sample_synth_drum_user_count_ > 0 ? sample_synth_drum_user_count_ - 1 : 0;
-                sample_synth_drum_user_dirty_ = false;
-            }
+                RefreshSampleSynthDrumUserSlots(); // also sorts saves into Kits/Breaks
 
             int         count  = is_voice ? sample_synth_voice_user_count_
                                              : sample_synth_drum_user_count_;
@@ -7802,7 +8012,15 @@ void Ui::DrawSampleSynthScreen()
                 break;
             }
 
-            TomThumbDrawText(disp_, 0, 15, is_voice ? "Sound Presets" : "Kit Presets", true);
+            bool drum_folders = !is_voice && browsing_load && sample_synth_drum_user_folder_ < 0;
+            bool drum_in_folder = !is_voice && browsing_load && sample_synth_drum_user_folder_ >= 0;
+            static const char* const kDrumFolders[2] = {"Kits", "Breaks"};
+            TomThumbDrawText(disp_, 0, 15,
+                              is_voice         ? "Sound Presets"
+                              : drum_folders   ? "Kits+Breaks"
+                              : drum_in_folder ? kDrumFolders[sample_synth_drum_user_folder_]
+                                               : "Kit Presets",
+                              true);
 
             if(choosing_save)
             {
@@ -7822,9 +8040,20 @@ void Ui::DrawSampleSynthScreen()
                 // for these two categories -- one shared vocabulary, see
                 // GRAINS/DEXED/ENSM's own sites above.
                 char line2[24];
-                if(count > 0)
-                    snprintf(line2, sizeof(line2), "%s%s%d", numbers[cursor] == loaded_slot ? "> " : "",
-                              is_voice ? "SMPVO" : "SMPDR", numbers[cursor]);
+                if(drum_folders)
+                    snprintf(line2, sizeof(line2), "%s (%d)",
+                              kDrumFolders[sample_synth_drum_user_folder_cursor_],
+                              sample_synth_drum_user_folder_count_[sample_synth_drum_user_folder_cursor_]);
+                else if(drum_in_folder
+                        && sample_synth_drum_user_folder_count_[sample_synth_drum_user_folder_] == 0)
+                    snprintf(line2, sizeof(line2), "(empty)");
+                else if(count > 0)
+                {
+                    char nm[kUserSaveNameLen];
+                    SampleSynthUserSaveName(is_voice, cursor, nm, sizeof(nm));
+                    snprintf(line2, sizeof(line2), "%s%s", numbers[cursor] == loaded_slot ? "> " : "",
+                              nm);
+                }
                 else
                     snprintf(line2, sizeof(line2), "(none saved yet)");
                 disp_->SetCursor(0, 24);
@@ -7833,8 +8062,18 @@ void Ui::DrawSampleSynthScreen()
             else
             {
                 char line1[24];
+                int loaded_i = -1;
+                for(int i = 0; i < count; i++)
+                    if(numbers[i] == loaded_slot)
+                        loaded_i = i;
                 if(loaded_slot <= 0)
                     snprintf(line1, sizeof(line1), "Now: (none)");
+                else if(loaded_i >= 0)
+                {
+                    char nm[kUserSaveNameLen];
+                    SampleSynthUserSaveName(is_voice, loaded_i, nm, sizeof(nm));
+                    snprintf(line1, sizeof(line1), "Now: %s", nm);
+                }
                 else
                     snprintf(line1, sizeof(line1), "Now: %s%d", is_voice ? "SMPVO" : "SMPDR",
                               loaded_slot);
@@ -7847,14 +8086,16 @@ void Ui::DrawSampleSynthScreen()
                 }
             }
 
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "",
-                             browsing_load ? "Scroll" : "");
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, drum_folders ? "Scroll" : "", "", "",
+                             browsing_load && !drum_folders ? "Scroll" : "");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
                              save_load_mode_ == SaveLoadMode::Idle ? "Save" : "Back", "", "",
                              save_load_mode_ == SaveLoadMode::Idle
                                  ? "Load"
-                                 : (browsing_load ? (count > 0 ? "Load" : "")
-                                                  : (choosing_save ? "Hold=Save" : "")));
+                                 : (drum_folders
+                                        ? "Open"
+                                        : (browsing_load ? (count > 0 ? "Load" : "")
+                                                         : (choosing_save ? "Hold=Save" : ""))));
             break;
         }
         default: break;
@@ -8688,16 +8929,25 @@ void Ui::SdMgmtOpenBox()
     {
         case SdMgmtFolder::Performances: file_slots_dirty_ = true; break;
         case SdMgmtFolder::GranularPresets: granular_preset_slots_dirty_ = true; break;
-        case SdMgmtFolder::DexedPresets: dexed_preset_slots_dirty_ = true; break;
+        case SdMgmtFolder::DexedPresets:
+            dexed_preset_slots_dirty_ = true;
+            dexed_browse_name_slot_   = -2; // a slot number may now hold a different save
+            break;
         case SdMgmtFolder::EnsemblePresets: ensemble_preset_slots_dirty_ = true; break;
         case SdMgmtFolder::SampleSynthCaptures:
-        case SdMgmtFolder::SampleSynthKits:
-            sd_mgmt_capt_kind_   = -1; // CAPT: Sampler/Grains choice first
+        case SdMgmtFolder::SampleSynthImports:
+            sd_mgmt_capt_kind_     = -1; // CAPT: Sampler/Grains choice first
+            sd_mgmt_smp_kind_      = -1; // SMPIMP: Voice/Drum choice first
+            sd_mgmt_smp_sub_kind_ = -1;
+            sd_mgmt_drum_kind_   = -1; // SMPDR: Kits/Breaks choice first
             sd_mgmt_bank_        = -1; // bank list first
             sd_mgmt_banks_dirty_ = true;
             break;
         case SdMgmtFolder::SampleSynthVoiceUserPresets: sample_synth_voice_user_dirty_ = true; break;
-        case SdMgmtFolder::SampleSynthDrumUserPresets: sample_synth_drum_user_dirty_ = true; break;
+        case SdMgmtFolder::SampleSynthDrumUserPresets:
+            sample_synth_drum_user_dirty_ = true;
+            sd_mgmt_drum_kind_            = -1; // Kits/Breaks choice first
+            break;
         default: break;
     }
 }
@@ -8718,11 +8968,28 @@ void Ui::RefreshSdMgmtBanks()
         {
             sd_mgmt_banks_[i].type   = SampleBank::Captured;
             sd_mgmt_banks_[i].number = numbers[i];
+            sd_mgmt_banks_[i].items  = -1; // a Grains bank -- not a SAMPLES/ folder
         }
         sd_mgmt_bank_count_ = n;
     }
-    else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthKits)
-        sd_mgmt_bank_count_ = ListFaceSampleBanks(true, sd_mgmt_banks_, kMaxListedSampleBanks);
+    else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports)
+    {
+        // The banks of whichever kind was picked: Voice -> Sounds or Multi,
+        // Drum -> Kits or Breaks.
+        SampleBank type = sd_mgmt_smp_kind_ == 0
+                              ? (sd_mgmt_smp_sub_kind_ == 1 ? SampleBank::Multi : SampleBank::Sounds)
+                              : (sd_mgmt_smp_sub_kind_ == 1 ? SampleBank::Breaks : SampleBank::Kits);
+        uint8_t numbers[PerformanceStore::kMaxSampleBanks];
+        int     n = PerformanceStore::ListSampleBanks(type, numbers, PerformanceStore::kMaxSampleBanks);
+        int     count = 0;
+        for(int i = 0; i < n && count < kMaxListedSampleBanks; i++, count++)
+        {
+            sd_mgmt_banks_[count].type   = type;
+            sd_mgmt_banks_[count].number = numbers[i];
+            sd_mgmt_banks_[count].items  = (int8_t)PerformanceStore::SampleBankItemCount(type, numbers[i]);
+        }
+        sd_mgmt_bank_count_ = count;
+    }
     else
     {
         uint8_t numbers[PerformanceStore::kMaxSampleBanks];
@@ -8732,6 +8999,8 @@ void Ui::RefreshSdMgmtBanks()
         {
             sd_mgmt_banks_[i].type   = SampleBank::Captured;
             sd_mgmt_banks_[i].number = numbers[i];
+            sd_mgmt_banks_[i].items
+                = (int8_t)PerformanceStore::SampleBankItemCount(SampleBank::Captured, numbers[i]);
         }
         sd_mgmt_bank_count_ = n;
     }
@@ -8760,10 +9029,28 @@ void Ui::RefreshSdMgmtItems()
     sd_mgmt_items_dirty_ = false;
 }
 
+int Ui::SdMgmtListCount()
+{
+    if(SdMgmtDrumUserBox())
+    {
+        int n = 0;
+        SdMgmtSlots(&n); // refreshes, which also sorts saves into Kits/Breaks
+        return sd_mgmt_drum_kind_ < 0 ? 2
+                                      : sample_synth_drum_user_folder_count_[sd_mgmt_drum_kind_];
+    }
+    if(SdMgmtIsBankFolder())
+        return SdMgmtBankLevelCount();
+    int n = 0;
+    SdMgmtSlots(&n);
+    return n;
+}
+
 int Ui::SdMgmtBankLevelCount()
 {
     if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthCaptures && sd_mgmt_capt_kind_ < 0)
         return 2; // Sampler, Grains
+    if(SdMgmtSmpChoosing())
+        return 2; // Voice/Drum, then Sounds/Multi or Kits/Breaks
     if(sd_mgmt_banks_dirty_)
         RefreshSdMgmtBanks();
     if(sd_mgmt_bank_ < 0)
@@ -8773,10 +9060,38 @@ int Ui::SdMgmtBankLevelCount()
     return sd_mgmt_item_count_;
 }
 
+void Ui::SourceDisplayName(const char* src, char* out, size_t out_size)
+{
+    const char* base = strrchr(src, '/');
+    base             = base ? base + 1 : src;
+    snprintf(out, out_size, "%s", base);
+    char* dot = strrchr(out, '.');
+    if(dot && dot != out)
+        *dot = '\0';
+}
+
+void Ui::SampleSynthUserSaveName(bool voice, int i, char* out, size_t out_size) const
+{
+    const char* name = voice ? sample_synth_voice_user_names_[i] : sample_synth_drum_user_names_[i];
+    if(name[0] != '\0')
+        snprintf(out, out_size, "%s", name);
+    else
+        snprintf(out, out_size, "%s%d", voice ? "SMPVO" : "SMPDR",
+                  voice ? sample_synth_voice_user_numbers_[i] : sample_synth_drum_user_numbers_[i]);
+}
+
 void Ui::RefreshSampleSynthVoiceUserSlots()
 {
     sample_synth_voice_user_count_ = PerformanceStore::ListSampleSynthVoiceUserPresets(
         sample_synth_voice_user_numbers_, PerformanceStore::kMaxSampleSynthVoiceUserPresets);
+    // Each save's name -- one small read per save, only on refresh.
+    for(int i = 0; i < sample_synth_voice_user_count_; i++)
+    {
+        static PerformanceStore::SampleSynthVoiceUserPreset p; // AXI, not stack -- see Save()'s DMA comment
+        sample_synth_voice_user_names_[i][0] = '\0';
+        if(PerformanceStore::LoadSampleSynthVoiceUserPreset(sample_synth_voice_user_numbers_[i], &p))
+            SourceDisplayName(p.filename, sample_synth_voice_user_names_[i], kUserSaveNameLen);
+    }
     if(sample_synth_voice_user_cursor_ >= sample_synth_voice_user_count_)
         sample_synth_voice_user_cursor_
             = sample_synth_voice_user_count_ > 0 ? sample_synth_voice_user_count_ - 1 : 0;
@@ -8786,10 +9101,42 @@ void Ui::RefreshSampleSynthVoiceUserSlots()
             = sample_synth_voice_user_count_ > 0 ? sample_synth_voice_user_count_ - 1 : 0;
 }
 
+int Ui::DrumUserGlobalIndex(int folder, int k) const
+{
+    for(int i = 0; i < sample_synth_drum_user_count_; i++)
+        if((sample_synth_drum_user_is_break_[i] ? 1 : 0) == folder && k-- == 0)
+            return i;
+    return -1;
+}
+
+int Ui::DrumUserFolderPos(int global) const
+{
+    int pos = 0;
+    for(int i = 0; i < global && i < sample_synth_drum_user_count_; i++)
+        if(sample_synth_drum_user_is_break_[i] == sample_synth_drum_user_is_break_[global])
+            pos++;
+    return pos;
+}
+
 void Ui::RefreshSampleSynthDrumUserSlots()
 {
     sample_synth_drum_user_count_ = PerformanceStore::ListSampleSynthDrumUserPresets(
         sample_synth_drum_user_numbers_, PerformanceStore::kMaxSampleSynthDrumUserPresets);
+    // Sort each save into Kits or Breaks by the kit folder it points at --
+    // one small (100-byte) read per save, only on refresh.
+    sample_synth_drum_user_folder_count_[0] = sample_synth_drum_user_folder_count_[1] = 0;
+    for(int i = 0; i < sample_synth_drum_user_count_; i++)
+    {
+        static PerformanceStore::SampleSynthDrumUserPreset p; // AXI, not stack -- see Save()'s DMA comment
+        bool is_break = PerformanceStore::LoadSampleSynthDrumUserPreset(
+                            sample_synth_drum_user_numbers_[i], &p)
+                        && strncmp(p.kit_ref, "BREAKS", 6) == 0;
+        sample_synth_drum_user_is_break_[i] = is_break;
+        sample_synth_drum_user_names_[i][0] = '\0';
+        if(is_break || p.kit_ref[0] != '\0')
+            SourceDisplayName(p.kit_ref, sample_synth_drum_user_names_[i], kUserSaveNameLen);
+        sample_synth_drum_user_folder_count_[is_break ? 1 : 0]++;
+    }
     if(sample_synth_drum_user_cursor_ >= sample_synth_drum_user_count_)
         sample_synth_drum_user_cursor_
             = sample_synth_drum_user_count_ > 0 ? sample_synth_drum_user_count_ - 1 : 0;
@@ -8822,7 +9169,14 @@ void Ui::TriggerSdMgmtBankDuplicate()
     char        result[PerformanceStore::kMaxSampleSynthKitRefLen] = {};
     bool        ok = false;
     g_progress_disp = disp_;
-    if(SdMgmtGrainsCaptures())
+    bool multi = sd_mgmt_banks_[sd_mgmt_bank_].type == PerformanceStore::SampleBank::Multi;
+    if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports && sd_mgmt_smp_kind_ == 0 && !multi)
+    {
+        // An imported Sound -- copied into the same bank as "<name> 2".
+        ok = PerformanceStore::DuplicateSampleSound(folder, item, result, sizeof(result),
+                                                    &Ui::OnSaveLoadProgress);
+    }
+    else if(SdMgmtGrainsCaptures())
     {
         // Stays in the same folder, like the Sampler's own captures.
         int n = CaptureNumberFromName(item), new_n = -1;
@@ -8877,7 +9231,17 @@ void Ui::TriggerSdMgmtBankDelete()
     char item[PerformanceStore::kMaxSampleSynthWavNameLen + 1];
     snprintf(item, sizeof(item), "%s", sd_mgmt_item_names_[sd_mgmt_cursor_]);
     bool ok = false;
-    if(SdMgmtGrainsCaptures())
+    bool multi = sd_mgmt_banks_[sd_mgmt_bank_].type == PerformanceStore::SampleBank::Multi;
+    if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports && sd_mgmt_smp_kind_ == 0 && !multi)
+    {
+        // An imported Sound.
+        bool was_loaded = strcmp(sample_synth_loaded_sound_category_, folder) == 0
+                          && strcmp(sample_synth_loaded_sound_name_, item) == 0;
+        ok = PerformanceStore::DeleteSampleSound(folder, item);
+        if(ok && was_loaded)
+            sample_synth_loaded_sound_name_[0] = '\0';
+    }
+    else if(SdMgmtGrainsCaptures())
     {
         // Same "only the exact loaded file" rule as the Sampler's below.
         bool was_loaded = strcmp(granular_loaded_lib_folder_, folder) == 0
@@ -8909,7 +9273,12 @@ void Ui::TriggerSdMgmtBankDelete()
     {
         char ref[PerformanceStore::kMaxSampleSynthKitRefLen];
         snprintf(ref, sizeof(ref), "%s/%s", folder, item);
+        // A Kit, Break or Multi folder.
+        bool was_loaded = multi && strcmp(sample_synth_loaded_sound_category_, folder) == 0
+                          && strcmp(sample_synth_loaded_sound_name_, item) == 0;
         ok = PerformanceStore::DeleteSampleSynthKit(ref);
+        if(ok && was_loaded)
+            sample_synth_loaded_sound_name_[0] = '\0';
         if(ok && strcmp(sample_synth_loaded_kit_ref_, ref) == 0)
             sample_synth_loaded_kit_ref_[0] = '\0';
         if(ok && strcmp(sample_synth_drum_kit_ref_, ref) == 0)
@@ -8939,9 +9308,10 @@ void Ui::TriggerSdMgmtDuplicate()
     }
     int        count = 0;
     const int* slots = SdMgmtSlots(&count);
-    if(!slots || sd_mgmt_cursor_ >= count)
+    int idx = SdMgmtItemIndex();
+    if(!slots || idx < 0 || idx >= count)
         return;
-    int  slot     = slots[sd_mgmt_cursor_];
+    int  slot     = slots[idx];
     int  new_slot = -1;
     bool ok;
     g_progress_disp = disp_;
@@ -8986,7 +9356,10 @@ void Ui::TriggerSdMgmtDuplicate()
         {
             case SdMgmtFolder::Performances: file_slots_dirty_ = true; break;
             case SdMgmtFolder::GranularPresets: granular_preset_slots_dirty_ = true; break;
-            case SdMgmtFolder::DexedPresets: dexed_preset_slots_dirty_ = true; break;
+            case SdMgmtFolder::DexedPresets:
+                dexed_preset_slots_dirty_ = true;
+                dexed_browse_name_slot_   = -2; // a slot number may now hold a different save
+                break;
             case SdMgmtFolder::EnsemblePresets: ensemble_preset_slots_dirty_ = true; break;
             case SdMgmtFolder::SampleSynthVoiceUserPresets:
                 sample_synth_voice_user_dirty_ = true;
@@ -9013,9 +9386,10 @@ void Ui::TriggerSdMgmtDelete()
     }
     int        count = 0;
     const int* slots = SdMgmtSlots(&count);
-    if(!slots || sd_mgmt_cursor_ >= count)
+    int idx = SdMgmtItemIndex();
+    if(!slots || idx < 0 || idx >= count)
         return;
-    int  slot = slots[sd_mgmt_cursor_];
+    int  slot = slots[idx];
     bool ok;
     // Passing the relevant page's own "currently loaded" tracker lets
     // Delete*() keep it correct across the gap-closing renumbering it
@@ -9056,7 +9430,10 @@ void Ui::TriggerSdMgmtDelete()
         {
             case SdMgmtFolder::Performances: file_slots_dirty_ = true; break;
             case SdMgmtFolder::GranularPresets: granular_preset_slots_dirty_ = true; break;
-            case SdMgmtFolder::DexedPresets: dexed_preset_slots_dirty_ = true; break;
+            case SdMgmtFolder::DexedPresets:
+                dexed_preset_slots_dirty_ = true;
+                dexed_browse_name_slot_   = -2; // a slot number may now hold a different save
+                break;
             case SdMgmtFolder::EnsemblePresets: ensemble_preset_slots_dirty_ = true; break;
             case SdMgmtFolder::SampleSynthVoiceUserPresets:
                 sample_synth_voice_user_dirty_ = true;
@@ -9284,6 +9661,8 @@ void Ui::SwitchSampleSynthModeImpl(SampleSynthMode target)
     // Preset/Import's own Kits-vs-Sounds split now just follows the
     // face directly -- see that field's own comment.
     sample_synth_preset_mode_sounds_ = (target == SampleSynthMode::Voice);
+    sample_synth_import_dirty_       = true; // the Import page follows the face
+    sample_synth_import_drum_open_   = false;
     sample_synth_kit_cursor_         = 0;
     sample_synth_sound_category_     = -1;
     MarkSampleSynthListsDirty();
@@ -9574,20 +9953,94 @@ void Ui::TriggerSaveSampleSynthCapture()
     }
 }
 
+void Ui::RefreshSampleSynthImport()
+{
+    using PerformanceStore::SampleBank;
+    bool voice = sample_synth_mode_ == SampleSynthMode::Voice;
+    if(!voice)
+        PerformanceStore::EnsureDrumImportFolders();
+    sample_synth_import_sounds_ = sample_synth_import_kits_ = 0;
+    sample_synth_import_breaks_ = sample_synth_import_loose_ = 0;
+
+    // Count every .aif waiting, 32 at a time.
+    static char names[PerformanceStore::kMaxSampleSynthImportPackFiles]
+                     [PerformanceStore::kMaxSampleSynthWavNameLen + 1];
+    auto count = [&](const char* folder, int& out) {
+        for(int skip = 0;;)
+        {
+            int n = PerformanceStore::ListAifFiles(
+                folder, names, PerformanceStore::kMaxSampleSynthImportPackFiles, skip);
+            out += n;
+            skip += n;
+            if(n < PerformanceStore::kMaxSampleSynthImportPackFiles)
+                break;
+        }
+    };
+    if(voice)
+        count(PerformanceStore::kSampleSoundImportFolder, sample_synth_import_sounds_);
+    else
+    {
+        count(PerformanceStore::kSampleKitImportFolder, sample_synth_import_kits_);
+        count(PerformanceStore::kSampleBreakImportFolder, sample_synth_import_breaks_);
+        count(PerformanceStore::kSampleDrumImportFolder, sample_synth_import_loose_);
+        count(PerformanceStore::kSampleLegacyBreakImportFolder, sample_synth_import_loose_);
+    }
+
+    // Destinations: New bank first, then every bank of the type being
+    // imported with room for ALL of it.
+    SampleBank type = SampleSynthImportType();
+    int        need = voice                              ? sample_synth_import_sounds_
+                      : sample_synth_import_drum_breaks_ ? sample_synth_import_breaks_
+                                                         : sample_synth_import_kits_;
+    sample_synth_import_dest_count_ = 1;
+    sample_synth_import_dests_[0]   = ImportDest{};
+    if(need > 0)
+    {
+        uint8_t numbers[PerformanceStore::kMaxSampleBanks];
+        int     nb = PerformanceStore::ListSampleBanks(type, numbers,
+                                                       PerformanceStore::kMaxSampleBanks);
+        for(int i = 0; i < nb; i++)
+        {
+            int free = PerformanceStore::kSampleBankCapacity
+                       - PerformanceStore::SampleBankItemCount(type, numbers[i]);
+            if(free >= need)
+                sample_synth_import_dests_[sample_synth_import_dest_count_++]
+                    = ImportDest{numbers[i], free};
+        }
+    }
+    if(sample_synth_import_dest_cursor_ >= sample_synth_import_dest_count_)
+        sample_synth_import_dest_cursor_ = 0;
+    sample_synth_import_dirty_ = false;
+}
+
 void Ui::TriggerSampleSynthPackImport()
 {
-    // Wholly separate from SampleSynthParamPage::Capture's own -2
-    // Import source -- see that page's own doc comment in ui.h. This
-    // sweeps a whole staging folder at once, no Trim/Tune step: a drum
-    // pack lands straight as a new Kit, a sampler pack straight as a
-    // new Sound, both via PerformanceStore's own importer functions.
-    int kits_ok = 0, kits_skip = 0, sounds_ok = 0, sounds_skip = 0;
+    using PerformanceStore::SampleBank;
+    if(!SampleSynthImportReady())
+        return;
+    if(sample_synth_import_dirty_)
+        RefreshSampleSynthImport();
+    bool       voice   = sample_synth_mode_ == SampleSynthMode::Voice;
+    bool       breaks  = !voice && sample_synth_import_drum_breaks_;
+    SampleBank type    = SampleSynthImportType();
+    int        waiting = voice    ? sample_synth_import_sounds_
+                         : breaks ? sample_synth_import_breaks_
+                                  : sample_synth_import_kits_;
+    if(waiting == 0)
+        return;
+
+    // Where it goes -- see RefreshSampleSynthImport(). "New bank" is one
+    // above the type's highest bank.
+    PerformanceStore::ClearImportDestinations();
+    const ImportDest& dest = sample_synth_import_dests_[sample_synth_import_dest_cursor_];
+    int bank = dest.number > 0 ? dest.number : PerformanceStore::NextNewSampleBank(type);
+    if(bank > 0)
+        PerformanceStore::SetImportDestination(type, bank);
+
+    int ok_count = 0, skip_count = 0;
     g_progress_disp = disp_; // same "WORKING..." overlay every other multi-step SD operation uses
-    // Draw the overlay immediately -- the first real file can take a
-    // real amount of wall-clock time (AIFF decode + resample + up to
-    // 24 slice-file writes), and otherwise the first thing ever drawn
-    // was whatever OnSaveLoadProgress()'s own per-file call happened
-    // to land on, which for a short batch could be the very last one.
+    // Draw the overlay immediately -- the first file can take a real
+    // amount of time (AIFF decode + resample + up to 24 slice writes).
     OnSaveLoadProgress(0.f);
 
     // Imports every .aif in one staging folder, however many -- listed
@@ -9597,8 +10050,7 @@ void Ui::TriggerSampleSynthPackImport()
     // on the next press), then left in place for the next press; later
     // passes step past it (ListAifFiles()'s skip_first) so it can never
     // block the files behind it. Success moves the file into Done/.
-    // kind: 0 = drum pack (auto Kit/Break), 1 = forced Break, 2 = Sound.
-    auto sweep = [&](const char* folder, int kind, int& ok_count, int& skip_count) {
+    auto sweep = [&](const char* folder) {
         int stuck = 0; // failed files still sitting in folder, ahead of the rest
         for(;;)
         {
@@ -9619,14 +10071,13 @@ void Ui::TriggerSampleSynthPackImport()
                 for(int attempt = 0; attempt < 2 && !ok; attempt++)
                 {
                     char status[48];
-                    ok = kind == 2
-                             ? PerformanceStore::ImportAifSamplerPack(
-                                 names[i], folder, sample_synth_arena_l_, sample_synth_arena_r_,
-                                 sample_synth_arena_capacity_, status, sizeof(status))
-                             : PerformanceStore::ImportAifDrumPack(
-                                 names[i], folder, kind == 1, sample_synth_arena_l_,
-                                 sample_synth_arena_r_, sample_synth_arena_capacity_, status,
-                                 sizeof(status), &Ui::OnSampleSynthImportFileProgress);
+                    ok = voice ? PerformanceStore::ImportAifSamplerPack(
+                             names[i], folder, sample_synth_arena_l_, sample_synth_arena_r_,
+                             sample_synth_arena_capacity_, status, sizeof(status))
+                               : PerformanceStore::ImportAifDrumPack(
+                                   names[i], folder, breaks, sample_synth_arena_l_,
+                                   sample_synth_arena_r_, sample_synth_arena_capacity_, status,
+                                   sizeof(status), &Ui::OnSampleSynthImportFileProgress);
                 }
                 if(ok)
                     ok_count++;
@@ -9642,29 +10093,27 @@ void Ui::TriggerSampleSynthPackImport()
         }
     };
 
-    if(sample_synth_import_target_ == SampleSynthImportTarget::Kit
-       || sample_synth_import_target_ == SampleSynthImportTarget::All)
-    {
-        sweep(PerformanceStore::kSampleKitImportFolder, 0, kits_ok, kits_skip);
-        sweep(PerformanceStore::kSampleBreakImportFolder, 1, kits_ok, kits_skip);
-    }
-    if(sample_synth_import_target_ == SampleSynthImportTarget::Sound
-       || sample_synth_import_target_ == SampleSynthImportTarget::All)
-        sweep(PerformanceStore::kSampleSoundImportFolder, 2, sounds_ok, sounds_skip);
-    if(kits_ok > 0 || sounds_ok > 0)
+    sweep(voice    ? PerformanceStore::kSampleSoundImportFolder
+          : breaks ? PerformanceStore::kSampleBreakImportFolder
+                   : PerformanceStore::kSampleKitImportFolder);
+    PerformanceStore::ClearImportDestinations();
+    if(ok_count > 0)
         MarkSampleSynthListsDirty();
+    sample_synth_import_dirty_ = true; // what's waiting has changed
+    g_progress_disp            = nullptr;
 
-    g_progress_disp = nullptr;
-
-    if(sample_synth_import_target_ == SampleSynthImportTarget::Kit)
+    // Where it went, e.g. "7 -> Sounds 14" (plus any that failed).
+    SampleBankEntry e;
+    e.type   = type;
+    e.number = (uint8_t)(bank > 0 ? bank : 0);
+    char where[32];
+    SampleBankEntryLabel(e, where, sizeof(where));
+    if(skip_count > 0)
         snprintf(sample_synth_pack_import_status_, sizeof(sample_synth_pack_import_status_),
-                  "Drums: %d ok, %d skip", kits_ok, kits_skip);
-    else if(sample_synth_import_target_ == SampleSynthImportTarget::Sound)
-        snprintf(sample_synth_pack_import_status_, sizeof(sample_synth_pack_import_status_),
-                  "Sounds: %d ok, %d skip", sounds_ok, sounds_skip);
+                  "%d -> %s, %d failed", ok_count, where, skip_count);
     else
         snprintf(sample_synth_pack_import_status_, sizeof(sample_synth_pack_import_status_),
-                  "Drm %d/%d Snd %d/%d", kits_ok, kits_skip, sounds_ok, sounds_skip);
+                  "%d -> %s", ok_count, where);
 }
 
 void Ui::SampleBankEntryFolder(const SampleBankEntry& e, char* out, size_t out_size)
@@ -9681,24 +10130,31 @@ void Ui::SampleBankEntryLabel(const SampleBankEntry& e, char* out, size_t out_si
         case PerformanceStore::SampleBank::Captured: name = "Captured"; break;
         case PerformanceStore::SampleBank::Kits: name = "Kits"; break;
         case PerformanceStore::SampleBank::Breaks: name = "Breaks"; break;
+        case PerformanceStore::SampleBank::Multi: name = "Multi"; break;
     }
-    snprintf(out, out_size, "%s %d", name, e.number);
+    if(e.items >= 0)
+        snprintf(out, out_size, "%s %d (%d free)", name, e.number,
+                  PerformanceStore::kSampleBankCapacity - e.items);
+    else
+        snprintf(out, out_size, "%s %d", name, e.number);
 }
 
-int Ui::ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out)
+int Ui::ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out, int voice_type)
 {
     using PerformanceStore::SampleBank;
-    const SampleBank types[2] = {drum ? SampleBank::Kits : SampleBank::Sounds,
-                                 drum ? SampleBank::Breaks : SampleBank::Captured};
+    const SampleBank types[2] = {drum ? SampleBank::Kits : VoiceBankType(voice_type),
+                                 SampleBank::Breaks};
     int count = 0;
-    for(SampleBank t : types)
+    for(int ti = 0; ti < (drum ? 2 : 1); ti++)
     {
+        SampleBank t = types[ti];
         uint8_t numbers[PerformanceStore::kMaxSampleBanks];
         int     n = PerformanceStore::ListSampleBanks(t, numbers, PerformanceStore::kMaxSampleBanks);
         for(int i = 0; i < n && count < max_out; i++)
         {
             out[count].type   = t;
             out[count].number = numbers[i];
+            out[count].items  = (int8_t)PerformanceStore::SampleBankItemCount(t, numbers[i]);
             count++;
         }
     }
@@ -9767,6 +10223,9 @@ bool Ui::LoadSampleSynthKitByRef(const char* kit_ref)
         // buffer already uses).
         size_t cursor       = 0;
         int    loaded_count = 0;
+        int    load_failed  = 0;
+        char   load_fail_err[16] = {};
+        int    no_room           = 0; // pads past the arena's ~20s
         for(int i = 0; i < PerformanceStore::kMaxSampleSynthSlots; i++)
         {
             if(slots[i].filename[0] == '\0')
@@ -9777,16 +10236,40 @@ bool Ui::LoadSampleSynthKitByRef(const char* kit_ref)
             if(cursor >= sample_synth_arena_capacity_)
             {
                 sample_synth_->ClearSlot(i); // arena's full -- skip, don't overrun
+                no_room++;
                 continue;
             }
-            size_t len = 0;
-            bool   file_ok
-                = PerformanceStore::ImportWav(slots[i].filename, sample_synth_arena_l_ + cursor,
-                                                sample_synth_arena_r_ + cursor,
-                                                sample_synth_arena_capacity_ - cursor, &len,
-                                                nullptr, kit_dir);
+            // Up to 3 tries per pad: an SD read here fails now and then
+            // (measured: 17-18 of 20 pads loaded, a different count each
+            // try, every loaded pad byte-exact) -- the same one-off
+            // failures the pack importer already retries past.
+            size_t len     = 0;
+            bool   file_ok = false;
+            for(int attempt = 0; attempt < 3 && !(file_ok && len > 0); attempt++)
+            {
+                len     = 0;
+                file_ok = PerformanceStore::ImportWav(slots[i].filename,
+                                                      sample_synth_arena_l_ + cursor,
+                                                      sample_synth_arena_r_ + cursor,
+                                                      sample_synth_arena_capacity_ - cursor, &len,
+                                                      nullptr, kit_dir);
+            }
             if(!file_ok || len == 0)
             {
+                // Still failing after 3 tries -- keep the SD error for the
+                // status line (see below).
+                snprintf(load_fail_err, sizeof(load_fail_err), "%s",
+                          PerformanceStore::GetLastError());
+                load_failed++;
+                sample_synth_->ClearSlot(i);
+                continue;
+            }
+            if(len >= sample_synth_arena_capacity_ - cursor)
+            {
+                // Filled what was left, so it was cut short -- drop it
+                // rather than play a clipped sound; a shorter pad later
+                // in the kit may still fit.
+                no_room++;
                 sample_synth_->ClearSlot(i);
                 continue;
             }
@@ -9815,8 +10298,15 @@ bool Ui::LoadSampleSynthKitByRef(const char* kit_ref)
         sample_synth_kit_real_total_len_ = cursor;
         snprintf(sample_synth_loaded_kit_name_, sizeof(sample_synth_loaded_kit_name_), "%s",
                   kit_name);
-        snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "Loaded (%d)",
-                  loaded_count);
+        if(load_failed > 0)
+            snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "%d/%d %s",
+                      loaded_count, loaded_count + load_failed + no_room, load_fail_err);
+        else if(no_room > 0)
+            snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_),
+                      "Loaded %d, %d no room", loaded_count, no_room);
+        else
+            snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "Loaded (%d)",
+                      loaded_count);
         // Setup's own Break Divide/Tune are pure live/session state,
         // not saved with the kit (there's no user-facing Save for Kits
         // at all -- see SampleSynthParamPage::Preset's own doc
@@ -9972,26 +10462,27 @@ void Ui::LoadSampleSynthFileIntoEngine(const char* category_folder, const char* 
     // new audio with no NoteOn at all).
     sample_synth_->ResetAllVoices();
 
-    if(HasExtension(filename, ".snd"))
+    if(PerformanceStore::SampleSynthKitBank(category_folder) == PerformanceStore::SampleBank::Multi)
     {
-        // Multi-sample melodic instrument -- several recordings, each
-        // its own zone, so every note plays from its nearest real
-        // pitch instead of one sample stretched across the whole
-        // keyboard. See PerformanceStore::LoadSampleSynthSound()'s own
-        // doc comment. Bump-allocates each zone's WAV into the shared
-        // arena exactly like TriggerLoadSampleSynthKit() already does.
-        // The .snd manifest itself lives in this category's own
-        // subfolder, but the zone WAVs it references (e.g.
-        // "DRUMS/SKOGSFIOL C4.wav") are their own relative paths from
-        // SAMPLES/ -- unrelated to the category -- so only the
-        // manifest lookup itself is category-scoped, the per-zone
-        // ImportWav() calls below stay as they were.
+        // Multi-sample melodic instrument -- a MULTISMPn folder holding a
+        // recording per sampled note, each its own zone, so every note
+        // plays from its nearest real pitch instead of one sample
+        // stretched across the whole keyboard. See PerformanceStore::
+        // BuildMultiSampleZones(). Bump-allocates each zone's WAV into
+        // the shared arena exactly like TriggerLoadSampleSynthKit()
+        // already does.
         PerformanceStore::SampleSynthKitSlot slots[PerformanceStore::kMaxSampleSynthSlots];
-        bool ok = PerformanceStore::LoadSampleSynthSound(filename, slots, category_folder);
+        char ref[PerformanceStore::kMaxSampleSynthKitRefLen];
+        snprintf(ref, sizeof(ref), "%s/%s", category_folder, filename);
+        char zone_dir[64];
+        PerformanceStore::SampleSynthKitDir(ref, zone_dir, sizeof(zone_dir));
+        int  skipped = 0; // WAVs with no usable note in the name
+        bool ok      = PerformanceStore::BuildMultiSampleZones(ref, slots, &skipped);
         if(ok)
         {
             size_t cursor       = 0;
             int    loaded_count = 0;
+            int    no_room      = 0;
             for(int i = 0; i < PerformanceStore::kMaxSampleSynthSlots; i++)
             {
                 if(slots[i].filename[0] == '\0')
@@ -10002,16 +10493,31 @@ void Ui::LoadSampleSynthFileIntoEngine(const char* category_folder, const char* 
                 if(cursor >= sample_synth_arena_capacity_)
                 {
                     sample_synth_->ClearSlot(i); // arena's full -- skip, don't overrun
+                    no_room++;
                     continue;
                 }
-                size_t len = 0;
-                bool   file_ok = PerformanceStore::ImportWav(
-                    slots[i].filename, sample_synth_arena_l_ + cursor,
-                    sample_synth_arena_r_ + cursor, sample_synth_arena_capacity_ - cursor, &len,
-                    nullptr, PerformanceStore::kSampleSynthFolder);
+                size_t len     = 0;
+                bool   file_ok = false;
+                for(int attempt = 0; attempt < 3 && !(file_ok && len > 0); attempt++)
+                {
+                    // Same 3-try retry as a kit load -- see LoadSampleSynthKitByRef().
+                    len     = 0;
+                    file_ok = PerformanceStore::ImportWav(
+                        slots[i].filename, sample_synth_arena_l_ + cursor,
+                        sample_synth_arena_r_ + cursor, sample_synth_arena_capacity_ - cursor,
+                        &len, nullptr, zone_dir);
+                }
                 if(!file_ok || len == 0)
                 {
                     sample_synth_->ClearSlot(i);
+                    skipped++;
+                    continue;
+                }
+                if(len >= sample_synth_arena_capacity_ - cursor)
+                {
+                    // Cut short by the arena's end -- see the kit loader.
+                    sample_synth_->ClearSlot(i);
+                    no_room++;
                     continue;
                 }
                 sample_synth_->LoadSlot(i, sample_synth_arena_l_ + cursor,
@@ -10028,8 +10534,15 @@ void Ui::LoadSampleSynthFileIntoEngine(const char* category_folder, const char* 
                       "%s", filename);
             snprintf(sample_synth_loaded_sound_category_,
                       sizeof(sample_synth_loaded_sound_category_), "%s", category_folder);
-            snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "Loaded (%d)",
-                      loaded_count);
+            if(no_room > 0)
+                snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_),
+                          "%d zones, %d no room", loaded_count, no_room);
+            else if(skipped > 0)
+                snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_),
+                          "%d zones, %d skipped", loaded_count, skipped);
+            else
+                snprintf(sample_synth_kit_status_, sizeof(sample_synth_kit_status_), "%d zones",
+                          loaded_count);
             // A Sound, not a Kit -- Setup's own Slices has nothing to
             // re-divide (see sample_synth_kit_real_pad_count_'s own
             // comment), and Tune resets fresh for whatever just loaded.
@@ -10559,8 +11072,12 @@ void Ui::RefreshDexedPresetSlots()
     // recorded import folder -- what's left is the User group's own
     // list (see dexed_preset_user_slots_'s own doc comment). Needs the
     // import-folder refresh above to have already happened this call.
-    static int raw_slots[kMaxDexedPresetSlots];
-    int        raw_count = PerformanceStore::ListDexedPresets(raw_slots, kMaxDexedPresetSlots);
+    // Every user-range slot on the card, imports included -- capped only by
+    // the slot range itself, never by the (smaller) User list's size: with
+    // 8 imported banks the old 200 cap filled up with import presets before
+    // ever reaching the user saves after them, hiding new saves.
+    static int raw_slots[kMaxDexedRawSlots];
+    int        raw_count = PerformanceStore::ListDexedPresets(raw_slots, kMaxDexedRawSlots);
     int        filtered  = 0;
     for(int i = 0; i < raw_count && filtered < kMaxDexedPresetSlots; i++)
     {
@@ -10851,6 +11368,12 @@ void Ui::TriggerDexedSyxImport()
         }
         PerformanceStore::SaveDexedImportFolder(folder_name, first_slot, last_slot);
     }
+
+    // Imported -- file it away in DEXED IMPORT/Done, same as the Sampler's
+    // pack imports, so the Import list only shows what's still to do.
+    PerformanceStore::MoveToImportDoneFolder("DEXED IMPORT",
+                                             dexed_import_names_[dexed_import_cursor_]);
+    dexed_import_files_dirty_ = true;
 
     if(first_slot == last_slot)
         snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Imported->%d", last_slot);

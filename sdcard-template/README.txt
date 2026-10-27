@@ -12,8 +12,7 @@ matching Import feature would otherwise silently find nothing:
 
   GRAINS IMPORT/       Grains WAV import
   DEXED IMPORT/        Dexed SysEx (.syx) import
-  DRUM PACK IMPORT/    Sampler drum-pack import (Kits, or Breaks automatically)
-  BREAK PACK IMPORT/   Sampler import, always as Breaks
+  DRUM PACK IMPORT/    Sampler drum-pack import: KITS/ and BREAKS/
   SOUND PACK IMPORT/   Sampler sound-pack import
 
 The rest (PERFORMANCES/, GRAINS/, DEXED/, DEXED/IMPORTS/, EXPORTS/,
