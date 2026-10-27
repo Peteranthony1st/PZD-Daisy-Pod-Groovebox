@@ -37,7 +37,7 @@ void LooperLayer::Init(float*           buf_l,
                        float*           buf_r,
                        size_t           buffer_size,
                        float            sample_rate,
-                       daisysp::Phaser* fx_phaser,
+                       LayerPhaser*     fx_phaser,
                        float*           undo_backup_l,
                        float*           undo_backup_r)
 {

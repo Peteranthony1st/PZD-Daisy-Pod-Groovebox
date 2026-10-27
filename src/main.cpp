@@ -142,7 +142,7 @@ Ui          ui;
 // directly as a LooperLayer member in ordinary SRAM. Each layer's
 // instance is fully independent (not shared) -- LooperLayer::Init()
 // takes a pointer to it and owns calling Init() on it.
-daisysp::Phaser DSY_SDRAM_BSS fx_phaser[kNumLayers];
+LayerPhaser DSY_SDRAM_BSS fx_phaser[kNumLayers]; // layer_fx.h
 
 // ONE shared reverb bus for every layer, not one per layer -- up to 4
 // simultaneous ReverbSc instances (by far the heaviest thing in this

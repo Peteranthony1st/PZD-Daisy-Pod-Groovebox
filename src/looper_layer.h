@@ -141,7 +141,7 @@ struct LooperLayer
               float*           buf_r,
               size_t           buffer_size,
               float            sample_rate,
-              daisysp::Phaser* fx_phaser,
+              LayerPhaser*     fx_phaser,
               float*           undo_backup_l,
               float*           undo_backup_r);
     void Reset(); // hard reset to Empty, clears controls to defaults
@@ -473,7 +473,7 @@ struct LooperLayer
     LayerTremolo        fx_tremolo_[2]; // layer_fx.h -- DaisySP's, minus sinf()
     daisysp::Flanger    fx_flanger_[2];
     LayerAutowah        fx_autowah_[2]; // layer_fx.h -- DaisySP's, minus powf/cosf
-    daisysp::Phaser*       fx_phaser_     = nullptr; // externally owned, see Init()
+    LayerPhaser*           fx_phaser_     = nullptr; // externally owned, see Init()
 
     float reverb_send_ = 0.f; // 0 = nothing sent to the shared reverb bus
     float delay_send_  = 0.f; // 0 = nothing sent to the shared delay bus

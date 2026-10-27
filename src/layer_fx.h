@@ -89,3 +89,73 @@ class LayerTremolo
   private:
     float sr_recip_, phase_, phase_inc_, amp_, dc_;
 };
+
+// DaisySP's Phaser, computed once instead of four times. Its four "poles"
+// are identical PhaserEngines -- same Init(), same settings (every setter
+// writes all of them), same input every sample -- so they hold identical
+// state forever and Process() returned 0.5 * (4 identical outputs), i.e.
+// exactly 2x one engine. This is that one engine (same LFO, smoothing,
+// all-pass and feedback, same 2400-sample line), doubled: bit-identical
+// output at a quarter of the cost. No default member initializers -- the
+// looper's instances live in SDRAM (see main.cpp), where constructors
+// don't run; Init() sets everything.
+class LayerPhaser
+{
+  public:
+    void Init(float sample_rate)
+    {
+        sample_rate_ = sample_rate;
+        for(int i = 0; i < kDelayLength; i++)
+            line_[i] = 0.f;
+        write_ptr_   = 0;
+        lfo_amp_     = 0.f;
+        feedback_    = .2f;
+        ap_freq_     = 200.f;
+        deltime_     = 0.f;
+        os_          = 30.f; // DaisySP: lower than this introduces crunch
+        last_sample_ = 0.f;
+        lfo_phase_   = 0.f;
+        lfo_freq_    = 0.f;
+        SetLfoFreq(.3f);
+        SetLfoDepth(.9f);
+    }
+    void SetLfoDepth(float depth) { lfo_amp_ = depth < 0.f ? 0.f : (depth > 1.f ? 1.f : depth); }
+    void SetLfoFreq(float lfo_freq)
+    {
+        lfo_freq = 4.f * lfo_freq / sample_rate_;
+        lfo_freq *= lfo_freq_ < 0.f ? -1.f : 1.f; // if headed down, keep going
+        lfo_freq_ = lfo_freq < -.25f ? -.25f : (lfo_freq > .25f ? .25f : lfo_freq);
+    }
+
+    float Process(float in)
+    {
+        lfo_phase_ += lfo_freq_;
+        if(lfo_phase_ > 1.f)
+        {
+            lfo_phase_ = 1.f - (lfo_phase_ - 1.f);
+            lfo_freq_ *= -1.f;
+        }
+        else if(lfo_phase_ < -1.f)
+        {
+            lfo_phase_ = -1.f - (lfo_phase_ + 1.f);
+            lfo_freq_ *= -1.f;
+        }
+        float lfo_sig = lfo_phase_ * lfo_amp_ * ap_freq_;
+        deltime_ += .0001f * (sample_rate_ / (lfo_sig + ap_freq_ + os_) - deltime_);
+        // DelayLine::Allpass(), inlined.
+        float read  = line_[(write_ptr_ + (size_t)deltime_) % kDelayLength];
+        float write = (in + feedback_ * last_sample_) + .3f * read;
+        line_[write_ptr_] = write;
+        write_ptr_        = (write_ptr_ - 1 + kDelayLength) % kDelayLength;
+        last_sample_      = -write * .3f + read;
+        float engine_out  = (in + last_sample_) * .5f;
+        return engine_out * 2.f; // 4 identical poles x 0.5 gain
+    }
+
+  private:
+    static constexpr int kDelayLength = 2400; // 50 ms at 48 kHz
+    float  sample_rate_, lfo_phase_, lfo_freq_, lfo_amp_, os_, feedback_, ap_freq_;
+    float  deltime_, last_sample_;
+    size_t write_ptr_;
+    float  line_[kDelayLength];
+};
