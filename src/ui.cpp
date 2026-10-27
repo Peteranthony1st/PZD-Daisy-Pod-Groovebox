@@ -537,20 +537,18 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             screen_     = Screen::Layer;
             layer_page_ = LayerPage::Status;
         }
+        else if(!encoder_long_fired_ && screen_ == Screen::Layer)
+        {
+            // Click backs out one level, the same on every screen: Layer
+            // -> Home, an engine or the Mixer -> its Global page.
+            screen_ = Screen::Home;
+        }
         else if(!encoder_long_fired_ && screen_ == Screen::Global
                 && global_page_ == GlobalPage::Granular)
         {
             // Global:Granular is an entry point into Screen::Granular,
             // same convention Screen::Mixer's own Global page uses.
             screen_ = Screen::Granular;
-        }
-        else if(!encoder_long_fired_ && screen_ == Screen::Global
-                && global_page_ == GlobalPage::Looper)
-        {
-            // No screen to drill into (Button1 tap is this page's own
-            // toggle) -- explicitly excluded from TogglePauseAll() below
-            // so this page's click can't accidentally trigger a second,
-            // different "stop the loop" mechanism.
         }
         else if(!encoder_long_fired_ && screen_ == Screen::Global
                 && global_page_ == GlobalPage::Mixer)
@@ -616,7 +614,10 @@ void Ui::HandleEncoder(const UiControlEvents& events)
         }
         else if(!encoder_long_fired_ && screen_ == Screen::Global)
         {
-            TogglePauseAll();
+            // Every other Global page (nothing to enter): click backs out
+            // to Home, same as a hold. Pause lives on Home's Button1;
+            // Global:Looper switches the whole looper off.
+            screen_ = Screen::Home;
         }
         else if(!encoder_long_fired_ && screen_ == Screen::Dexed
                 && dexed_param_page_ == DexedParamPage::Advanced)
@@ -635,24 +636,16 @@ void Ui::HandleEncoder(const UiControlEvents& events)
         }
         else if(!encoder_long_fired_
                 && (screen_ == Screen::Granular || screen_ == Screen::Dexed
-                    || screen_ == Screen::Ensemble || screen_ == Screen::SampleSynth))
+                    || screen_ == Screen::Ensemble || screen_ == Screen::SampleSynth
+                    || screen_ == Screen::Mixer))
         {
-            // Same mute-all-loop-layers click as every Global page's own
-            // (TogglePauseAll()) -- every other Granular/Dexed/Ensemble/
-            // SampleSynth page has no click-to-drill-in of their own
-            // (that's the encoder's job from Global instead, or Dexed's
-            // own Advanced page above -- Sounds' own category level (see
-            // sample_synth_sound_category_'s own comment in ui.h) drills
-            // via Button2 instead, same button its "Open"/"Load" footer
-            // label already names -- see OnButton2Short()), so there's
-            // nothing else useful for the encoder's own click to do here
-            // either.
-            TogglePauseAll();
+            // Back out to the Global page this screen was entered from --
+            // global_page_ is left untouched while inside, so this lands on
+            // Global:Granular/Dexed/Ensemble/SMPVO/SMPDR/Mixer. (Dexed's
+            // Advanced page is handled above: its click enters the
+            // operator editor.) Hold still goes straight to Home.
+            screen_ = Screen::Global;
         }
-        // Screen::Mixer: rotate already picks the stop (see
-        // HandleEncoder()'s own rotate handling above, including the
-        // Scope stop) -- click is unused here, same as every other
-        // Granular-style screen.
         encoder_long_fired_ = false;
     }
 
@@ -1262,7 +1255,8 @@ void Ui::HandleButton2(const UiControlEvents& events)
             else if(save_load_mode_ == SaveLoadMode::BrowsingLoad
                     && AtSampleSynthVoiceTypeSelect())
             {
-                // SMPVO: open Sounds, Captured or Multi -- its banks next.
+                // Open the chosen type (Sounds/Captured/Multi or
+                // Kits/Breaks) -- its banks next.
                 sample_synth_voice_type_            = sample_synth_voice_type_cursor_;
                 sample_synth_sound_category_        = -1;
                 sample_synth_sound_category_cursor_ = 0;
@@ -1290,7 +1284,7 @@ void Ui::HandleButton2(const UiControlEvents& events)
                     load_browsing_files_     = true; // no "Files vs New" chooser -- straight to the list
                     sample_synth_kit_status_[0] = '\0'; // clear any stale result
                     sample_synth_sound_category_ = -1; // always start at category-select
-                    sample_synth_voice_type_     = -1; // ...and on SMPVO, at the type list
+                    sample_synth_voice_type_     = -1; // ...at the type list
                 }
             }
             button2_long_fired_ = false;
@@ -1894,8 +1888,8 @@ void Ui::OnButton1Short()
                     // stays highlighted) -> out of the browser.
                     if(sample_synth_sound_category_ >= 0)
                         sample_synth_sound_category_ = -1;
-                    else if(sample_synth_preset_mode_sounds_ && sample_synth_voice_type_ >= 0)
-                        sample_synth_voice_type_ = -1; // banks -> Sounds/Captured/Multi
+                    else if(sample_synth_voice_type_ >= 0)
+                        sample_synth_voice_type_ = -1; // banks -> the type list
                     else
                         save_load_mode_ = SaveLoadMode::Idle;
                 }
@@ -2850,13 +2844,6 @@ void Ui::NudgeFreezeBy(int32_t inc)
             continue;
         layers_[i].NudgeFreeze(delta);
     }
-}
-
-void Ui::TogglePauseAll()
-{
-    loop_paused_ = !loop_paused_;
-    for(int i = 0; i < num_layers_; i++)
-        layers_[i].SetPaused(loop_paused_);
 }
 
 void Ui::ApplyKnobs()
@@ -3842,9 +3829,9 @@ void Ui::ApplyKnobs()
                     // -- see sample_synth_sound_category_'s own comment.
                     if(AtSampleSynthVoiceTypeSelect())
                     {
-                        int idx = (int)(Clampf(k1, 0.f, 1.f) * kNumVoiceBankTypes);
-                        sample_synth_voice_type_cursor_
-                            = idx >= kNumVoiceBankTypes ? kNumVoiceBankTypes - 1 : idx;
+                        int nt  = NumFaceBankTypes();
+                        int idx = (int)(Clampf(k1, 0.f, 1.f) * nt);
+                        sample_synth_voice_type_cursor_ = idx >= nt ? nt - 1 : idx;
                         break;
                     }
                     if(sample_synth_sound_category_ < 0)
@@ -7881,7 +7868,7 @@ void Ui::DrawSampleSynthScreen()
             bool at_type_select = AtSampleSynthVoiceTypeSelect();
             if(!at_type_select
                && (sample_synth_banks_dirty_ || sample_synth_banks_drum_ != drum_face
-                   || (!drum_face && sample_synth_banks_voice_type_ != sample_synth_voice_type_)))
+                   || sample_synth_banks_voice_type_ != sample_synth_voice_type_))
             {
                 sample_synth_bank_count_ = ListFaceSampleBanks(
                     drum_face, sample_synth_banks_, kMaxListedSampleBanks, sample_synth_voice_type_);
@@ -7911,17 +7898,18 @@ void Ui::DrawSampleSynthScreen()
             // Which face's content, and once drilled in, which bank.
             static const char* const kVoiceTypeNames[kNumVoiceBankTypes]
                 = {"Sounds", "Captured", "Multi"};
+            static const char* const kDrumTypeNames[kNumDrumBankTypes] = {"Kits", "Breaks"};
+            const char* const*       type_names = drum_face ? kDrumTypeNames : kVoiceTypeNames;
             char mode_line[24];
             if(browsing_load && at_type_select)
-                snprintf(mode_line, sizeof(mode_line), "Sounds/Captured/Multi");
+                snprintf(mode_line, sizeof(mode_line), "%s",
+                          drum_face ? "Kits/Breaks" : "Sounds/Captured/Multi");
             else if(!at_category_select)
                 SampleBankEntryLabel(sample_synth_banks_[sample_synth_sound_category_], mode_line,
                                      sizeof(mode_line));
             else
                 snprintf(mode_line, sizeof(mode_line), "%s",
-                          drum_face ? "Kits+Breaks" : kVoiceTypeNames[sample_synth_voice_type_ < 0
-                                                                          ? 0
-                                                                          : sample_synth_voice_type_]);
+                          type_names[sample_synth_voice_type_ < 0 ? 0 : sample_synth_voice_type_]);
             TomThumbDrawText(disp_, 0, 15, mode_line, true);
 
             if(browsing_load)
@@ -7929,7 +7917,7 @@ void Ui::DrawSampleSynthScreen()
                 char line2[24];
                 if(at_type_select)
                     snprintf(line2, sizeof(line2), "%s",
-                              kVoiceTypeNames[sample_synth_voice_type_cursor_]);
+                              type_names[sample_synth_voice_type_cursor_]);
                 else if(at_category_select && sample_synth_bank_count_ > 0)
                     SampleBankEntryLabel(sample_synth_banks_[sample_synth_sound_category_cursor_],
                                          line2, sizeof(line2));
@@ -9685,6 +9673,7 @@ void Ui::SwitchSampleSynthModeImpl(SampleSynthMode target)
     sample_synth_import_drum_open_   = false;
     sample_synth_kit_cursor_         = 0;
     sample_synth_sound_category_     = -1;
+    sample_synth_voice_type_         = -1; // the other face has its own types
     MarkSampleSynthListsDirty();
     sample_synth_voice_user_dirty_   = true;
     sample_synth_drum_user_dirty_    = true;
@@ -10159,24 +10148,18 @@ void Ui::SampleBankEntryLabel(const SampleBankEntry& e, char* out, size_t out_si
         snprintf(out, out_size, "%s %d", name, e.number);
 }
 
-int Ui::ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out, int voice_type)
+int Ui::ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out, int type)
 {
     using PerformanceStore::SampleBank;
-    const SampleBank types[2] = {drum ? SampleBank::Kits : VoiceBankType(voice_type),
-                                 SampleBank::Breaks};
-    int count = 0;
-    for(int ti = 0; ti < (drum ? 2 : 1); ti++)
+    SampleBank t = FaceBankType(drum, type);
+    uint8_t    numbers[PerformanceStore::kMaxSampleBanks];
+    int        n     = PerformanceStore::ListSampleBanks(t, numbers, PerformanceStore::kMaxSampleBanks);
+    int        count = 0;
+    for(int i = 0; i < n && count < max_out; i++, count++)
     {
-        SampleBank t = types[ti];
-        uint8_t numbers[PerformanceStore::kMaxSampleBanks];
-        int     n = PerformanceStore::ListSampleBanks(t, numbers, PerformanceStore::kMaxSampleBanks);
-        for(int i = 0; i < n && count < max_out; i++)
-        {
-            out[count].type   = t;
-            out[count].number = numbers[i];
-            out[count].items  = (int8_t)PerformanceStore::SampleBankItemCount(t, numbers[i]);
-            count++;
-        }
+        out[count].type   = t;
+        out[count].number = numbers[i];
+        out[count].items  = (int8_t)PerformanceStore::SampleBankItemCount(t, numbers[i]);
     }
     return count;
 }

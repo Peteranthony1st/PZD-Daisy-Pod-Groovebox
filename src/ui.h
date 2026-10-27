@@ -285,8 +285,8 @@ class Ui
     {
         return sample_synth_voice_enabled_ || sample_synth_drum_enabled_;
     }
-    // Global:Looper, Button1 tap -- a REAL stop, not TogglePauseAll()'s
-    // own phase-locked pause: main.cpp's AudioCallback() skips every
+    // Global:Looper, Button1 tap -- a REAL stop, not a layer's own
+    // phase-locked pause: main.cpp's AudioCallback() skips every
     // LooperLayer::Process() call entirely while this is false, so
     // someone using only Dexed/Grains gets that CPU back rather than 4
     // idle-but-still-processing layers. Defaults true (unlike Pad/
@@ -437,7 +437,7 @@ class Ui
         SampleSynthDrum,
         // On/off toggle only, same treatment as Granular/Dexed above --
         // but for the whole 4-layer loop system, and a REAL stop (see
-        // IsLooperEnabled()'s doc comment), not TogglePauseAll()'s own
+        // IsLooperEnabled()'s doc comment), not a layer's own
         // phase-locked pause. Lets someone using only Dexed/Grains skip
         // all 4 LooperLayer::Process() calls entirely for the CPU back,
         // not just silence.
@@ -1239,15 +1239,6 @@ class Ui
     // layer's frozen drone window instead (LooperLayer::NudgeFreeze()),
     // so scrubbing selects which part of the loop the drone plays.
     void NudgeFreezeBy(int32_t inc);
-    // Encoder click anywhere on the Global screen: toggles every layer
-    // currently Playing to Paused, or every layer currently Paused back
-    // to Playing (Empty/Recording/ArmedCountIn/Overdubbing layers are
-    // left alone) -- a single-control pause/resume for the whole
-    // performance, e.g. to freeze everything mid-song. Reuses each
-    // layer's existing Paused state (LooperLayer::SetPaused()), which
-    // already keeps play_pos_ advancing silently so resuming stays
-    // phase-locked to the beat grid instead of drifting.
-    void TogglePauseAll();
 
     // --- SD save/load (Global:File page) -----------------------------
     // Refreshes file_slots_/file_slot_count_ from the card -- called
@@ -1735,7 +1726,6 @@ class Ui
     SpeedTransportMode speed_transport_mode_ = SpeedTransportMode::Normal; // Global:Speed only -- see HandleEncoder()
     uint32_t last_scrub_tick_ms_ = 0; // for ScrubBy()'s turn-speed acceleration
 
-    bool loop_paused_ = false; // see TogglePauseAll()
 
     // Hardware PWM channels for LED1-Green/LED1-Blue/LED2-Red -- set once
     // by main.cpp's SetLedPwmChannels() after led_pwm_tim3 is initialized.
@@ -2313,10 +2303,9 @@ class Ui
     static void SampleBankEntryFolder(const SampleBankEntry& e, char* out, size_t out_size);
     // "Sounds 2", "Captured 1", "Kits 3", "Breaks 1" -- what the screen shows.
     static void SampleBankEntryLabel(const SampleBankEntry& e, char* out, size_t out_size);
-    // Fills out[] with Drum's banks (KITSn then BREAKSn), or Voice's banks
-    // of voice_type (see kNumVoiceBankTypes), each type ascending.
-    static int ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out,
-                                   int voice_type = 0);
+    // Fills out[] with the face's banks of one type (see FaceBankType()),
+    // ascending.
+    static int ListFaceSampleBanks(bool drum, SampleBankEntry* out, int max_out, int type);
     // Marks every SampleSynth bank/item listing stale (Preset browser and
     // SdMgmt alike) -- after anything that adds/removes content.
     void MarkSampleSynthListsDirty();
@@ -2439,27 +2428,31 @@ class Ui
     // own reset already follows.
     int sample_synth_sound_category_        = -1;
     int sample_synth_sound_category_cursor_ = 0;
-    // Voice only, one level above the banks: which type -- 0 Sounds,
-    // 1 Captured, 2 Multi (kVoiceBankTypes); -1 = still choosing (Knob1
-    // scrolls sample_synth_voice_type_cursor_). Drum lists Kits and Breaks
-    // banks together, so it has no such level.
     // Global:Mixer: Button1 swaps the overview for per-stage CPU
     // (profiler.h).
     bool mixer_profile_view_ = false;
+    // One level above the banks on the Preset page: which type -- SMPVO
+    // 0 Sounds, 1 Captured, 2 Multi; SMPDR 0 Kits, 1 Breaks (see
+    // FaceBankType()); -1 = still choosing (Knob1 scrolls
+    // sample_synth_voice_type_cursor_).
     int sample_synth_voice_type_        = -1;
     int sample_synth_voice_type_cursor_ = 0;
     int sample_synth_banks_voice_type_  = -1; // what sample_synth_banks_ was listed for
     static constexpr int kNumVoiceBankTypes = 3;
-    static PerformanceStore::SampleBank VoiceBankType(int i)
+    static constexpr int kNumDrumBankTypes  = 2;
+    int NumFaceBankTypes() const
+    {
+        return sample_synth_preset_mode_sounds_ ? kNumVoiceBankTypes : kNumDrumBankTypes;
+    }
+    static PerformanceStore::SampleBank FaceBankType(bool drum, int i)
     {
         using PerformanceStore::SampleBank;
+        if(drum)
+            return i == 1 ? SampleBank::Breaks : SampleBank::Kits;
         return i == 0 ? SampleBank::Sounds : i == 1 ? SampleBank::Captured : SampleBank::Multi;
     }
-    // At SMPVO's type list (Sounds/Captured/Multi) rather than its banks.
-    bool AtSampleSynthVoiceTypeSelect() const
-    {
-        return sample_synth_preset_mode_sounds_ && sample_synth_voice_type_ < 0;
-    }
+    // At the Preset page's type list rather than its banks.
+    bool AtSampleSynthVoiceTypeSelect() const { return sample_synth_voice_type_ < 0; }
 
     // --- SampleSynth Capture/Trim/Tune (SampleSynthParamPage::Capture/
     // Trim/Tune) -- same Direct Record/From Layer/Import workflow as

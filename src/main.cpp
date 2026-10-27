@@ -849,7 +849,7 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     // the actual shared ReverbSc runs once per sample further down).
     //
     // Skipped entirely when disabled from Global:Looper -- a real stop,
-    // not TogglePauseAll()'s own phase-locked pause: no layer's Process()
+    // not a layer's own phase-locked pause: no layer's Process()
     // runs at all (no recording, no playback, no reverb-send
     // contribution), same "skip the call outright" CPU-saving pattern as
     // ui.IsGranularEnabled() above.

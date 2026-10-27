@@ -422,8 +422,8 @@ class GranularEngine
         int32_t filter_mode       = (int32_t)FilterMode::Off;
         float   filter_cutoff01   = 1.f;
         float   filter_res01      = 0.f;
-        float   grain_volume01    = 0.70f;
-        float   scan_volume01     = 0.70f;
+        float   grain_volume01    = 0.60f;
+        float   scan_volume01     = 0.80f;
         int32_t rhythm_index      = 0; // 0 = Off, see CycleRhythm()
         int32_t grain_speed       = (int32_t)GrainSpeed::Slow;
         float   jitter01          = 0.f; // 0 = off, see SetJitter01()
@@ -642,8 +642,8 @@ class GranularEngine
     float        filter_cutoff01_ = 1.f;
     float        filter_res01_    = 0.f;
 
-    float grain_volume01_  = 0.70f;
-    float scan_volume01_   = 0.70f;
+    float grain_volume01_  = 0.60f; // default mix: grain 60%, scan 80%
+    float scan_volume01_   = 0.80f;
     float output_level01_  = 0.70f;
     float output_level_    = 1.f; // powf(output_level01_, 2.5f)*1.4f, cached by the setter
     // See IsLimiting()'s own comment. Checked against the PRE-tanhf()
