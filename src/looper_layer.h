@@ -1,5 +1,6 @@
 #pragma once
 #include "daisy_seed.h"
+#include "layer_fx.h"
 #include "svf_setup.h"
 #include "daisysp.h"
 #include "tempo_clock.h"
@@ -469,9 +470,9 @@ struct LooperLayer
     daisysp::Overdrive  fx_drive_[2];
     daisysp::Decimator  fx_bitcrush_[2];
     daisysp::Chorus     fx_chorus_;
-    daisysp::Tremolo    fx_tremolo_[2];
+    LayerTremolo        fx_tremolo_[2]; // layer_fx.h -- DaisySP's, minus sinf()
     daisysp::Flanger    fx_flanger_[2];
-    daisysp::Autowah    fx_autowah_[2];
+    LayerAutowah        fx_autowah_[2]; // layer_fx.h -- DaisySP's, minus powf/cosf
     daisysp::Phaser*       fx_phaser_     = nullptr; // externally owned, see Init()
 
     float reverb_send_ = 0.f; // 0 = nothing sent to the shared reverb bus
