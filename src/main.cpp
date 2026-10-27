@@ -1152,7 +1152,11 @@ int main(void)
     __set_FPSCR(__get_FPSCR() | FPU_FPDSCR_FZ_Msk);
     FPU->FPDSCR |= FPU_FPDSCR_FZ_Msk;
 
-    hw.Init();
+    // true = libDaisy's "boost": the core at 480 MHz instead of its
+    // default 400 MHz -- 20% more headroom for the audio callback. Every
+    // rev V Daisy Seed (anything from the last few years) is rated for
+    // it; libDaisy re-derives the bus and peripheral clocks to match.
+    hw.Init(true);
 
     // hw.Init() -> InitMidi() claims D13 as MIDI UART TX via
     // MidiUartHandler::Config's default-constructed transport_config --
