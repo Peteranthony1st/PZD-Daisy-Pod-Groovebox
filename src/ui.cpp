@@ -4823,7 +4823,9 @@ void Ui::DrawGlobalScreen()
                 snprintf(cell, sizeof(cell), "%s %d/%d", kNames[st],
                           (int)(Prof::g_avg[st] * 100.f + 0.5f),
                           (int)(Prof::g_peak[st] * 100.f + 0.5f));
-                TomThumbDrawText(disp_, (st % 2) * 64, 14 + (st / 2) * 7, cell, true);
+                // y is the text baseline (glyphs sit above it): 18..39
+                // clears the header rule (row 9) and the footer (row 46).
+                TomThumbDrawText(disp_, (st % 2) * 64, 18 + (st / 2) * 7, cell, true);
             }
         }
         else
