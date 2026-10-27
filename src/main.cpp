@@ -1,5 +1,6 @@
 #include <cstring>
 #include "pan_law.h"
+#include "profiler.h"
 #include "svf_setup.h"
 #include "daisy_pod.h"
 #include "daisysp.h"
@@ -309,6 +310,35 @@ float           g_cpu_peak_reset_countdown = kCpuPeakResetSeconds;
 // their own call sites) -- so the reading stays live (correctly low)
 // even across a Load/Save rather than freezing at whatever it was right
 // before one started.
+namespace Prof
+{
+float g_avg[kNumStages];
+float g_peak[kNumStages];
+
+void EndBlock(uint32_t cycles[kNumStages], uint32_t total, size_t size, float sample_rate)
+{
+    uint32_t staged = 0;
+    for(int s = 0; s < kOther; s++)
+        staged += cycles[s];
+    cycles[kOther] = total > staged ? total - staged : 0;
+    // Budget = the cycles one block may take: core clock x block length.
+    float inv_budget = sample_rate / ((float)SystemCoreClock * (float)size);
+    for(int s = 0; s < kNumStages; s++)
+    {
+        float load = (float)cycles[s] * inv_budget;
+        g_avg[s] += (load - g_avg[s]) * 0.01f; // ~1.3 s smoothing at 64-sample blocks
+        if(load > g_peak[s])
+            g_peak[s] = load;
+    }
+}
+
+void ResetPeaks()
+{
+    for(int s = 0; s < kNumStages; s++)
+        g_peak[s] = 0.f;
+}
+} // namespace Prof
+
 static inline void FinishCpuMeterBlock(size_t size, float sample_rate)
 {
     g_cpu_meter_avg.OnBlockEnd();
@@ -320,6 +350,7 @@ static inline void FinishCpuMeterBlock(size_t size, float sample_rate)
     if(g_cpu_peak_reset_countdown <= 0.f)
     {
         g_cpu_meter_peak.Reset();
+        Prof::ResetPeaks();
         g_cpu_peak_reset_countdown = kCpuPeakResetSeconds;
     }
 }
@@ -527,11 +558,26 @@ void ControlTimerCallback(void*)
     }
 }
 
+// The codec's DMA buffers sit in a deliberately non-cacheable RAM region
+// (libDaisy's MPU setup), so every access to them is a slow bus round
+// trip -- and the callback used to read in[] and read-add-write out[] once
+// per layer/engine/stage, every sample. Instead the input is copied once
+// into these DTCM buffers (zero-wait-state, CPU-only -- DMA never touches
+// them), everything mixes into the DTCM output, and the result is copied
+// to the codec's buffer once at the end of the block.
+float DSY_DTCM_BSS g_fast_in[2][256];
+float DSY_DTCM_BSS g_fast_out[2][256];
+
 DSY_ITCM_TEXT
-void AudioCallback(AudioHandle::InputBuffer  in,
-                   AudioHandle::OutputBuffer out,
+void AudioCallback(AudioHandle::InputBuffer  in_hw,
+                   AudioHandle::OutputBuffer out_hw,
                    size_t                    size)
 {
+    const float* in_ptrs[2]  = {g_fast_in[0], g_fast_in[1]};
+    float*       out_ptrs[2] = {g_fast_out[0], g_fast_out[1]};
+    AudioHandle::InputBuffer  in  = in_ptrs;
+    AudioHandle::OutputBuffer out = out_ptrs;
+
     static TempoClock::TempoTick ticks[256];
     static float                 click[256];
     // Every layer's Reverb-Send-scaled signal is summed here (see
@@ -555,16 +601,24 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     const float sample_rate = hw.AudioSampleRate(); // needed by both paths below
     g_cpu_meter_avg.OnBlockStart();
     g_cpu_meter_peak.OnBlockStart();
+    const uint32_t prof_start                  = Prof::Now();
+    uint32_t       prof[Prof::kNumStages]      = {};
+    uint32_t       prof_t                      = 0;
 
     if(g_audio_suspended)
     {
         for(size_t i = 0; i < size; i++)
         {
-            out[0][i] = 0.f;
-            out[1][i] = 0.f;
+            out_hw[0][i] = 0.f;
+            out_hw[1][i] = 0.f;
         }
         FinishCpuMeterBlock(size, sample_rate);
         return;
+    }
+    for(size_t i = 0; i < size; i++)
+    {
+        g_fast_in[0][i] = in_hw[0][i];
+        g_fast_in[1][i] = in_hw[1][i];
     }
 
     // Grains' Direct Record capture is applied further below, after
@@ -610,8 +664,10 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // GranularEngine::Process() ever running.
     if(ui.IsGranularEnabled())
     {
+        prof_t = Prof::Now();
         granular.Process(size, gran_l, gran_r, reverb_send_l, reverb_send_r, delay_send_l,
                           delay_send_r);
+        prof[Prof::kGrains] = Prof::Now() - prof_t;
     }
     else
     {
@@ -641,8 +697,10 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // are already valid when mixed_in is built from them.
     if(ui.IsDexedEnabled())
     {
+        prof_t = Prof::Now();
         dexed.Process(size, dexed_l, dexed_r, reverb_send_l, reverb_send_r, delay_send_l,
                       delay_send_r);
+        prof[Prof::kDexed] = Prof::Now() - prof_t;
     }
     else
     {
@@ -668,8 +726,10 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // CPU-saving pattern as ui.IsDexedEnabled() above.
     if(ui.IsEnsembleEnabled())
     {
+        prof_t = Prof::Now();
         ensemble.Process(size, ensemble_l, ensemble_r, reverb_send_l, reverb_send_r,
                           delay_send_l, delay_send_r);
+        prof[Prof::kEnsemble] = Prof::Now() - prof_t;
     }
     else
     {
@@ -694,8 +754,10 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // real CPU-saving pattern as ui.IsEnsembleEnabled() above.
     if(ui.IsSampleSynthEnabled())
     {
+        prof_t = Prof::Now();
         sample_synth.Process(size, samp_l, samp_r, reverb_send_l, reverb_send_r, delay_send_l,
                               delay_send_r);
+        prof[Prof::kSampler] = Prof::Now() - prof_t;
     }
     else
     {
@@ -790,6 +852,7 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     // runs at all (no recording, no playback, no reverb-send
     // contribution), same "skip the call outright" CPU-saving pattern as
     // ui.IsGranularEnabled() above.
+    prof_t = Prof::Now();
     if(looper_enabled)
     {
         float* reverb_send_ptrs[2] = {reverb_send_l, reverb_send_r};
@@ -807,6 +870,7 @@ void AudioCallback(AudioHandle::InputBuffer  in,
                                tempo, project_speed);
         }
     }
+    prof[Prof::kLooper] = Prof::Now() - prof_t;
 
     // Grains' own dry signal into the master mix -- unconditional, same
     // position (before the shared reverb Process() call and the master
@@ -931,7 +995,9 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         if(!delay_bypassed)
         {
             float delay_wet_l, delay_wet_r;
+            uint32_t t0 = Prof::Now();
             fx_delay.Process(delay_send_l[i], delay_send_r[i], &delay_wet_l, &delay_wet_r);
+            prof[Prof::kDelay] += Prof::Now() - t0;
             out[0][i] += delay_wet_l;
             out[1][i] += delay_wet_r;
             reverb_send_l[i] += delay_wet_l * delay_to_reverb01;
@@ -946,8 +1012,10 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         if(!reverb_bypassed)
         {
             float rev_wet_l, rev_wet_r;
+            uint32_t t0 = Prof::Now();
             fx_reverb_shared.Process(reverb_send_l[i], reverb_send_r[i], &rev_wet_l,
                                        &rev_wet_r);
+            prof[Prof::kReverb] += Prof::Now() - t0;
             out[0][i] += rev_wet_l;
             out[1][i] += rev_wet_r;
         }
@@ -1037,6 +1105,12 @@ void AudioCallback(AudioHandle::InputBuffer  in,
         g_master_scope_write_pos = (g_master_scope_write_pos + 1) % kMasterScopeSamples;
     }
 
+    for(size_t i = 0; i < size; i++)
+    {
+        out_hw[0][i] = g_fast_out[0][i];
+        out_hw[1][i] = g_fast_out[1][i];
+    }
+    Prof::EndBlock(prof, Prof::Now() - prof_start, size, sample_rate);
     FinishCpuMeterBlock(size, sample_rate);
 }
 
@@ -1142,6 +1216,7 @@ int main(void)
     // inflating every reading by 64/48 =~1.33x -- a measurement error,
     // not an actual CPU increase).
     g_cpu_meter_avg.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
+    Prof::Init(); // per-stage cycle counts for Global:Mixer's profile view
     g_cpu_meter_peak.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
 
     for(int i = 0; i < kNumLayers; i++)

@@ -368,6 +368,7 @@ struct LooperLayer
                  float                        project_speed);
 
   private:
+    void ApplyEffectParams(); // once per block, see looper_layer.cpp
     void ProcessEffectsChain(float dry_l, float dry_r, float& out_l, float& out_r);
 
     float* buffer_l_ = nullptr;

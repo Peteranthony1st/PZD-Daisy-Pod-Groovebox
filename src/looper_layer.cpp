@@ -388,6 +388,57 @@ void LooperLayer::RestoreFromBackup(const float* backup_l, const float* backup_r
 
 // --- Effects chain --------------------------------------------------------
 
+// Effect settings only change between blocks (knob moves land via the
+// UI), so they're applied once per block (from Process()) rather than
+// before every sample -- several of these setters do real maths
+// (DaisySP's Drive, chorus/flanger/phaser LFO rates), which used to run
+// twice per sample.
+void LooperLayer::ApplyEffectParams()
+{
+    switch(effect_)
+    {
+        case LayerEffect::Drive:
+            fx_drive_[0].SetDrive(effect_param_a_);
+            fx_drive_[1].SetDrive(effect_param_a_);
+            break;
+        case LayerEffect::Bitcrush:
+            fx_bitcrush_[0].SetBitcrushFactor(effect_param_a_);
+            fx_bitcrush_[0].SetDownsampleFactor(effect_param_b_);
+            fx_bitcrush_[1].SetBitcrushFactor(effect_param_a_);
+            fx_bitcrush_[1].SetDownsampleFactor(effect_param_b_);
+            break;
+        case LayerEffect::Chorus:
+            fx_chorus_.SetLfoDepth(effect_param_a_);
+            fx_chorus_.SetLfoFreq(0.1f + effect_param_b_ * 4.f);
+            break;
+        case LayerEffect::Tremolo:
+            fx_tremolo_[0].SetFreq(0.5f + effect_param_b_ * 9.5f);
+            fx_tremolo_[0].SetDepth(effect_param_a_);
+            fx_tremolo_[1].SetFreq(0.5f + effect_param_b_ * 9.5f);
+            fx_tremolo_[1].SetDepth(effect_param_a_);
+            break;
+        case LayerEffect::Flanger:
+            fx_flanger_[0].SetLfoDepth(effect_param_a_);
+            fx_flanger_[0].SetLfoFreq(0.1f + effect_param_b_ * 4.f);
+            fx_flanger_[1].SetLfoDepth(effect_param_a_);
+            fx_flanger_[1].SetLfoFreq(0.1f + effect_param_b_ * 4.f);
+            break;
+        case LayerEffect::AutoWah:
+            fx_autowah_[0].SetWah(effect_param_a_);
+            fx_autowah_[0].SetLevel(effect_param_b_);
+            fx_autowah_[1].SetWah(effect_param_a_);
+            fx_autowah_[1].SetLevel(effect_param_b_);
+            break;
+        case LayerEffect::Phaser:
+            fx_phaser_->SetLfoDepth(effect_param_a_);
+            fx_phaser_->SetLfoFreq(0.1f + effect_param_b_ * 4.f);
+            break;
+        case LayerEffect::Off:
+        default: break;
+    }
+}
+
+// Per sample: only the processing itself -- see ApplyEffectParams().
 DSY_ITCM_TEXT
 void LooperLayer::ProcessEffectsChain(float dry_l, float dry_r, float& out_l, float& out_r)
 {
@@ -395,86 +446,42 @@ void LooperLayer::ProcessEffectsChain(float dry_l, float dry_r, float& out_l, fl
     {
         case LayerEffect::Drive:
         {
-            fx_drive_[0].SetDrive(effect_param_a_);
-            fx_drive_[1].SetDrive(effect_param_a_);
             out_l = fx_drive_[0].Process(dry_l);
             out_r = fx_drive_[1].Process(dry_r);
-            // ParamB as output trim -- same bipolar "0x at 0, 1x
-            // (unchanged) at 0.5, 2x at 1" convention DexedSynth::
-            // SetBrightness01()/SetEnvSpeed01() already use, chosen
-            // specifically so effect_param_b_'s existing default (0.5,
-            // shared across every LayerEffect mode) still means "no
-            // change" here -- any layer saved before this existed, or
-            // that never touched K2 on this page, keeps sounding
-            // exactly as loud as before.
             float trim = effect_param_b_ >= 0.5f ? 1.f + (effect_param_b_ - 0.5f) * 2.f
                                                     : effect_param_b_ * 2.f;
             out_l *= trim;
             out_r *= trim;
             break;
         }
-
         case LayerEffect::Bitcrush:
-            fx_bitcrush_[0].SetBitcrushFactor(effect_param_a_);
-            fx_bitcrush_[0].SetDownsampleFactor(effect_param_b_);
-            fx_bitcrush_[1].SetBitcrushFactor(effect_param_a_);
-            fx_bitcrush_[1].SetDownsampleFactor(effect_param_b_);
             out_l = fx_bitcrush_[0].Process(dry_l);
             out_r = fx_bitcrush_[1].Process(dry_r);
             break;
-
         case LayerEffect::Chorus:
-            // Chorus is a mono-in/stereo-out effect -- it's fed the left
-            // channel and generates its own stereo spread. Fine for a
-            // loop track that's usually close to mono-ish source
-            // material (drums, a single guitar/vocal take); a fully
-            // independent L/R chorus isn't worth the extra CPU/RAM here.
-            fx_chorus_.SetLfoDepth(effect_param_a_);
-            fx_chorus_.SetLfoFreq(0.1f + effect_param_b_ * 4.f);
             fx_chorus_.Process(dry_l);
             out_l = fx_chorus_.GetLeft();
             out_r = fx_chorus_.GetRight();
             break;
-
         case LayerEffect::Tremolo:
-            fx_tremolo_[0].SetFreq(0.5f + effect_param_b_ * 9.5f);
-            fx_tremolo_[0].SetDepth(effect_param_a_);
-            fx_tremolo_[1].SetFreq(0.5f + effect_param_b_ * 9.5f);
-            fx_tremolo_[1].SetDepth(effect_param_a_);
             out_l = fx_tremolo_[0].Process(dry_l);
             out_r = fx_tremolo_[1].Process(dry_r);
             break;
-
         case LayerEffect::Flanger:
-            fx_flanger_[0].SetLfoDepth(effect_param_a_);
-            fx_flanger_[0].SetLfoFreq(0.1f + effect_param_b_ * 4.f);
-            fx_flanger_[1].SetLfoDepth(effect_param_a_);
-            fx_flanger_[1].SetLfoFreq(0.1f + effect_param_b_ * 4.f);
             out_l = fx_flanger_[0].Process(dry_l);
             out_r = fx_flanger_[1].Process(dry_r);
             break;
-
         case LayerEffect::AutoWah:
-            fx_autowah_[0].SetWah(effect_param_a_);
-            fx_autowah_[0].SetLevel(effect_param_b_);
-            fx_autowah_[1].SetWah(effect_param_a_);
-            fx_autowah_[1].SetLevel(effect_param_b_);
             out_l = fx_autowah_[0].Process(dry_l);
             out_r = fx_autowah_[1].Process(dry_r);
             break;
-
-        // Phaser is mono (see the member comment in looper_layer.h for
-        // why): fed a summed L+R, same result to both output channels.
         case LayerEffect::Phaser:
         {
             float mono_in = (dry_l + dry_r) * 0.5f;
-            fx_phaser_->SetLfoDepth(effect_param_a_);
-            fx_phaser_->SetLfoFreq(0.1f + effect_param_b_ * 4.f);
-            float wet = fx_phaser_->Process(mono_in);
+            float wet     = fx_phaser_->Process(mono_in);
             out_l = out_r = wet;
             break;
         }
-
         case LayerEffect::Off:
         default: out_l = dry_l; out_r = dry_r; break;
     }
@@ -494,6 +501,39 @@ void LooperLayer::Process(AudioHandle::InputBuffer  in,
 {
     float panL, panR;
     EqualPowerPan(pan_, &panL, &panR); // see pan_law.h
+
+    // Block-rate setup: everything below that only changes between blocks
+    // (knob moves arrive from the UI) is worked out once here instead of
+    // every sample -- filter coefficients (a tanf and powf per channel),
+    // effect settings, and the constants the meter/clip/fade steps divide by.
+    ApplyEffectParams();
+    if(filter_mode_ != FilterMode::Off)
+    {
+        float cutoff = Clampf(filter_cutoff_hz_, kFilterMinHz, sample_rate_ / 3.f - 1.f);
+        filter_l_.SetFreq(cutoff);
+        filter_l_.SetRes(filter_res_);
+        filter_r_.SetFreq(cutoff);
+        filter_r_.SetRes(filter_res_);
+    }
+    const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
+    const float clip_step     = 1.f / sample_rate_;
+    const float fade_step     = 1.f / (0.008f * sample_rate_);
+    const float gain_l        = volume_ * panL;
+    const float gain_r        = volume_ * panR;
+    const float rev_l         = gain_l * reverb_send_;
+    const float rev_r         = gain_r * reverb_send_;
+    const float dly_l         = gain_l * delay_send_;
+    const float dly_r         = gain_r * delay_send_;
+    const bool  to_reverb     = reverb_send_ > 0.f;
+    const bool  to_delay      = delay_send_ > 0.f;
+    // __restrict: writing audio can't change this layer's own state, so
+    // the compiler may keep that state in registers across the loop.
+    float* __restrict out_l   = out[0];
+    float* __restrict out_r   = out[1];
+    float* __restrict rsend_l = reverb_send_out[0];
+    float* __restrict rsend_r = reverb_send_out[1];
+    float* __restrict dsend_l = delay_send_out[0];
+    float* __restrict dsend_r = delay_send_out[1];
 
     for(size_t i = 0; i < size; i++)
     {
@@ -577,11 +617,11 @@ void LooperLayer::Process(AudioHandle::InputBuffer  in,
             if(mag_l > meter_)
                 meter_ = mag_l;
             else
-                meter_ -= meter_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
+                meter_ -= meter_ * meter_release;
             if(mag_l >= kClipThreshold)
                 clip_hold_ = kClipHoldSeconds;
             else if(clip_hold_ > 0.f)
-                clip_hold_ -= 1.f / sample_rate_;
+                clip_hold_ -= clip_step;
 
             // Vari-speed-aware write: real input arrives 1-per-real-sample
             // regardless of project_speed, but target_len_ (native-space)
@@ -776,24 +816,19 @@ void LooperLayer::Process(AudioHandle::InputBuffer  in,
                 if(mag_raw_l > meter_)
                     meter_ = mag_raw_l;
                 else
-                    meter_ -= meter_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
+                    meter_ -= meter_ * meter_release;
                 if(mag_raw_l >= kClipThreshold)
                     clip_hold_ = kClipHoldSeconds;
                 else if(clip_hold_ > 0.f)
-                    clip_hold_ -= 1.f / sample_rate_;
+                    clip_hold_ -= clip_step;
 
-                float cutoff = filter_cutoff_hz_;
 
                 float filtered_l = raw_l;
                 float filtered_r = raw_r;
                 if(filter_mode_ != FilterMode::Off)
                 {
-                    cutoff = Clampf(cutoff, kFilterMinHz, sample_rate_ / 3.f - 1.f);
-                    filter_l_.SetFreq(cutoff);
-                    filter_l_.SetRes(filter_res_);
+                    // Coefficients were set once for the block, above.
                     filter_l_.Process(raw_l);
-                    filter_r_.SetFreq(cutoff);
-                    filter_r_.SetRes(filter_res_);
                     filter_r_.Process(raw_r);
                     switch(filter_mode_)
                     {
@@ -823,15 +858,15 @@ void LooperLayer::Process(AudioHandle::InputBuffer  in,
                 // starting cold/silent.
                 if(effect_fade_ < 1.f)
                 {
-                    effect_fade_ += 1.f / (0.008f * sample_rate_);
+                    effect_fade_ += fade_step;
                     if(effect_fade_ > 1.f)
                         effect_fade_ = 1.f;
                 }
                 fx_l *= effect_fade_;
                 fx_r *= effect_fade_;
 
-                out[0][i] += fx_l * volume_ * panL;
-                out[1][i] += fx_r * volume_ * panR;
+                out_l[i] += fx_l * gain_l;
+                out_r[i] += fx_r * gain_r;
 
                 // Add this layer's Send-scaled contribution to the ONE
                 // shared reverb bus (main.cpp runs the actual ReverbSc
@@ -840,24 +875,24 @@ void LooperLayer::Process(AudioHandle::InputBuffer  in,
                 // stays spatially consistent with this layer's dry mix.
                 // Only accumulate when there's an actual send, same
                 // "don't pay for it if it's not used" rule as before.
-                if(reverb_send_ > 0.f)
+                if(to_reverb)
                 {
-                    reverb_send_out[0][i] += fx_l * volume_ * panL * reverb_send_;
-                    reverb_send_out[1][i] += fx_r * volume_ * panR * reverb_send_;
+                    rsend_l[i] += fx_l * rev_l;
+                    rsend_r[i] += fx_r * rev_r;
                 }
                 // Same idea, into the shared delay bus (see
                 // SetDelaySend01()'s own comment).
-                if(delay_send_ > 0.f)
+                if(to_delay)
                 {
-                    delay_send_out[0][i] += fx_l * volume_ * panL * delay_send_;
-                    delay_send_out[1][i] += fx_r * volume_ * panR * delay_send_;
+                    dsend_l[i] += fx_l * dly_l;
+                    dsend_r[i] += fx_r * dly_r;
                 }
             }
             else
             {
-                meter_ -= meter_ * (1.f / (kMeterReleaseSeconds * sample_rate_));
+                meter_ -= meter_ * meter_release;
                 if(clip_hold_ > 0.f)
-                    clip_hold_ -= 1.f / sample_rate_;
+                    clip_hold_ -= clip_step;
             }
 
             // While frozen, the audible branch above already advanced

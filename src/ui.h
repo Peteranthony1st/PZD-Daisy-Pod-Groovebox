@@ -2443,6 +2443,9 @@ class Ui
     // 1 Captured, 2 Multi (kVoiceBankTypes); -1 = still choosing (Knob1
     // scrolls sample_synth_voice_type_cursor_). Drum lists Kits and Breaks
     // banks together, so it has no such level.
+    // Global:Mixer: Button1 swaps the overview for per-stage CPU
+    // (profiler.h).
+    bool mixer_profile_view_ = false;
     int sample_synth_voice_type_        = -1;
     int sample_synth_voice_type_cursor_ = 0;
     int sample_synth_banks_voice_type_  = -1; // what sample_synth_banks_ was listed for

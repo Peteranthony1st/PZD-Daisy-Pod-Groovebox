@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "profiler.h"
 #include "performance_store.h"
 #include "audio_engine.h"
 #include "shared_delay.h"
@@ -1436,6 +1437,8 @@ void Ui::OnButton1Short()
         case Screen::Global:
             if(global_page_ == GlobalPage::Tempo)
                 tempo_->ToggleMetronome();
+            else if(global_page_ == GlobalPage::Mixer)
+                mixer_profile_view_ = !mixer_profile_view_;
             else if(global_page_ == GlobalPage::Filter)
             {
                 int n = (int)FilterMode::kNumModes;
@@ -4809,8 +4812,23 @@ void Ui::DrawGlobalScreen()
         DrawBeatIndicator(disp_->Width() - 41, 0, 3);
         disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
-        DrawMixerOverviewGrid(15);
+        if(mixer_profile_view_)
         {
+            // Per-stage CPU, avg/peak % of the block budget (profiler.h).
+            static const char* const kNames[Prof::kNumStages]
+                = {"Gran", "Dexd", "Ensm", "Smpl", "Loop", "Dly", "Rev", "Othr"};
+            for(int st = 0; st < Prof::kNumStages; st++)
+            {
+                char cell[24];
+                snprintf(cell, sizeof(cell), "%s %d/%d", kNames[st],
+                          (int)(Prof::g_avg[st] * 100.f + 0.5f),
+                          (int)(Prof::g_peak[st] * 100.f + 0.5f));
+                TomThumbDrawText(disp_, (st % 2) * 64, 14 + (st / 2) * 7, cell, true);
+            }
+        }
+        else
+        {
+            DrawMixerOverviewGrid(15);
             const char* hint = "PUSH ENC TO ENTER";
             int         hw   = TomThumbAdvanceWidth(hint);
             TomThumbDrawText(disp_, (disp_->Width() - hw) / 2, 44, hint, true);
