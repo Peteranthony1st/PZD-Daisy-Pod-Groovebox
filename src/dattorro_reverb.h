@@ -145,6 +145,8 @@ class DattorroReverb
     static void  WriteDelay(DelayBuffer& db, uint16_t t, float in);
     static float ReadDelay(const DelayBuffer& db, int tap, uint16_t t);
     static float ProcessAllPass(DelayBuffer& db, uint16_t t, float gain, float in);
+    static float ProcessAllPassMod(DelayBuffer& db, uint16_t t, float gain, float in,
+                                   float extra_delay);
     static float ProcessLowPass(float& state, float freq, float in);
 
     // Real buffer capacities -- each the original's own real delay

@@ -82,6 +82,24 @@ float DattorroReverb::ProcessAllPass(DelayBuffer& db, uint16_t t, float gain, fl
     return delayed + fed * gain;
 }
 
+// ProcessAllPass() with its delay lengthened by extra_delay samples,
+// fractional, read by linear interpolation -- the decay diffusion 1
+// modulation (see Process()).
+DSY_ITCM_TEXT
+float DattorroReverb::ProcessAllPassMod(DelayBuffer& db, uint16_t t, float gain, float in,
+                                         float extra_delay)
+{
+    int      whole = (int)extra_delay;
+    float    frac  = extra_delay - (float)whole;
+    uint16_t idx   = (uint16_t)(t + db.read_offset_[kTapMain] - whole);
+    float    a     = db.buf_[idx & db.mask_];
+    float    b     = db.buf_[(uint16_t)(idx - 1) & db.mask_];
+    float delayed  = a + (b - a) * frac;
+    float fed      = in + delayed * -gain;
+    WriteDelay(db, t, fed);
+    return delayed + fed * gain;
+}
+
 DSY_ITCM_TEXT
 float DattorroReverb::ProcessLowPass(float& state, float freq, float in)
 {
@@ -227,22 +245,14 @@ void DattorroReverb::Process(float in1, float in2, float* out1, float* out2)
     // Mono-sum into the tank -- see this class's own header comment on why.
     float in = (in1 + in2) * 0.5f;
 
-    // Decay diffusion 1's ±1-sample modulation, same cadence/shape as the
-    // original (verb.c's own process() function, the only place either
-    // library ever moves a read offset per-sample instead of per-Set call).
-    if((t_ & 0x07ffu) == 0)
-    {
-        if((t_ & 0x8000u) == 0)
-        {
-            decay_diffusion1_[0].read_offset_[kTapMain]--;
-            decay_diffusion1_[1].read_offset_[kTapMain]--;
-        }
-        else
-        {
-            decay_diffusion1_[0].read_offset_[kTapMain]++;
-            decay_diffusion1_[1].read_offset_[kTapMain]++;
-        }
-    }
+    // Decay diffusion 1's modulation: its delay sweeps 0..16 samples longer
+    // and back as a triangle every 65536 samples (~1.4 s), same depth and
+    // rate as the original (verb.c's own process()). The original moved it
+    // in whole-sample jumps every 2048 samples -- each jump a small step in
+    // the waveform, heard as a faint crackle under held notes -- so here it
+    // moves continuously and is read with interpolation instead.
+    float mod = (t_ & 0x8000u) == 0 ? (float)t_ * (1.f / 2048.f)
+                                    : (float)(65536u - t_) * (1.f / 2048.f);
 
     float x = ProcessDelay(pre_delay_, t_, in);
     x       = ProcessLowPass(pre_filter_state_, pre_filter_amount_, x);
@@ -256,7 +266,8 @@ void DattorroReverb::Process(float in1, float in2, float* out1, float* out2)
     {
         int   other = 1 - i;
         float x1    = x + ReadDelay(post_damping_[other], kTapMain, t_) * decay_amount_;
-        x1          = ProcessAllPass(decay_diffusion1_[i], t_, -decay_diffusion1_amount_, x1);
+        x1          = ProcessAllPassMod(decay_diffusion1_[i], t_, -decay_diffusion1_amount_, x1,
+                                             mod);
         x1          = ProcessDelay(pre_damping_[i], t_, x1);
         x1          = ProcessLowPass(damping_state_[i], damping_amount_, x1);
         x1 *= decay_amount_;
