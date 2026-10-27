@@ -4333,9 +4333,10 @@ User preset pointing at a later kit silently switched to a different one.
 
 **Layout now** (`PerformanceStore::SampleBank`):
 ```
-SAMPLES/SOUNDS1, SOUNDS2, …     .wav/.snd files       (Voice)
+SAMPLES/SOUNDS1, SOUNDS2, …     .wav files            (Voice)
 SAMPLES/CAPTURED1, …            CAPnnn.wav            (Voice)
-SAMPLES/KITS1, …/<kit name>/    KIT.DAT 01.wav 02.wav (Drum)
+SAMPLES/MULTISMP1, …/<name>/    note-named .wav files (Voice)
+SAMPLES/KITS1, …/<kit name>/    [KIT.DAT] 01.wav …    (Drum)
 SAMPLES/BREAKS1, …/<name>/      same as a kit         (Drum)
 ```
 - Banks hold up to 32 items (`kSampleBankCapacity`), up to 99 per type.
@@ -4359,7 +4360,7 @@ SAMPLES/BREAKS1, …/<name>/      same as a kit         (Drum)
   SdMgmt keeps its own bank/item arrays rather than sharing the Preset
   browser's, so neither view can leave the other on a stale list.
 
-**Kit or Break.** Slice count can't tell them apart — the user's own
+**Kit or Break** (superseded — see *Import folders decide Kit or Break* below). Slice count can't tell them apart — the user's own
 example: break packs come with 1, 3 or more slices. Typical slice length
 can. Measured on the real packs: kits had median slices of 0.1–0.4 s;
 `rare-drums-one-4500` (3 slices, 2.9–4.6 s) and `Amenbreak` (one 7 s
@@ -4418,3 +4419,112 @@ window by window against its source: all match.
 
 Cost: SRAM 95.4% → 96.9% (SdMgmt's own item list and two kit-folder
 name buffers), one 512-byte scratch sector in libDaisy.
+
+### Import folders decide Kit or Break
+
+The length rule above kept guessing wrong. `patch (3)` — an 8.9 s break
+cut into equal 0.37 s slices — came in as a Kit, while PO-33 kit hits
+run 0.03–0.32 s and an 808 or crash easily passes 0.5 s, so no
+threshold separates a finely chopped break from a kit. A tried
+alternative, "equal-length slices means Break", would have filed
+`Amenbreakkit` (a chopped amen, kept as a kit) as a Break. So nothing is
+classified any more: `DRUM PACK IMPORT/KITS/` and `/BREAKS/` decide, each
+with its own `Done/`; `BREAK PACK IMPORT/` is retired, and loose files in
+the old places are only counted, with a "move them" note.
+
+The Import pages became one per face. SMPDR first picks Kits or Breaks
+(K1, B2 opens, B1 back); both faces then pick a destination with K1: a
+new bank (the default), or any existing bank of that type with room for
+the *whole* import, shown with its free slots. `SetImportDestination()`
+feeds the choice into `FindSampleBankWithSpace()`, whose rule changed
+too: prefer → import destination → the *highest* bank if it has room →
+a new one above it. Older banks, including user-made ones and ones with
+gaps from deletions, are never refilled behind the user's back.
+
+Imported Kits are now poly — `mono_choke` was set for every OP-1 pack
+because the importer was written for break packs; only Breaks get it now.
+OP-1 drum files always carry 24 start/end slots, unused ones repeating an
+earlier region; any slot repeating *any* earlier one is skipped (the old
+check only compared neighbours and let `arcade` through with a 20th pad).
+
+`MoveToImportDoneFolder()` failed whenever `Done/` already held the same
+name (`f_rename()` won't overwrite), leaving the file waiting so every
+press imported it again — `arcade` was imported four times before this
+was noticed. It now keeps both as `name (2)`, `(3)`, …
+
+### Folder kits and kit memory
+
+A Kits/Breaks folder with no `KIT.DAT` loads as a kit
+(`BuildSampleSynthKitFromFolder()`): its WAVs in name order, one fixed-
+pitch pad per key from C2, up to 24, Choke on in a Breaks bank. Nothing
+is written — settings are saved by SMPDR's User page, which stores the
+folder reference anyway — so the folder stays exactly as the user made it.
+The 24-pad cap stays (the user's call; it's wired into the engine,
+`KIT.DAT` and Setup).
+
+Kits ran out of memory: `R&M-1` (14 EP-133 one-shots, 27 s) played only
+10 pads, because the arena held 20.8 s and the loader silently cleared
+every pad past the end — and cut the last one that partly fitted. SDRAM
+was 94% full, so the space came from `ImportAif()` and `ImportWav()`
+sharing one decode buffer (`g_decode_raw_buf`; they never run at once),
+freeing 2.3 MB: the arena went to 1,600,000 samples (~33 s), SDRAM 97.6%.
+A pad that would be cut short is now skipped instead, later shorter pads
+can still fit, and the status says "Loaded 10, 4 no room". Mono pads are
+still stored as stereo; packing them would roughly double mono capacity,
+but Break Divide treats the kit as one continuous stereo span, so that's
+left for when 33 s isn't enough.
+
+WAVs at any rate from 8 to 192 kHz now load — the reader had a whitelist
+of standard rates, so EP-133 exports (46,875 Hz) were rejected though the
+resampler handles any ratio (here 125:128). `WAVE_FORMAT_EXTENSIBLE`
+headers (0xFFFE, common for 24-bit DAW exports) are read through to the
+real format code in their SubFormat GUID.
+
+### Multi-sample banks (MULTISMPn)
+
+Multi-samples were `.snd` manifests in a Sounds bank pointing into
+`SAMPLES/ZONES/<name>/`, made only by an older importer — nothing in the
+firmware wrote them any more, and a user couldn't make one by hand. Now
+`SampleBank::Multi` banks hold one folder per instrument, a WAV per
+sampled note (`BuildMultiSampleZones()`): each file's note comes from its
+name, zones are sorted and each reaches halfway to its neighbours, the
+outer two to the keyboard's ends. Same limits as a kit (24 zones, the
+shared ~33 s arena); files with no note, a repeated note or past 24 are
+counted as skipped.
+
+`ParseNoteNameFromFilename()` was widened for it: the note may follow a
+space, `_` or `-` (tried last, so `C-1` still reads as octave −1), and may
+carry a velocity-layer suffix — Salamander's `A0v10`, FreePats' `C4vH`.
+Tested on the Mac against the real function with a set of real names.
+
+Old `.snd` sounds convert once (`MigrateSndSoundsToMulti()`), on the first
+Sounds or Multi bank listing after a mount: each becomes a Multi folder,
+its zone WAVs moved in (renamed `<name> <note>.wav` only where their own
+name doesn't state the zone's root), the manifest deleted, its
+`ZONES/<name>` folder removed — only ever under `ZONES/`, since an old
+manifest could point elsewhere — and SMPVO User presets repointed. SMPVO's
+Preset page gained a level, Sounds / Captured / Multi, before the banks;
+SdMgmt's SMPIMP gained Sounds / Multi under Voice, mirroring Kits /
+Breaks under Drum.
+
+## Reverb: a crackle under held notes
+
+With the reverb send up, held notes and chords on Dexed and the Sampler
+had a faint crackle that went away at send 0. The tank's decay-diffusion
+allpass is modulated, as in Dattorro's design, but the `verb.c` port
+moved its delay in whole-sample jumps — one sample every 2048 (~43 ms),
+16 steps out and 16 back. Each jump is a step in the waveform; transients
+mask it, steady tones don't, and inside the feedback loop it recirculates
+into a crackle. The same 0–16-sample triangle now moves continuously and
+is read with linear interpolation (`ProcessAllPassMod()`). Offline, the
+real reverb code fed a steady 2 kHz tone: 31 sharp spikes in 4 s before,
+none after; the tail's character is unchanged.
+
+## Dexed: release levels above 99
+
+Some web `.syx` banks (and a dozen factory voices) store an envelope
+release level (L4) above the DX7's 99. The envelope converts that to a
+target louder than full, so the release *rises* and the note never ends —
+VRC110A's EP.SawBel did exactly that. `SetPatch()` treats L4 > 99 as 0;
+every other value is left as stored.
+

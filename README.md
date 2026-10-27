@@ -1,3 +1,9 @@
+> **🧪 In active testing.** This project is changing quickly, so new
+> releases will come thick and fast. Suggestions, bug reports and ideas
+> for changes are very welcome — please [open an
+> issue](https://github.com/Peteranthony1st/PZD-Daisy-Pod-Groovebox/issues)
+> or start a discussion.
+
 <p align="center">
   <img width="30%" alt="Home screen" src="images/home.jpg" />
   &nbsp;
@@ -159,18 +165,35 @@ limiter on the master output catches loud peaks instead of clipping.
 
 **SD card management** (`Global:SdMgmt`) — a grid of all 8 save
 categories (Performances, Grains/Dexed/Ensemble user presets, Captures,
-Kits, and the SMPVO/SMPDR user presets) — duplicate or delete any file
-directly on the device, no computer needed. Captures opens to a choice of
-Sampler or Grains captures. Same browse controls as the Preset pages: K1
+Sampler imports, and the SMPVO/SMPDR user presets) — duplicate or delete
+any file directly on the device, no computer needed. Captures opens to a
+choice of Sampler or Grains captures; **SMPIMP** (Sampler imports) to
+Voice → Sounds/Multi or Drum → Kits/Breaks. Same browse controls as the Preset pages: K1
 scrolls the grid and folders, B2 opens; in a file list K2 scrolls, B1
 backs out (hold = Duplicate) and holding B2 for 1.5 s deletes.
 
 **Sample library on the card** — SampleSynth content lives in numbered
 folders of up to 32 items under `SAMPLES/`: `SOUNDS1`, `CAPTURED1`,
-`KITS1`, `BREAKS1`, … When one fills up, the next is created
-automatically, so the library grows with the card. Each Kit or Break has
-its own folder holding its pad sounds. The Preset page browses folder
-first, then item.
+`MULTISMP1`, `KITS1`, `BREAKS1`, … When one fills up, the next is created
+automatically, so the library grows with the card. SMPVO's Preset page
+starts with **Sounds / Captured / Multi**, then a folder, then an item;
+SMPDR's goes straight to its Kits and Breaks folders.
+
+You can also build content on a computer, no import needed:
+
+- **Sounds** — copy `.wav` files into any `SAMPLES/SOUNDSn` folder. Any
+  sample rate (8–192 kHz), 16/24/32-bit or float, mono or stereo. A note
+  at the end of the name (`Cello C3.wav`, `Cello_C3.wav`) sets its root.
+- **Multi-samples** — make a folder in `SAMPLES/MULTISMPn` with one WAV
+  per sampled note, the note in each name (`Cello C3.wav`, or
+  Salamander-style `A0v10.wav`). Each note plays from its nearest
+  recording. Up to 24 notes and about 33 s of audio. The card template
+  includes a ready-made **Upright Piano** (CC0, from FreePats).
+- **Kits and breaks** — make a folder in `SAMPLES/KITSn` or
+  `SAMPLES/BREAKSn` and copy WAVs in: they load in name order, one per key
+  from C2 (`01 kick.wav`, `02 snare.wav`…). Up to 24 pads and about 33 s
+  of audio. Kits play poly, breaks start with Choke on; a single loop in
+  a break folder can be chopped with Setup's Break Divide.
 
 ### Importing real OP-1 sample packs
 
@@ -179,18 +202,26 @@ you can download your own from [op1fun](https://op1.fun/) (or export one
 from the OP-1 pack builder) as `.aif` files and convert them yourself:
 
 1. Drop `.aif`/`.aiff` files into the staging folders at the card's
-   root:
-   - `DRUM PACK IMPORT/` — drum packs. Each becomes a **Kit**, or a
-     **Break** if its typical slice is a second or longer.
-   - `BREAK PACK IMPORT/` — always imported as Breaks.
-   - `SOUND PACK IMPORT/` — instrument packs, each becoming a **Sound**.
-2. On the Pod: `Global:SMPDR` or `Global:SMPVO` → **Import** page.
-   Button 1 cycles the target (Drums/Sounds/All); hold Button 2 to
-   import.
-3. One press imports every file, however many. Splice points and pitch
-   come straight from the pack's own metadata — no manual trimming.
-4. Imported files move into `Done/`. A file that fails is retried, then
-   left in place for the next press.
+   root — the folder decides what each becomes:
+   - `DRUM PACK IMPORT/KITS/` — drum packs, each becoming a **Kit**.
+   - `DRUM PACK IMPORT/BREAKS/` — breaks and loops, each becoming a
+     **Break**.
+   - `SOUND PACK IMPORT/` — OP-1 *sampler* patches, each becoming a
+     **Sound**. (OP-1 synth presets hold engine settings, not a sample,
+     and are skipped.)
+2. On the Pod: `Global:SMPDR` or `Global:SMPVO` → **Import** page. On
+   SMPDR, K1 picks Kits or Breaks and B2 opens it. Then K1 picks the
+   destination — a new bank (the default), or an existing bank with room
+   for the whole import — and holding B2 imports.
+3. One press imports every file in that folder, however many. Splice
+   points and pitch come straight from the pack's own metadata — no
+   manual trimming.
+4. Imported files move into that folder's `Done/` (a name already there
+   is kept as `name (2)`). A file that fails is retried, then left in
+   place for the next press.
+
+op1.fun often names downloads `patch.aif` — rename the file first to give
+the kit a proper name.
 
 **Recording Dexed, Ensemble, Grains, or SampleSynth into a loop layer**
 — playing any instrument while a layer is recording/overdubbing captures
@@ -420,8 +451,8 @@ Shared by both:
 | Mix | Output level | Pan | — | — |
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
-| Import | — | — | Cycle target (Drums/Sounds/All) | Hold 800ms = Import |
-| Preset | Scroll folders (SMPVO: Sounds n/Captured n, SMPDR: Kits n/Breaks n) | Scroll items in a folder | Back | Open / Load (tap, stays in folder) |
+| Import | Destination (SMPDR: first Kits/Breaks) | — | Back (SMPDR: to Kits/Breaks) | SMPDR: Open (tap); Hold 800ms = Import |
+| Preset | Scroll types/folders (SMPVO: Sounds/Captured/Multi, then folders; SMPDR: Kits n/Breaks n) | Scroll items in a folder | Back | Open / Load (tap, stays in folder) |
 | User | Saving: Overwrite/Save New | Scroll your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 SMPVO-only:
