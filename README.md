@@ -230,8 +230,11 @@ no patch cable needed.
 
 ### CPU tips
 
-CPU headroom isn't a real concern on the current build, but a few
-habits keep it on your side:
+The Pod runs at 480 MHz, and every engine skips its processing
+entirely while it's silent, so an engine that's switched on but not
+playing costs almost nothing. With all engines playing chords over four
+looping layers with effects, the load peaks in the mid-80s %. A few
+habits keep headroom on your side:
 
 - Looper, Dexed, Ensemble, Grains, and SampleSynth are each
   independently switchable from their own `Global:` page — switching
@@ -244,7 +247,12 @@ habits keep it on your side:
   several engines sending into effects at once is the heaviest realistic
   combination.
 - `Global:Mixer`'s bottom row shows a live CPU meter (average and
-  peak) if you want to check headroom directly.
+  peak) if you want to check headroom directly. Press Button 1 there
+  for a per-part breakdown — Grains, Dexed, Ensemble, Sampler, Looper,
+  Delay, Reverb and everything else — each as average/peak % of the
+  time available per audio block.
+- On looper layers, AutoWah is the heaviest effect, then Chorus and
+  Flanger; Bitcrush and Drive are the lightest.
 
 ## How to use it
 
@@ -260,12 +268,18 @@ habits keep it on your side:
 **Navigating the menu**
 - **Rotate** the encoder: on Home, moves between layers; on any other
   page, cycles through that page's sub-pages.
-- **Click** the encoder: from Home, opens the selected layer's pages; on
-  any Global page hosting an instrument (Dexed/Ensemble/Grains/SMPVO/
-  SMPDR) or the Mixer, drills into that screen; anywhere else, mutes/
-  unmutes all 4 loop layers.
+- **Click** the encoder: goes one level in or one level back. From Home
+  it opens the selected layer's pages; on a Global page hosting an
+  instrument (Dexed/Ensemble/Grains/SMPVO/SMPDR) or the Mixer it enters
+  that screen. Inside an instrument or the Mixer it goes back to its
+  Global page; on a layer's pages or any other Global page it goes back
+  to Home. (Dexed's Advanced page is the exception: click enters the
+  operator editor, and click again comes back out.)
 - **Long-press** the encoder: from Home, opens Global settings; from
   anywhere else, goes back to Home.
+
+To pause all the loops, use Button 1 on Home; `Global:Looper` switches
+the whole looper off.
 
 Both knobs and both buttons are "soft" — what they do depends on which
 page is open, and it's always shown on screen in the footer.
@@ -356,7 +370,7 @@ capture in progress.
 | Global: SMPVO | — | — | Toggle SMPVO on/off (disables SMPDR) | — (push encoder to enter Screen::SampleSynth) |
 | Global: SMPDR | — | — | Toggle SMPDR on/off (disables SMPVO) | — (push encoder to enter Screen::SampleSynth) |
 | Global: Looper | — | — | Toggle the whole 4-layer looper on/off | — |
-| Global: Mixer | Master Vol | Bypass Vol | — | — (push encoder to enter the Mixer screen; bottom row shows CPU avg/peak) |
+| Global: Mixer | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer screen; bottom row shows CPU avg/peak) |
 
 **Dexed (`Screen::Dexed`, rotate to cycle pages)**
 
@@ -380,7 +394,7 @@ capture in progress.
 The Algo page shows a real box-and-arrow diagram of whichever algorithm
 is loaded (filled boxes = carriers, outlined = modulators, "FB" tags the
 feedback operator). Clicking the encoder on any Dexed page other than
-Advanced mutes/unmutes all 4 loop layers. Pan isn't on this screen — see
+Advanced goes back to `Global:Dexed`. Pan isn't on this screen — see
 Mixer below.
 
 **Dexed advanced editor (`Screen::DexedOperator`, entered from the
@@ -414,8 +428,8 @@ long-press goes all the way to Home.
 | Preset | — | Scroll the factory sounds | Back | Load (tap, stays in list) |
 | User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
-Clicking the encoder on any Ensemble page mutes/unmutes all 4 loop
-layers. Boots with all 7 drawbars flat at 60% before any preset is
+Clicking the encoder on any Ensemble page goes back to
+`Global:Ensemble`. Boots with all 7 drawbars flat at 60% before any preset is
 loaded.
 
 **Grains (`Screen::Granular`, rotate to cycle pages)**
@@ -437,7 +451,8 @@ loaded.
 | Preset | Scroll Starter/Captured n folders | Scroll sounds in a folder | Back | Open / Load (tap, stays in folder) |
 | User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
-Clicking the encoder on any Grains page mutes/unmutes all 4 loop layers.
+Clicking the encoder on any Grains page goes back to `Global:Granular`.
+Grain and Scan mix start at 60% and 80%.
 
 **SampleSynth (`Screen::SampleSynth`, shared by SMPVO/SMPDR — rotate to
 cycle pages)**
@@ -452,7 +467,7 @@ Shared by both:
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Import | Destination (SMPDR: first Kits/Breaks) | — | Back (SMPDR: to Kits/Breaks) | SMPDR: Open (tap); Hold 800ms = Import |
-| Preset | Scroll types/folders (SMPVO: Sounds/Captured/Multi, then folders; SMPDR: Kits n/Breaks n) | Scroll items in a folder | Back | Open / Load (tap, stays in folder) |
+| Preset | Scroll types, then folders (SMPVO: Sounds/Captured/Multi; SMPDR: Kits/Breaks) | Scroll items in a folder | Back | Open / Load (tap, stays in folder) |
 | User | Saving: Overwrite/Save New | Scroll your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 SMPVO-only:
@@ -469,8 +484,8 @@ SMPDR-only:
 |---|---|---|---|---|
 | Setup | Tune (±24 semitones, live) | Slices (0-16, pending) | Toggle Mono/Choke (per-kit) | Hold 800ms = apply Slices |
 
-Clicking the encoder on any SampleSynth page mutes/unmutes all 4 loop
-layers. See **Importing real OP-1 sample packs** above for how Kits/
+Clicking the encoder on any SampleSynth page goes back to `Global:SMPVO`
+or `Global:SMPDR`. See **Importing real OP-1 sample packs** above for how Kits/
 Sounds get onto the card.
 
 **Mixer (`Screen::Mixer`, rotate to step through channels)**

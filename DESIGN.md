@@ -77,17 +77,19 @@ One consistent grammar everywhere:
   `Screen::Mixer`, where rotate instead steps through channel "stops"
   (see its own section below) since there's no page-switching job left
   for it there.
-- **Click** the encoder: on Home, drills into the layer under the cursor.
-  On `Global:Dexed`/`Global:Granular`/`Global:Mixer`
-  specifically, it's instead this Global page's own entry point into a
-  real top-level screen (`Screen::Dexed`/`Screen::Granular`/
-  `Screen::Mixer`) — the same encoder-click gesture, just repurposed
-  per-page since Home's own drill-in doesn't apply outside Home. On
-  `Screen::Dexed`/`Screen::Granular` themselves (and every
-  other Global page), a click mutes/unmutes all 4 loop layers
-  (`Ui::TogglePauseAll()`) — there's no drill-in job left for it on those
-  screens, so it's free for the same mute Global pages already use.
-  Unused on `Screen::Mixer` (rotate already picks the stop).
+- **Click** the encoder: one level in or one level back, the same rule
+  everywhere. In: Home drills into the layer under the cursor; a Global
+  page hosting a screen (`Global:Dexed`/`Ensemble`/`Granular`/`SMPVO`/
+  `SMPDR`/`Mixer`) enters it; Dexed's Advanced page enters
+  `Screen::DexedOperator`. Back: a layer's pages go to Home; an engine
+  screen or `Screen::Mixer` returns to the Global page it was entered
+  from (`global_page_` is left untouched while inside, so no bookkeeping
+  is needed); the operator editor returns to Dexed; every other Global
+  page goes to Home. This replaced an older rule where a click on those
+  screens muted/unmuted every loop layer (`Ui::TogglePauseAll()`, since
+  removed along with `LooperLayer::SetPaused()`) — the user preferred the
+  click to navigate; pausing stays on Home's Button1, and `Global:Looper`
+  switches the whole looper off.
 - **Long-press** the encoder (~600ms): from Home, opens Global settings;
   from anywhere else — including `Screen::Dexed`/
   `Screen::Granular`/`Screen::Mixer` — goes back to Home.
@@ -4185,8 +4187,8 @@ different list per face.
 **Legacy Presets removed from the distributable branch.** The original
 21-category Sounds list and "Starter Kits" Kit category were kept,
 off by default, as `SampleSynthParamPage::LegacyPreset` (toggled by an
-intentional, documented exception to this screen's own encoder-click-
-== `TogglePauseAll()` rule) specifically so the person who built this
+intentional, documented exception to this screen's then encoder-click-
+= pause-all rule) specifically so the person who built this
 firmware could still reach their own personal packs without that
 content being part of what anyone else who clones the repo gets. On
 request, that page was removed entirely from the `user-sample` branch
@@ -4527,4 +4529,53 @@ release level (L4) above the DX7's 99. The envelope converts that to a
 target louder than full, so the release *rises* and the note never ends —
 VRC110A's EP.SawBel did exactly that. `SetPatch()` treats L4 > 99 as 0;
 every other value is left as stored.
+
+## CPU optimisation (v3.5.0)
+
+The request came with generic instructions to vectorise everything with
+CMSIS-DSP. On a Cortex-M7 that mostly doesn't pay: it has no floating-point
+SIMD (its SIMD is 8/16-bit integer only), so `arm_add_f32`/`arm_mult_f32`
+are unrolled scalar loops much like `-O3` already emits, and splitting a
+fused loop into several CMSIS passes adds memory traffic. Feedback paths
+(filters, envelopes, reverb, delay) can't be vectorised at all. So the
+work was driven by measurement instead.
+
+**Measuring first.** `profiler.h` times each stage of the audio callback
+with the DWT cycle counter — Grains, Dexed, Ensemble, Sampler, Looper,
+Delay, Reverb, and the remainder — as average/peak share of a block's
+budget; `Global:Mixer`'s Button1 shows it. Starting point, all engines
+playing over four looping layers: ~85% average, peaks over 100%, audio
+breaking up and the display freezing (the UI only runs in time the audio
+leaves over).
+
+What actually cost the time, and the fixes:
+
+| Finding | Fix | Effect |
+|---|---|---|
+| Looper filters recomputed coefficients (tanf, powf, divisions) every sample, per channel | Once per block | Looper with filters+effects 58% → 28% |
+| Looper effect setters (Drive, LFO rates…) ran every sample | Once per block (`ApplyEffectParams()`) | (included above) |
+| Every stage read/wrote the codec's DMA buffers, which libDaisy maps non-cacheable | Copy in/out once per block via DTCM buffers; `__restrict` + per-block constants in the looper | Looper plain 19% → 15% |
+| A library `tanhf` in every engine's limiter, per sample | `FastTanh()`: 7/6 rational, within 1e-4 (-80 dB) | Engines ~3 points each while playing |
+| Core at 400 MHz (libDaisy's default) | `hw.Init(true)`: 480 MHz; SD and SDRAM run from PLL2, unaffected | Everything ×0.83 |
+| Grains: per-sample bounds/clamps in every grain, ~30 grains per note | Precomputed safe span, check-free inner loop, also for release fades | Grains peak 25 → 13; bit-identical over 20,000 random grains |
+| Idle engines ran their full chain (chorus, filters, limiter) on silence | Skip `Process()` when no voice sounds and the last block was silent (so tails finish) | Idle engines ~18% → ~1% total |
+| Dexed rendered every voice from boot: the silent pre-warm patch's envelope never ends | Unplayed voices count as idle | Dexed idle 7% → 0 |
+| AutoWah: 3 powf + cosf per sample per channel (+17% on one layer) | `LayerAutowah`: one `FastExp2` expression, short Taylor cosine | +17% → +5%, within -83 dB |
+| Tremolo: sinf per sample | `LayerTremolo` with `FastSinTurns()` | +4% → +2% |
+| Phaser: four PhaserEngines, all identical | `LayerPhaser` computes one, ×2 | +7% → +1–2%, 270 KB SDRAM saved |
+
+Result: the same everything-playing test peaks in the mid-80s %, idle
+engines cost almost nothing, and the display stays live.
+
+Two oddities found along the way. DaisySP's Phaser takes each engine's
+starting LFO direction from uninitialised memory (its objects live in
+SDRAM, which nothing clears), so the old phaser could sound different
+from one boot to the next; the new one is deterministic (the user kept
+it after listening). And the per-layer effects aren't equally heavy:
+AutoWah is still the most expensive (+5% per layer), then Chorus and
+Flanger (+3%), Tremolo and Drive (+2%), Phaser and Bitcrush (+1–2%).
+
+Every replacement was compared against the original code on the Mac
+before flashing (bit-identical where noted, otherwise the maximum
+difference given above).
 
