@@ -163,6 +163,18 @@ without touching the mix (Bypass starts at 60% at power-on). Every
 channel pans with an equal-power law (−3 dB in the centre), and a soft
 limiter on the master output catches loud peaks instead of clipping.
 
+**Mix pages** — Dexed, Ensemble, SMPVO/SMPDR and Grains each have a Mix
+page with a live scope and, on the right, that engine's output meter
+(clip cap at the top). Every engine has a **Gain** (0 to +12 dB) before
+its limiter, for lifting quiet patches and samples: turn it up until the
+meter sits high without the clip cap lighting, then set how loud it sits
+in the mix with Level. Gain is saved in Dexed presets and SMPVO/SMPDR
+User presets (older presets load at 0 dB); Grains' Gain, like its Level
+and Pan, is for the session only. `Global:Bypass` shows the same scope
+and meter for the monitored input, and the shared FX pages (Filter,
+Reverb, RevTone, RevDiff, Dly-Rev, Delay, DlyTone) show the final mix
+scope.
+
 **SD card management** (`Global:SdMgmt`) — a grid of all 8 save
 categories (Performances, Grains/Dexed/Ensemble user presets, Captures,
 Sampler imports, and the SMPVO/SMPDR user presets) — duplicate or delete
@@ -358,7 +370,7 @@ capture in progress.
 | Global: RevTone | PreDelay / DecayDiffusion | PreFilter / Damping | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
 | Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
 | Global: Dly-Rev | Delay → Reverb (echoes into the reverb) | — | — | — |
-| Global: Delay | Time (Off, 20 ms–3 s, or a note value when synced) | Feedback | Sync on/off (1/16 … 1/2 at the current BPM) | — |
+| Global: Delay | Time (Off, 20 ms–3 s, or a note value when synced) | Feedback | Sync Off (free time) | Sync On (1/16 … 1/2 at the current BPM) |
 | Global: DlyTone | Ping-Pong (0% = echoes follow the sound's pan, 100% = always bounce L/R) | Tone (darker repeats) | — | — |
 | Global: Bypass | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | Global: Perf | Saving: Overwrite/Save New | Loading: scroll New + PERF list | Save / Back | Load (tap loads, stays in list) / Hold 800ms = confirm Save |
@@ -382,7 +394,7 @@ capture in progress.
 | Brightness | Modulator level scale (center = as saved) | — | — | — |
 | EnvSpeed | Envelope rate scale (center = as saved) | — | — | — |
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
-| Mix | Reverb send | Output level | — | — |
+| Mix | Output level / Gain (0 to +12 dB into the limiter) | Pan | Knobs → Level+Pan | Knobs → Gain |
 | DX-FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | DX-FOLD | Fold Amount (0% = bypass) | Output trim | — | — |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
@@ -443,7 +455,7 @@ loaded.
 | Tune | Tune | — | Toggle Map-to-Note | — |
 | ADSR | Attack / Sustain | Decay / Release | Knobs → Attack+Decay | Knobs → Sustain+Release |
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
-| Mix | Grain volume / Reverb send | Scan volume | Knobs → Grain+Scan | Knobs → Reverb send |
+| Mix | Grain volume / Pan | Scan volume / Gain (0 to +12 dB into the limiter) | Knobs → Grain+Scan | Knobs → Pan+Gain |
 | GR-FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Capture | — | — | Cycle source (Direct/Layer/Import) | Hold = record or capture |
@@ -452,7 +464,9 @@ loaded.
 | User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 Clicking the encoder on any Grains page goes back to `Global:Granular`.
-Grain and Scan mix start at 60% and 80%.
+Grain and Scan mix start at 60% and 80%. The Mix page shows a scope on
+the left and Grain, Scan and Out (the live output meter) bars on the
+right; Grains' overall Level stays on `Global:Mixer`.
 
 **SampleSynth (`Screen::SampleSynth`, shared by SMPVO/SMPDR — rotate to
 cycle pages)**
@@ -463,7 +477,7 @@ Shared by both:
 |---|---|---|---|---|
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Env | Attack / Sustain | Decay / Release | Target AD | Target SR |
-| Mix | Output level | Pan | — | — |
+| Mix | Output level / Gain (0 to +12 dB into the limiter) | Pan | Knobs → Level+Pan | Knobs → Gain |
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Import | Destination (SMPDR: first Kits/Breaks) | — | Back (SMPDR: to Kits/Breaks) | SMPDR: Open (tap); Hold 800ms = Import |

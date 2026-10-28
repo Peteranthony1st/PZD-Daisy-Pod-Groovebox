@@ -4579,3 +4579,50 @@ Every replacement was compared against the original code on the Mac
 before flashing (bit-identical where noted, otherwise the maximum
 difference given above).
 
+## Mix pages: one layout, Gain on every engine
+
+The engines' Mix pages had drifted apart: Ensemble had Level/Pan plus a
+Gain, Dexed had Reverb Send and Level (its Pan only on `Global:Mixer`),
+the Sampler had Level/Pan and nothing on its buttons, and Grains had
+three bars (Grain, Scan, Reverb) with no scope. None showed a level.
+
+Now they share Ensemble's layout. `DrawMixPageScope()` draws the scope
+narrowed to 58 columns on the left and the engine's `Global:Mixer` Peak
+bar on the right (`MeterBar01(MixerGetLevel01(ch))` with the
+`MixerIsClipping()` cap), so no new metering runs in the audio path. B1
+puts the knobs on Level/Pan, B2 on Gain. Reverb Send left the Mix pages:
+every engine's FX page and `Global:Mixer` already have it. Grains keeps
+its own variant: scope on the left half, Grain/Scan/Out bars on the
+right, B1 = Grain/Scan, B2 = Pan/Gain; its overall Level stays on
+`Global:Mixer`.
+
+**Gain.** Same control as Ensemble's: 0 to +12 dB (`powf(4, v01)`,
+cached by the setter), multiplied in just before each engine's
+pre-limiter tap, so the meter and clip cap show its effect and
+`FastTanh()` catches anything pushed past full scale. It can't drive the
+codec beyond full scale: each engine's limiter bounds its own output and
+`MasterSoftLimit()` bounds the sum. Where it's saved:
+
+- **Dexed:** `DexedPresetData::gain01`, preset file v4. v2 and v3 files
+  still load, with Gain at 0 dB; factory presets load at 0 dB.
+- **SMPVO/SMPDR:** `gain01` on the User preset structs (voice v2, drum
+  v3, older versions load at 0 dB), not on `SampleSynthPresetData`,
+  because that struct is written into `KIT.DAT` and kits are load-only.
+  Loading a kit or sound on its own leaves Gain where it is.
+- **Grains:** not saved, like its Level and Pan. Its preset files carry
+  the audio after the settings block, so a format change there costs
+  more than it's worth.
+
+Gain is part of the Dexed and Sampler unsaved-change snapshots, so the
+title's `*` appears when it moves.
+
+**Global pages.** `Global:Bypass` keeps its Reverb/Delay sends; its
+status line moved to Tom Thumb and it gained a scope (`g_bypass_scope_l`,
+written per sample in main.cpp: the monitored signal as heard, zeros
+while Bypass is off) and the Bypass meter. The shared FX pages (Filter,
+Reverb, RevTone, RevDiff, Dly-Rev, Delay, DlyTone) draw the final mix
+scope (`master_scope_buf_`, the same one as Mixer:Master), with Filter's
+mode and Delay's sync state as Tom Thumb status lines. `Global:Delay`'s
+Sync is now a pair like the other paged toggles: B1 = Off, B2 = On, and
+the status line always says which.
+
