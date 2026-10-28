@@ -401,6 +401,12 @@ constexpr size_t kSampleSynthScopeSamples = 1024;
 static float      g_sample_synth_scope_l[kSampleSynthScopeSamples];
 static size_t      g_sample_synth_scope_write_pos = 0;
 
+// Same convention, for Global:Bypass's own scope -- the monitored input
+// as heard (after Gain/Volume), silence while Bypass is off.
+constexpr size_t kBypassScopeSamples = 1024;
+static float      g_bypass_scope_l[kBypassScopeSamples];
+static size_t      g_bypass_scope_write_pos = 0;
+
 // Same convention, for Screen::Mixer's own oscilloscope page -- captures
 // the actual final post-fader mix (after reverb/bypass/master filter/
 // click/master volume), not any one instrument's own signal.
@@ -1052,6 +1058,8 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
             out[0][i] += byp_mono * bypass_pan_l;
             out[1][i] += byp_mono * bypass_pan_r;
             UpdateLevelMeter(g_bypass_level, g_bypass_clip_hold, byp_mono, sample_rate);
+            g_bypass_scope_l[g_bypass_scope_write_pos] = byp_mono;
+            g_bypass_scope_write_pos = (g_bypass_scope_write_pos + 1) % kBypassScopeSamples;
         }
         else
         {
@@ -1062,6 +1070,8 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
             g_bypass_level -= g_bypass_level * (1.f / (kMeterReleaseSeconds * sample_rate));
             if(g_bypass_clip_hold > 0.f)
                 g_bypass_clip_hold -= 1.f / sample_rate;
+            g_bypass_scope_l[g_bypass_scope_write_pos] = 0.f;
+            g_bypass_scope_write_pos = (g_bypass_scope_write_pos + 1) % kBypassScopeSamples;
         }
 
         // Master filter -- applied to the full mix (all layers, their
@@ -1294,6 +1304,7 @@ int main(void)
             g_master_scope_l, kMasterScopeSamples, g_dexed_scope_l, kDexedScopeSamples,
             &dexed, &ensemble, g_ensemble_scope_l, kEnsembleScopeSamples,
             &sample_synth, g_sample_synth_scope_l, kSampleSynthScopeSamples,
+            g_bypass_scope_l, kBypassScopeSamples,
             g_sample_synth_arena_l, g_sample_synth_arena_r, kSampleSynthArenaSamples,
             g_sample_synth_capture_l, g_sample_synth_capture_r, kSampleSynthCaptureSamples,
             &g_sample_synth_capturing, &g_sample_synth_capture_write_pos, g_undo_backup_l,

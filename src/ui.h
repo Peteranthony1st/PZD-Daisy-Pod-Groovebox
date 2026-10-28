@@ -96,6 +96,8 @@ class Ui
               SampleSynth*                  sample_synth,
               const float*                  sample_synth_scope_buf,
               size_t                        sample_synth_scope_capacity,
+              const float*                  bypass_scope_buf,
+              size_t                        bypass_scope_capacity,
               float*                        sample_synth_arena_l,
               float*                        sample_synth_arena_r,
               size_t                        sample_synth_arena_capacity,
@@ -933,10 +935,10 @@ class Ui
         GranularEnvSR,
         GranularFilter,
         GranularMix,
-        GranularMixReverb,
+        GranularMixPanGain,
         // Screen::Granular's own new FX page -- Button1/Button2 toggle
         // between Reverb (own Send + shared Size) and Delay (own Send +
-        // shared Time), same shape as GranularMix/GranularMixReverb above
+        // shared Time), same shape as GranularMix/GranularMixPanGain above
         // but a separate page so Mix's own Grain/Scan volumes don't need
         // to share room with 4 more FX parameters.
         GranularFxReverb,
@@ -973,6 +975,7 @@ class Ui
         DexedEnvSpeed,
         DexedFilter,
         DexedMix,
+        DexedMixGain,
         // Screen::Dexed's own new FX page -- same shape/reasoning as
         // GranularFxReverb/GranularFxDelay above.
         DexedFxReverb,
@@ -1023,6 +1026,7 @@ class Ui
         SampleSynthEnvAD,
         SampleSynthEnvSR,
         SampleSynthMix,
+        SampleSynthMixGain,
         SampleSynthSetup, // K1 = Tune, K2 = Slices (pending) -- see that page's own comment
         SampleSynthFxReverb,
         SampleSynthFxDelay,
@@ -1194,7 +1198,14 @@ class Ui
     // Filter page shows its actual output changing as you turn its
     // knobs). Takes the buffer/capacity explicitly rather than reading a
     // fixed member, same reusability reasoning as DrawAdsrShape above.
-    void DrawOscilloscope(int top, int bottom, const float* buf, size_t capacity);
+    // cols: how many 2px columns wide, from x=1 -- full width by default,
+    // narrower where a meter sits on the right (see DrawMixPageScope()).
+    void DrawOscilloscope(int top, int bottom, const float* buf, size_t capacity,
+                          int cols = LooperLayer::kWaveformCols);
+    // A Mix page's body: scope on the left, the engine's level meter
+    // (Global:Mixer channel ch's Peak bar, clip cap included) on the
+    // right edge.
+    void DrawMixPageScope(int top, const float* buf, size_t capacity, int mixer_ch);
     // Downsampled peak-bar waveform + optional moving playhead, shared by
     // Layer:Status (one layer's own GetWaveformPeaks()/GetPlayPos01()) and
     // Global:Speed (a composite max across all 4 layers) so the drawing
@@ -1685,6 +1696,9 @@ class Ui
     bool ensemble_fx_target_delay_ = false;
     // Ensemble Mix page: B1 = Level+Pan, B2 = Gain (see EnsembleSynth::SetGain01()).
     bool ensemble_mix_target_gain_ = false;
+    // Same Level+Pan / Gain split on Dexed's and the Sampler's Mix pages.
+    bool dexed_mix_target_gain_        = false;
+    bool sample_synth_mix_target_gain_ = false;
     bool sample_synth_fx_target_delay_ = false;
     // Ensemble's own Env page toggle (Attack/Decay vs Sustain/Release) --
     // same idiom as GranularEnvAD/GranularEnvSR's own toggle.
@@ -1880,9 +1894,9 @@ class Ui
     // false = knobs control Attack+Decay, true = Sustain+Release -- see
     // GranularParamPage::ADSR's Button1/Button2 handling.
     bool granular_adsr_target_sr_ = false;
-    // false = knobs control Grain+Scan volume, true = Reverb Send -- see
+    // false = knobs control Grain+Scan volume, true = Pan+Gain -- see
     // GranularParamPage::Mix's Button1/Button2 handling.
-    bool granular_mix_target_reverb_ = false;
+    bool granular_mix_target_pan_gain_ = false;
     // Live output ring buffer for GranularParamPage::Filter's
     // oscilloscope -- same "engine writes samples, main.cpp owns the
     // buffer" convention as pad_scope_buf_ above.
@@ -2151,6 +2165,8 @@ class Ui
     SampleSynthParamPage sample_synth_param_page_ = SampleSynthParamPage::Filter;
     const float*         sample_synth_scope_buf_      = nullptr;
     size_t                sample_synth_scope_capacity_ = 0;
+    const float*         bypass_scope_buf_            = nullptr;
+    size_t                bypass_scope_capacity_       = 0;
     // Shared SDRAM arena -- see main.cpp's own g_sample_synth_arena_l/r
     // doc comment. Owned by main.cpp, just pointed at here, same
     // convention granular_capture_buf_l_/r_ already uses.

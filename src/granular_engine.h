@@ -300,6 +300,15 @@ class GranularEngine
     // does for Pad. -----------------------------------------------------
     void  SetOutputLevel01(float v01);
     float GetOutputLevel01() const { return output_level01_; }
+    // Gain into the soft limiter, 0 to +12 dB (1x to 4x) -- same control
+    // as EnsembleSynth::SetGain01(). Session-level like Output Level and
+    // Pan: not part of GranularPresetData.
+    void  SetGain01(float v01)
+    {
+        gain01_ = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01);
+        gain_   = powf(4.f, gain01_);
+    }
+    float GetGain01() const { return gain01_; }
 
     // True for a hold period after the PRE-limiter signal (before
     // tanhf(), see Process()) last crossed unity -- "the limiter is
@@ -646,6 +655,8 @@ class GranularEngine
     float scan_volume01_   = 0.80f;
     float output_level01_  = 0.70f;
     float output_level_    = 1.f; // powf(output_level01_, 2.5f)*1.4f, cached by the setter
+    float gain01_          = 0.f;
+    float gain_            = 1.f; // powf(4, gain01_), cached by SetGain01()
     // See IsLimiting()'s own comment. Checked against the PRE-tanhf()
     // value in Process(), same threshold/hold-seconds convention as
     // DexedSynth's own equivalent (and every other clip latch in this

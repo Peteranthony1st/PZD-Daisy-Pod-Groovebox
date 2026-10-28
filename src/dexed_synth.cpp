@@ -552,7 +552,7 @@ void DexedSynth::Process(size_t size, float* out_l, float* out_r, float* reverb_
         // follows). No bypass-threshold guard needed: amount01=0 maps
         // to gain=1.0, an exact unity passthrough (see
         // SetFoldAmount01()'s own comment).
-        s = fold_.Process(s) * fold_trim_;
+        s = fold_.Process(s) * fold_trim_ * gain_;
 
         // See IsLimiting()'s/GetPreLimiterLevel01()'s own comments --
         // both read the PRE-limiter value specifically, since FastTanh()
@@ -718,6 +718,7 @@ DexedSynth::DexedPresetData DexedSynth::CapturePreset() const
     p.delay_send01    = delay_send01_;
     p.fold_amount01   = fold_amount01_;
     p.fold_trim01     = fold_trim01_;
+    p.gain01          = gain01_;
     return p;
 }
 

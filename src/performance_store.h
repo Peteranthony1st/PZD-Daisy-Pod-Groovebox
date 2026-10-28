@@ -573,6 +573,7 @@ struct SampleSynthVoiceUserPreset
     SampleSynth::SampleSynthPresetData params; // mono_choke unused here -- SMPVO uses chromatic Mono/Poly instead
     int8_t  tune_semis = 0;
     bool    mono       = false;
+    float   gain01     = 0.f; // Mix page Gain (v2) -- 0 dB for v1 files
 };
 constexpr int kMaxSampleSynthVoiceUserPresets = 99; // same user headroom as Granular/Ensemble presets
 
@@ -600,6 +601,7 @@ struct SampleSynthDrumUserPreset
     SampleSynth::SampleSynthPresetData params; // Filter/Env/Mix/FX/Mono-Choke
     uint8_t break_divide_count = 0;
     int8_t  break_tune_semis   = 0;
+    float   gain01             = 0.f; // Mix page Gain (v3) -- 0 dB for v2 files
 };
 constexpr int kMaxSampleSynthDrumUserPresets = 99;
 

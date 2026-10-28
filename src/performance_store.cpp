@@ -1370,8 +1370,9 @@ struct DexedPresetFileHeader
     char     magic[4]; // "DEXP"
     uint32_t version;
 };
-constexpr uint32_t kDexedPresetFileVersion   = 3; // bumped: added fold_amount01/fold_trim01
-constexpr uint32_t kDexedPresetFileVersionV2 = 2; // previous version, still loadable
+constexpr uint32_t kDexedPresetFileVersion   = 4; // bumped: added gain01
+constexpr uint32_t kDexedPresetFileVersionV3 = 3; // + fold_amount01/fold_trim01, still loadable
+constexpr uint32_t kDexedPresetFileVersionV2 = 2; // still loadable
 // Same offsetof()-based incremental-version marker FileHeader/LayerHeader
 // already use (see kFileHeaderV11Size's own comment) -- everything up
 // to here is common to both v2 and v3; the 2 new trailing fields are
@@ -1379,6 +1380,9 @@ constexpr uint32_t kDexedPresetFileVersionV2 = 2; // previous version, still loa
 // initializers) for v2.
 constexpr size_t kDexedPresetDataV2Size
     = offsetof(DexedSynth::DexedPresetData, fold_amount01);
+// ...and the end of v3's (just before gain01).
+constexpr size_t kDexedPresetDataV3Size
+    = offsetof(DexedSynth::DexedPresetData, gain01);
 
 // Same shape as DexedPresetFileHeader above, own magic/version -- a
 // single, non-incremental version check is enough here (no backward-
@@ -1979,6 +1983,7 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
     if(ok
        && (memcmp(hdr.magic, "DEXP", 4) != 0
            || (hdr.version != kDexedPresetFileVersion
+               && hdr.version != kDexedPresetFileVersionV3
                && hdr.version != kDexedPresetFileVersionV2)))
     {
         ok = false;
@@ -1990,22 +1995,27 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
     }
 
     static DexedSynth::DexedPresetData data;
-    data = DexedSynth::DexedPresetData{}; // fold_amount01=0/fold_trim01=1 if a v2 file
+    // fold_amount01=0/fold_trim01=1 if a v2 file, gain01=0 if v2 or v3.
+    data = DexedSynth::DexedPresetData{};
     if(ok)
     {
-        // Common to v2 and v3 -- read unconditionally.
+        // Common to every version -- read unconditionally.
         fr = f_read(&file, &data, kDexedPresetDataV2Size, &br);
         ok = fr == FR_OK && br == (UINT)kDexedPresetDataV2Size;
         if(!ok)
             SetError("data", fr);
     }
-    if(ok && hdr.version == kDexedPresetFileVersion)
+    if(ok && hdr.version != kDexedPresetFileVersionV2)
     {
-        // v3 only -- the 2 trailing fold fields. A v2 file leaves
-        // data's own default-member-initializer values in place.
+        // v3 and newer -- the 2 trailing fold fields, plus gain01 for v4.
+        // Older files leave data's own default-member-initializer values
+        // in place.
+        UINT want = (UINT)((hdr.version == kDexedPresetFileVersionV3 ? kDexedPresetDataV3Size
+                                                                      : sizeof(data))
+                           - kDexedPresetDataV2Size);
         UINT fold_br;
-        fr = f_read(&file, &data.fold_amount01, sizeof(data) - kDexedPresetDataV2Size, &fold_br);
-        ok = fr == FR_OK && fold_br == (UINT)(sizeof(data) - kDexedPresetDataV2Size);
+        fr = f_read(&file, &data.fold_amount01, want, &fold_br);
+        ok = fr == FR_OK && fold_br == want;
         if(!ok)
             SetError("fold", fr);
     }
@@ -3081,7 +3091,12 @@ struct SampleSynthVoiceUserPresetFileHeader
     char     magic[4]; // "SVUP"
     uint32_t version;
 };
-constexpr uint32_t kSampleSynthVoiceUserPresetFileVersion = 1;
+// 2: + gain01, appended -- a v1 file is everything before it (the
+// struct's own tail padding lands exactly where gain01 now starts).
+constexpr uint32_t kSampleSynthVoiceUserPresetFileVersion   = 2;
+constexpr uint32_t kSampleSynthVoiceUserPresetFileVersionV1 = 1;
+constexpr size_t   kSampleSynthVoiceUserPresetV1Size
+    = offsetof(SampleSynthVoiceUserPreset, gain01);
 
 // Nested under kSampleSynthFolder ("SAMPLES/DRUM PRESETS/"), same
 // reasoning as SampleSynthVoiceUserPresetFilename() above.
@@ -3097,7 +3112,11 @@ struct SampleSynthDrumUserPresetFileHeader
 // 2: kit_slot (a number) replaced by kit_ref (the kit's folder) -- v1
 // presets pointed at numbered kits that no longer exist, so they're a
 // clean reject rather than a migration.
-constexpr uint32_t kSampleSynthDrumUserPresetFileVersion = 2;
+// 3: + gain01, appended, same as the voice presets' v2 above.
+constexpr uint32_t kSampleSynthDrumUserPresetFileVersion   = 3;
+constexpr uint32_t kSampleSynthDrumUserPresetFileVersionV2 = 2;
+constexpr size_t   kSampleSynthDrumUserPresetV2Size
+    = offsetof(SampleSynthDrumUserPreset, gain01);
 } // namespace
 
 bool SaveSampleSynthVoiceUserPreset(int slot, const SampleSynthVoiceUserPreset& preset)
@@ -3176,7 +3195,8 @@ bool LoadSampleSynthVoiceUserPreset(int slot, SampleSynthVoiceUserPreset* out_pr
     bool ok = fr == FR_OK && br == sizeof(hdr);
     if(ok
        && (memcmp(hdr.magic, "SVUP", 4) != 0
-           || hdr.version != kSampleSynthVoiceUserPresetFileVersion))
+           || (hdr.version != kSampleSynthVoiceUserPresetFileVersion
+               && hdr.version != kSampleSynthVoiceUserPresetFileVersionV1)))
     {
         ok = false;
         SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
@@ -3190,8 +3210,11 @@ bool LoadSampleSynthVoiceUserPreset(int slot, SampleSynthVoiceUserPreset* out_pr
     data = SampleSynthVoiceUserPreset{};
     if(ok)
     {
-        fr = f_read(&file, &data, sizeof(data), &br);
-        ok = fr == FR_OK && br == sizeof(data);
+        UINT want = hdr.version == kSampleSynthVoiceUserPresetFileVersionV1
+                        ? (UINT)kSampleSynthVoiceUserPresetV1Size
+                        : (UINT)sizeof(data);
+        fr = f_read(&file, &data, want, &br);
+        ok = fr == FR_OK && br == want;
         if(!ok)
             SetError("data", fr);
     }
@@ -3339,7 +3362,8 @@ bool LoadSampleSynthDrumUserPreset(int slot, SampleSynthDrumUserPreset* out_pres
     bool ok = fr == FR_OK && br == sizeof(hdr);
     if(ok
        && (memcmp(hdr.magic, "SDUP", 4) != 0
-           || hdr.version != kSampleSynthDrumUserPresetFileVersion))
+           || (hdr.version != kSampleSynthDrumUserPresetFileVersion
+               && hdr.version != kSampleSynthDrumUserPresetFileVersionV2)))
     {
         ok = false;
         SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
@@ -3353,8 +3377,11 @@ bool LoadSampleSynthDrumUserPreset(int slot, SampleSynthDrumUserPreset* out_pres
     data = SampleSynthDrumUserPreset{};
     if(ok)
     {
-        fr = f_read(&file, &data, sizeof(data), &br);
-        ok = fr == FR_OK && br == sizeof(data);
+        UINT want = hdr.version == kSampleSynthDrumUserPresetFileVersionV2
+                        ? (UINT)kSampleSynthDrumUserPresetV2Size
+                        : (UINT)sizeof(data);
+        fr = f_read(&file, &data, want, &br);
+        ok = fr == FR_OK && br == want;
         if(!ok)
             SetError("data", fr);
     }

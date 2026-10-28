@@ -21,6 +21,14 @@ inline float Clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// Every engine's Gain01 is 0 to +12 dB (powf(4, v01)), shown in dB --
+// tenths in integer maths, since this build's printf has no float support.
+void FormatGainDb(float gain01, char* out, size_t out_size)
+{
+    int tenths = (int)(gain01 * 120.4f + 0.5f);
+    snprintf(out, out_size, "+%d.%ddB", tenths / 10, tenths % 10);
+}
+
 // How long "Nothing to undo" squats on Layer:Status's waveform before an
 // idle user gets it back -- see undo_status_set_ms_'s own comment in ui.h.
 constexpr uint32_t kUndoStatusTimeoutMs = 1500;
@@ -152,6 +160,8 @@ void Ui::Init(daisy::DaisyPod*              pod,
               SampleSynth*                  sample_synth,
               const float*                  sample_synth_scope_buf,
               size_t                        sample_synth_scope_capacity,
+              const float*                  bypass_scope_buf,
+              size_t                        bypass_scope_capacity,
               float*                        sample_synth_arena_l,
               float*                        sample_synth_arena_r,
               size_t                        sample_synth_arena_capacity,
@@ -189,6 +199,8 @@ void Ui::Init(daisy::DaisyPod*              pod,
     sample_synth_                = sample_synth;
     sample_synth_scope_buf_      = sample_synth_scope_buf;
     sample_synth_scope_capacity_ = sample_synth_scope_capacity;
+    bypass_scope_buf_            = bypass_scope_buf;
+    bypass_scope_capacity_       = bypass_scope_capacity;
     sample_synth_arena_l_        = sample_synth_arena_l;
     sample_synth_arena_r_        = sample_synth_arena_r;
     sample_synth_arena_capacity_ = sample_synth_arena_capacity;
@@ -1442,7 +1454,7 @@ void Ui::OnButton1Short()
             else if(global_page_ == GlobalPage::Bypass)
                 bypass_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
             else if(global_page_ == GlobalPage::Delay)
-                delay_sync_ = !delay_sync_; // Time: free ms <-> note values
+                delay_sync_ = false; // Time: free ms (B2 = note values)
             else if(global_page_ == GlobalPage::ReverbTone)
                 global_reverb_tone_target_b_ = false; // knobs -> PreDelay/PreFilter
             else if(global_page_ == GlobalPage::Speed)
@@ -1617,7 +1629,7 @@ void Ui::OnButton1Short()
             if(granular_param_page_ == GranularParamPage::Grain)
                 granular_grain_target_gap_jitter_ = false; // knobs -> Size+Fill
             else if(granular_param_page_ == GranularParamPage::Mix)
-                granular_mix_target_reverb_ = false; // knobs -> Grain+Scan
+                granular_mix_target_pan_gain_ = false; // knobs -> Grain+Scan
             else if(granular_param_page_ == GranularParamPage::FX)
                 granular_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
             else if(granular_param_page_ == GranularParamPage::ADSR)
@@ -1712,6 +1724,8 @@ void Ui::OnButton1Short()
             }
             else if(dexed_param_page_ == DexedParamPage::FX)
                 dexed_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
+            else if(dexed_param_page_ == DexedParamPage::Mix)
+                dexed_mix_target_gain_ = false; // knobs -> Level+Pan
             else if(dexed_param_page_ == DexedParamPage::Vibrato && dexed_)
                 dexed_->CycleModWheelTarget();
             else if(dexed_param_page_ == DexedParamPage::Preset)
@@ -1850,6 +1864,8 @@ void Ui::OnButton1Short()
                 sample_synth_adsr_target_sr_ = false; // knobs -> Attack+Decay
             else if(sample_synth_param_page_ == SampleSynthParamPage::FX)
                 sample_synth_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
+            else if(sample_synth_param_page_ == SampleSynthParamPage::Mix)
+                sample_synth_mix_target_gain_ = false; // knobs -> Level+Pan
             else if(sample_synth_param_page_ == SampleSynthParamPage::Capture)
             {
                 // Same cycle idiom as GranularParamPage::Capture's own
@@ -1970,6 +1986,8 @@ void Ui::OnButton2Short()
         bypass_ = !bypass_;
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::Bypass)
         bypass_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
+    else if(screen_ == Screen::Global && global_page_ == GlobalPage::Delay)
+        delay_sync_ = true; // Time: note values (B1 = free ms)
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::ReverbTone)
         global_reverb_tone_target_b_ = true; // knobs -> DecayDiffusion/Damping
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::Speed)
@@ -1992,6 +2010,8 @@ void Ui::OnButton2Short()
     }
     else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::FX)
         dexed_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
+    else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::Mix)
+        dexed_mix_target_gain_ = true; // knobs -> Gain
     else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::Vibrato)
         // Toggles (not just sets true) -- same reasoning as
         // DexedOpParamPage::EgRate's own Button2 above: Button1 on this
@@ -2021,7 +2041,7 @@ void Ui::OnButton2Short()
     else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::ADSR)
         granular_adsr_target_sr_ = true; // knobs -> Sustain/Release
     else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::Mix)
-        granular_mix_target_reverb_ = true; // knobs -> Reverb Send
+        granular_mix_target_pan_gain_ = true; // knobs -> Pan+Gain
     else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::FX)
         granular_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
     else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::Env)
@@ -2034,6 +2054,8 @@ void Ui::OnButton2Short()
         sample_synth_adsr_target_sr_ = true; // knobs -> Sustain+Release
     else if(screen_ == Screen::SampleSynth && sample_synth_param_page_ == SampleSynthParamPage::FX)
         sample_synth_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
+    else if(screen_ == Screen::SampleSynth && sample_synth_param_page_ == SampleSynthParamPage::Mix)
+        sample_synth_mix_target_gain_ = true; // knobs -> Gain
     else if(screen_ == Screen::SampleSynth && sample_synth_param_page_ == SampleSynthParamPage::Tune
              && sample_synth_)
     {
@@ -2109,7 +2131,9 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case DexedParamPage::Brightness: return KnobContext::DexedBrightness;
                 case DexedParamPage::EnvSpeed: return KnobContext::DexedEnvSpeed;
                 case DexedParamPage::Filter: return KnobContext::DexedFilter;
-                case DexedParamPage::Mix: return KnobContext::DexedMix;
+                case DexedParamPage::Mix:
+                    return dexed_mix_target_gain_ ? KnobContext::DexedMixGain
+                                                  : KnobContext::DexedMix;
                 case DexedParamPage::FX:
                     return dexed_fx_target_delay_ ? KnobContext::DexedFxDelay
                                                      : KnobContext::DexedFxReverb;
@@ -2165,7 +2189,9 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case SampleSynthParamPage::Env:
                     return sample_synth_adsr_target_sr_ ? KnobContext::SampleSynthEnvSR
                                                             : KnobContext::SampleSynthEnvAD;
-                case SampleSynthParamPage::Mix: return KnobContext::SampleSynthMix;
+                case SampleSynthParamPage::Mix:
+                    return sample_synth_mix_target_gain_ ? KnobContext::SampleSynthMixGain
+                                                         : KnobContext::SampleSynthMix;
                 case SampleSynthParamPage::Setup: return KnobContext::SampleSynthSetup;
                 case SampleSynthParamPage::FX:
                     return sample_synth_fx_target_delay_ ? KnobContext::SampleSynthFxDelay
@@ -2197,8 +2223,8 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                                                        : KnobContext::GranularEnvAD;
                 case GranularParamPage::Filter: return KnobContext::GranularFilter;
                 case GranularParamPage::Mix:
-                    return granular_mix_target_reverb_ ? KnobContext::GranularMixReverb
-                                                          : KnobContext::GranularMix;
+                    return granular_mix_target_pan_gain_ ? KnobContext::GranularMixPanGain
+                                                            : KnobContext::GranularMix;
                 case GranularParamPage::FX:
                     return granular_fx_target_delay_ ? KnobContext::GranularFxDelay
                                                         : KnobContext::GranularFxReverb;
@@ -2363,9 +2389,13 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::DexedMix:
             if(dexed_)
             {
-                k1_pickup_raw_[i] = dexed_->GetReverbSend01();
-                k2_pickup_raw_[i] = dexed_->GetOutputLevel01();
+                k1_pickup_raw_[i] = dexed_->GetOutputLevel01();
+                k2_pickup_raw_[i] = dexed_->GetPan01();
             }
+            break;
+        case KnobContext::DexedMixGain:
+            if(dexed_)
+                k1_pickup_raw_[i] = dexed_->GetGain01();
             break;
         case KnobContext::DexedFxReverb:
             if(dexed_)
@@ -2563,6 +2593,10 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k2_pickup_raw_[i] = sample_synth_->GetPan01();
             }
             break;
+        case KnobContext::SampleSynthMixGain:
+            if(sample_synth_)
+                k1_pickup_raw_[i] = sample_synth_->GetGain01();
+            break;
         case KnobContext::SampleSynthSetup:
             // Same bucket-center inverse as SampleSynthTune's own case
             // above -- K1 (Tune) stores the semitone value directly
@@ -2682,9 +2716,12 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k2_pickup_raw_[i] = granular_->GetScanVolume01();
             }
             break;
-        case KnobContext::GranularMixReverb:
+        case KnobContext::GranularMixPanGain:
             if(granular_)
-                k1_pickup_raw_[i] = granular_->GetReverbSend01();
+            {
+                k1_pickup_raw_[i] = granular_->GetPan01();
+                k2_pickup_raw_[i] = granular_->GetGain01();
+            }
             break;
         case KnobContext::GranularFxReverb:
             if(granular_)
@@ -3174,7 +3211,7 @@ void Ui::ApplyKnobs()
                         granular_->SetFilterResonance01(k2);
                     break;
                 case GranularParamPage::Mix:
-                    if(!granular_mix_target_reverb_)
+                    if(!granular_mix_target_pan_gain_)
                     {
                         if(PickUpK1(k1))
                             granular_->SetGrainVolume01(k1);
@@ -3184,7 +3221,9 @@ void Ui::ApplyKnobs()
                     else
                     {
                         if(PickUpK1(k1))
-                            granular_->SetReverbSend01(k1);
+                            granular_->SetPan01(k1);
+                        if(PickUpK2(k2))
+                            granular_->SetGain01(k2);
                     }
                     break;
                 case GranularParamPage::FX:
@@ -3383,10 +3422,16 @@ void Ui::ApplyKnobs()
                         dexed_->SetFilterResonance01(k2);
                     break;
                 case DexedParamPage::Mix:
+                    if(dexed_mix_target_gain_)
+                    {
+                        if(PickUpK1(k1))
+                            dexed_->SetGain01(k1);
+                        break;
+                    }
                     if(PickUpK1(k1))
-                        dexed_->SetReverbSend01(k1);
+                        dexed_->SetOutputLevel01(k1);
                     if(PickUpK2(k2))
-                        dexed_->SetOutputLevel01(k2);
+                        dexed_->SetPan01(k2);
                     break;
                 case DexedParamPage::FX:
                     if(!dexed_fx_target_delay_)
@@ -3679,6 +3724,12 @@ void Ui::ApplyKnobs()
                     }
                     break;
                 case SampleSynthParamPage::Mix:
+                    if(sample_synth_mix_target_gain_)
+                    {
+                        if(PickUpK1(k1))
+                            sample_synth_->SetGain01(k1);
+                        break;
+                    }
                     if(PickUpK1(k1))
                         sample_synth_->SetOutputLevel01(k1);
                     if(PickUpK2(k2))
@@ -5013,8 +5064,10 @@ void Ui::DrawGlobalScreen()
          // Filter page.
     {
         snprintf(line1, sizeof(line1), "Mode: %s", FilterModeName(master_filter_mode_));
-        disp_->SetCursor(0, 16);
-        WriteUpper(line1);
+        TomThumbDrawText(disp_, 0, 15, line1, true);
+        // The final mix, same scope as Mixer:Master's own -- every shared
+        // FX page (Filter/Reverb/Delay and their tone pages) shows it.
+        DrawOscilloscope(18, kFooterDividerY - 2, master_scope_buf_, master_scope_capacity_);
 
         // Actual values, not the pickup-tracking array -- see the
         // comment on DrawHome()'s equivalent Vol readout.
@@ -5030,6 +5083,7 @@ void Ui::DrawGlobalScreen()
     // feeds (see LooperLayer::SetReverbSend01()'s comment for why this
     // isn't per-layer any more). Bypass's own Send lives on Global:Bypass.
     {
+        DrawOscilloscope(12, kFooterDividerY - 2, master_scope_buf_, master_scope_capacity_);
         char size_val[8];
         snprintf(size_val, sizeof(size_val), "%d%%", (int)(reverb_size01_ * 100.f + 0.5f));
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Size", size_val, "", "");
@@ -5040,23 +5094,25 @@ void Ui::DrawGlobalScreen()
     // engine/layer sends into (see main.cpp's fx_delay_l/r).
     {
         if(delay_sync_)
-        {
-            snprintf(line1, sizeof(line1), "Sync: %d BPM", (int)(tempo_->GetBpm() + 0.5f));
-            disp_->SetCursor(0, 16);
-            WriteUpper(line1);
-        }
+            snprintf(line1, sizeof(line1), "Sync: On  %d BPM", (int)(tempo_->GetBpm() + 0.5f));
+        else
+            snprintf(line1, sizeof(line1), "Sync: Off");
+        TomThumbDrawText(disp_, 0, 15, line1, true);
+        DrawOscilloscope(18, kFooterDividerY - 2, master_scope_buf_, master_scope_capacity_);
         char time_val[12], fb_val[8];
         FormatDelayTime(delay_time01_, time_val, sizeof(time_val));
         snprintf(fb_val, sizeof(fb_val), "%d%%", (int)(delay_feedback01_ * 100.f + 0.5f));
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Time", time_val, fb_val,
                          "Feedback");
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
-                         delay_sync_ ? "Sync On" : "Sync Off", "", "", "");
+                         delay_sync_ ? "Sync Off" : "Sync Off*", "", "",
+                         delay_sync_ ? "Sync On*" : "Sync On");
     }
     else if(global_page_ == GlobalPage::DelayReverb)
     // How much of the delay's output also feeds the reverb -- so echoes
     // sit in the same space as the dry sound (see main.cpp).
     {
+        DrawOscilloscope(12, kFooterDividerY - 2, master_scope_buf_, master_scope_capacity_);
         char amt_val[8];
         snprintf(amt_val, sizeof(amt_val), "%d%%", (int)(delay_to_reverb01_ * 100.f + 0.5f));
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Dly>Rev", amt_val, "", "");
@@ -5066,6 +5122,7 @@ void Ui::DrawGlobalScreen()
     // Ping-Pong (0 = echoes follow the source's own pan, 100% = always
     // bounce L/R) and Tone (each repeat darker) -- see SharedDelay::Bus.
     {
+        DrawOscilloscope(12, kFooterDividerY - 2, master_scope_buf_, master_scope_capacity_);
         char pp_val[8], tone_val[8];
         snprintf(pp_val, sizeof(pp_val), "%d%%", (int)(delay_pingpong01_ * 100.f + 0.5f));
         snprintf(tone_val, sizeof(tone_val), "%d%%", (int)(delay_tone01_ * 100.f + 0.5f));
@@ -5076,8 +5133,10 @@ void Ui::DrawGlobalScreen()
     else if(global_page_ == GlobalPage::Bypass)
     // Bypass's own sends -- same layout as every engine's own FX page.
     {
-        disp_->SetCursor(0, 16);
-        WriteUpper(bypass_ ? "Bypass: On" : "Bypass: Off");
+        TomThumbDrawText(disp_, 0, 15, bypass_ ? "Bypass: On" : "Bypass: Off", true);
+        // The monitored input as heard, and Global:Mixer's Bypass Peak
+        // bar -- same scope+meter as every engine's own Mix page.
+        DrawMixPageScope(18, bypass_scope_buf_, bypass_scope_capacity_, 8);
         char send_val[8], shared_val[12];
         if(!bypass_fx_target_delay_)
         {
@@ -5104,6 +5163,7 @@ void Ui::DrawGlobalScreen()
     // PreDelay + PreFilter pair -- gap before the tail starts, and input
     // tone/brightness going into the tank (see DattorroReverb).
     {
+        DrawOscilloscope(12, kFooterDividerY - 2, master_scope_buf_, master_scope_capacity_);
         char predelay_val[8], prefilter_val[8];
         snprintf(predelay_val, sizeof(predelay_val), "%d%%",
                   (int)(reverb_predelay01_ * 100.f + 0.5f));
@@ -5118,6 +5178,7 @@ void Ui::DrawGlobalScreen()
          // DecayDiffusion + Damping pair -- tail density/smoothness and
          // brightness-over-time.
     {
+        DrawOscilloscope(12, kFooterDividerY - 2, master_scope_buf_, master_scope_capacity_);
         char decdiff_val[8], damping_val[8];
         snprintf(decdiff_val, sizeof(decdiff_val), "%d%%",
                   (int)(reverb_decay_diffusion01_ * 100.f + 0.5f));
@@ -5132,6 +5193,7 @@ void Ui::DrawGlobalScreen()
          // needed (only 2 knobs left). Shapes how smeared/soft the attack
          // transient is going into the reverb.
     {
+        DrawOscilloscope(12, kFooterDividerY - 2, master_scope_buf_, master_scope_capacity_);
         char diff1_val[8], diff2_val[8];
         snprintf(diff1_val, sizeof(diff1_val), "%d%%",
                   (int)(reverb_input_diffusion1_01_ * 100.f + 0.5f));
@@ -5862,57 +5924,53 @@ void Ui::DrawGranularScreen()
         }
         case GranularParamPage::Mix:
         {
-            // Same label-over-value column layout as the Grain page's
-            // Size/Fill/Gap/Scan readout, plus a level bar under each
-            // value -- same outline+fill technique as this project's own
-            // hold-to-confirm progress bars. All three always shown
-            // (same "graph shows everything, buttons only change what
-            // the knobs reach" idiom as Pad's own ADSR page) -- Reverb
-            // Send here is the SAME granular_->GetReverbSend01() also
-            // reachable from Global:Mixer, so changing it here updates
-            // there too with no extra sync needed.
-            const char* mix_labels[3] = {"Grain", "Scan", "Reverb"};
-            float       mix_vals01[3] = {granular_->GetGrainVolume01(),
-                                          granular_->GetScanVolume01(),
-                                          granular_->GetReverbSend01()};
-            char        mix_values[3][8];
-            for(int i = 0; i < 3; i++)
-                snprintf(mix_values[i], sizeof(mix_values[i]), "%d%%",
-                          (int)(mix_vals01[i] * 100.f + 0.5f));
+            // Scope on the left half; on the right, Grain and Scan level
+            // bars (the knob settings) and the live output meter (Global:
+            // Mixer's Grains Peak bar, clip cap included). Reverb Send
+            // lives on the FX page (and Global:Mixer); Output Level stays
+            // on Global:Mixer.
+            constexpr int kTop = 12, kScopeCols = 30; // x 1..59
+            const int     bottom = kFooterDividerY - 2;
+            DrawOscilloscope(kTop, bottom, granular_scope_buf_, granular_scope_capacity_,
+                             kScopeCols);
 
-            const int kMixLabelBaseline = 15;
-            const int kMixValueBaseline = 21;
-            const int kMixColWidth      = disp_->Width() / 3;
-            const int kBarWidth = 34, kBarHeight = 6, kBarTop = 25;
+            const char* bar_labels[3] = {"Grn", "Scn", "Out"};
+            float       bar_vals01[3] = {granular_->GetGrainVolume01(),
+                                          granular_->GetScanVolume01(),
+                                          MeterBar01(MixerGetLevel01(4))};
+            constexpr int kBarW = 12, kBarGap = 6, kLabelBaseline = 44;
+            const int     bars_x0 = 64 + (64 - (kBarW * 3 + kBarGap * 2)) / 2;
+            const int     bar_h   = kLabelBaseline - 6 - kTop + 1;
             for(int i = 0; i < 3; i++)
             {
-                int center_x = kMixColWidth * i + kMixColWidth / 2;
-                int lw       = TomThumbAdvanceWidth(mix_labels[i]);
-                TomThumbDrawText(disp_, center_x - lw / 2, kMixLabelBaseline, mix_labels[i],
-                                  true);
-                int vw = TomThumbAdvanceWidth(mix_values[i]);
-                TomThumbDrawText(disp_, center_x - vw / 2, kMixValueBaseline, mix_values[i],
-                                  true);
-
-                int bar_x0 = center_x - kBarWidth / 2;
-                int bar_x1 = bar_x0 + kBarWidth - 1;
-                disp_->DrawRect(bar_x0, kBarTop, bar_x1, kBarTop + kBarHeight - 1, true, false);
-                int fill_w
-                    = (int)(Clampf(mix_vals01[i], 0.f, 1.f) * (float)(kBarWidth - 2) + 0.5f);
-                if(fill_w > 0)
-                    disp_->DrawRect(bar_x0 + 1, kBarTop + 1, bar_x0 + fill_w,
-                                      kBarTop + kBarHeight - 2, true, true);
+                int x = bars_x0 + i * (kBarW + kBarGap);
+                DrawMixerVBar(x, kTop, kBarW, bar_h, bar_vals01[i], i == 2 && MixerIsClipping(4));
+                int lw = TomThumbAdvanceWidth(bar_labels[i]);
+                TomThumbDrawText(disp_, x + (kBarW - lw) / 2, kLabelBaseline, bar_labels[i], true);
             }
 
-            if(!granular_mix_target_reverb_)
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Grain", mix_values[0],
-                                 mix_values[1], "Scan");
+            if(!granular_mix_target_pan_gain_)
+            {
+                char grain_val[8], scan_val[8];
+                snprintf(grain_val, sizeof(grain_val), "%d%%",
+                          (int)(granular_->GetGrainVolume01() * 100.f + 0.5f));
+                snprintf(scan_val, sizeof(scan_val), "%d%%",
+                          (int)(granular_->GetScanVolume01() * 100.f + 0.5f));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Grain", grain_val, scan_val,
+                                 "Scan");
+            }
             else
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Reverb", mix_values[2],
-                                 "", "");
+            {
+                char pan_val[8], gain_val[12];
+                snprintf(pan_val, sizeof(pan_val), "%d%%",
+                          (int)(granular_->GetPan01() * 100.f + 0.5f));
+                FormatGainDb(granular_->GetGain01(), gain_val, sizeof(gain_val));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Pan", pan_val, gain_val,
+                                 "Gain");
+            }
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
-                             granular_mix_target_reverb_ ? "Grain/Scan" : "Grain/Scan*", "", "",
-                             granular_mix_target_reverb_ ? "Reverb*" : "Reverb");
+                             granular_mix_target_pan_gain_ ? "Grain/Scan" : "Grain/Scan*", "", "",
+                             granular_mix_target_pan_gain_ ? "Pan/Gain*" : "Pan/Gain");
             break;
         }
         case GranularParamPage::FX:
@@ -6698,20 +6756,28 @@ void Ui::DrawDexedScreen()
         }
         case DexedParamPage::Mix:
         {
-            char send_val[8], out_val[8];
-            snprintf(send_val, sizeof(send_val), "%d%%",
-                      (int)(dexed_->GetReverbSend01() * 100.f + 0.5f));
-            snprintf(out_val, sizeof(out_val), "%d%%",
-                      (int)(dexed_->GetOutputLevel01() * 100.f + 0.5f));
-            // No body text of its own needed (title already says "Mix") --
-            // Level's effect is directly visible on the scope; Send isn't
-            // (it feeds the shared reverb bus, not Dexed's own dry output
-            // this scope taps -- same limitation GranularParamPage::Filter's
-            // own scope already has for its own Reverb Send knob).
-            DrawOscilloscope(12, kFooterDividerY - 2, dexed_scope_buf_, dexed_scope_capacity_);
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Rev", send_val, out_val,
-                             "Level");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+            // Same layout as EnsembleParamPage::Mix. Reverb Send lives on
+            // the FX page (and Global:Mixer).
+            DrawMixPageScope(12, dexed_scope_buf_, dexed_scope_capacity_, 5);
+            if(dexed_mix_target_gain_)
+            {
+                char gain_val[12];
+                FormatGainDb(dexed_->GetGain01(), gain_val, sizeof(gain_val));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Gain", gain_val, "", "");
+            }
+            else
+            {
+                char out_val[8], pan_val[8];
+                snprintf(out_val, sizeof(out_val), "%d%%",
+                          (int)(dexed_->GetOutputLevel01() * 100.f + 0.5f));
+                snprintf(pan_val, sizeof(pan_val), "%d%%",
+                          (int)(dexed_->GetPan01() * 100.f + 0.5f));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, pan_val,
+                                 "Pan");
+            }
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             dexed_mix_target_gain_ ? "Level" : "Level*", "", "",
+                             dexed_mix_target_gain_ ? "Gain*" : "Gain");
             break;
         }
         case DexedParamPage::FX:
@@ -7152,15 +7218,11 @@ void Ui::DrawEnsembleScreen()
         }
         case EnsembleParamPage::Mix:
         {
-            DrawOscilloscope(12, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
+            DrawMixPageScope(12, ensemble_scope_buf_, ensemble_scope_capacity_, 6);
             if(ensemble_mix_target_gain_)
             {
-                // Shown in dB, 0 to +12 (see EnsembleSynth::SetGain01()) --
-                // tenths in integer maths, since this build's printf has
-                // no float support.
                 char gain_val[12];
-                int  tenths = (int)(ensemble_->GetGain01() * 120.4f + 0.5f);
-                snprintf(gain_val, sizeof(gain_val), "+%d.%ddB", tenths / 10, tenths % 10);
+                FormatGainDb(ensemble_->GetGain01(), gain_val, sizeof(gain_val));
                 DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Gain", gain_val, "", "");
             }
             else
@@ -7349,6 +7411,7 @@ Ui::EditSnapshot Ui::SampleSynthSnapshot() const
     s.Add(p.filter_mode); s.Add(p.filter_cutoff01); s.Add(p.filter_res01);
     s.Add(p.output_level01); s.Add(p.pan01); s.Add(p.reverb_send01); s.Add(p.delay_send01);
     s.Add(p.mono_choke);
+    s.Add(sample_synth_->GetGain01());
     if(sample_synth_mode_ == SampleSynthMode::Voice)
     {
         s.Add(sample_synth_imp_tune_semis_);
@@ -7465,16 +7528,27 @@ void Ui::DrawSampleSynthScreen()
         }
         case SampleSynthParamPage::Mix:
         {
-            char out_val[8], pan_val[8];
-            snprintf(out_val, sizeof(out_val), "%d%%",
-                      (int)(sample_synth_->GetOutputLevel01() * 100.f + 0.5f));
-            snprintf(pan_val, sizeof(pan_val), "%d%%",
-                      (int)(sample_synth_->GetPan01() * 100.f + 0.5f));
-            DrawOscilloscope(18, kFooterDividerY - 2, sample_synth_scope_buf_,
-                               sample_synth_scope_capacity_);
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, pan_val,
-                             "Pan");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+            // Same layout as EnsembleParamPage::Mix.
+            DrawMixPageScope(12, sample_synth_scope_buf_, sample_synth_scope_capacity_, 7);
+            if(sample_synth_mix_target_gain_)
+            {
+                char gain_val[12];
+                FormatGainDb(sample_synth_->GetGain01(), gain_val, sizeof(gain_val));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Gain", gain_val, "", "");
+            }
+            else
+            {
+                char out_val[8], pan_val[8];
+                snprintf(out_val, sizeof(out_val), "%d%%",
+                          (int)(sample_synth_->GetOutputLevel01() * 100.f + 0.5f));
+                snprintf(pan_val, sizeof(pan_val), "%d%%",
+                          (int)(sample_synth_->GetPan01() * 100.f + 0.5f));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, pan_val,
+                                 "Pan");
+            }
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                             sample_synth_mix_target_gain_ ? "Level" : "Level*", "", "",
+                             sample_synth_mix_target_gain_ ? "Gain*" : "Gain");
             break;
         }
         case SampleSynthParamPage::Setup:
@@ -8715,18 +8789,18 @@ void Ui::DrawAlgorithmDiagram(int algo0)
     }
 }
 
-void Ui::DrawOscilloscope(int top, int bottom, const float* buf, size_t capacity)
+void Ui::DrawOscilloscope(int top, int bottom, const float* buf, size_t capacity, int cols)
 {
     const int center_y = (top + bottom) / 2;
     const int half_h    = (bottom - top) / 2;
 
     if(!buf || capacity == 0)
     {
-        disp_->DrawLine(1, center_y, 1 + (LooperLayer::kWaveformCols - 1) * 2, center_y, true);
+        disp_->DrawLine(1, center_y, 1 + (cols - 1) * 2, center_y, true);
         return;
     }
 
-    const size_t stride = capacity / (size_t)LooperLayer::kWaveformCols;
+    const size_t stride = capacity / (size_t)cols;
 
     // Auto-scale to the loudest sample currently in the capture -- a
     // fixed scale would either clip the trace off-screen or leave it
@@ -8741,7 +8815,7 @@ void Ui::DrawOscilloscope(int top, int bottom, const float* buf, size_t capacity
     float scale = max_abs > 0.001f ? 1.f / max_abs : 0.f;
 
     int prev_x = 1, prev_y = center_y;
-    for(int col = 0; col < LooperLayer::kWaveformCols; col++)
+    for(int col = 0; col < cols; col++)
     {
         size_t idx = (size_t)col * stride;
         if(idx >= capacity)
@@ -8754,6 +8828,17 @@ void Ui::DrawOscilloscope(int top, int bottom, const float* buf, size_t capacity
         prev_x = x;
         prev_y = y;
     }
+}
+
+void Ui::DrawMixPageScope(int top, const float* buf, size_t capacity, int mixer_ch)
+{
+    // Meter flush right, full body height; the scope stops 4px short of
+    // it (58 columns end at x=115).
+    constexpr int kMeterW = 6, kScopeCols = 58;
+    const int     bottom  = kFooterDividerY - 2;
+    DrawOscilloscope(top, bottom, buf, capacity, kScopeCols);
+    DrawMixerVBar(disp_->Width() - kMeterW, top, kMeterW, bottom - top + 1,
+                  MeterBar01(MixerGetLevel01(mixer_ch)), MixerIsClipping(mixer_ch));
 }
 
 void Ui::RefreshFileSlots()
@@ -10641,6 +10726,7 @@ void Ui::TriggerSaveSampleSynthVoiceUserPreset(bool force_new)
     preset.params     = sample_synth_->CapturePreset();
     preset.tune_semis = sample_synth_imp_tune_semis_;
     preset.mono       = sample_synth_imp_mono_;
+    preset.gain01     = sample_synth_->GetGain01();
 
     g_audio_suspended = true;
     bool ok           = PerformanceStore::SaveSampleSynthVoiceUserPreset(slot, preset);
@@ -10686,6 +10772,7 @@ void Ui::TriggerLoadSampleSynthVoiceUserPreset()
     sample_synth_capture_unsaved_ = false; // the capture is being replaced
     LoadSampleSynthFileIntoEngine(preset.category, preset.filename);
     sample_synth_->ApplyPreset(preset.params);
+    sample_synth_->SetGain01(preset.gain01);
     sample_synth_->SetChromaticMono(preset.mono);
     sample_synth_imp_tune_semis_ = preset.tune_semis;
     sample_synth_imp_mono_       = preset.mono;
@@ -10723,6 +10810,7 @@ void Ui::TriggerSaveSampleSynthDrumUserPreset(bool force_new)
     preset.params             = sample_synth_->CapturePreset();
     preset.break_divide_count = (uint8_t)sample_synth_setup_applied_slices_;
     preset.break_tune_semis   = sample_synth_setup_tune_semis_;
+    preset.gain01             = sample_synth_->GetGain01();
 
     g_audio_suspended = true;
     bool ok           = PerformanceStore::SaveSampleSynthDrumUserPreset(slot, preset);
@@ -10764,6 +10852,7 @@ void Ui::TriggerLoadSampleSynthDrumUserPreset()
         return;
     }
     sample_synth_->ApplyPreset(preset.params);
+    sample_synth_->SetGain01(preset.gain01);
     sample_synth_setup_pending_slices_ = preset.break_divide_count;
     sample_synth_setup_tune_semis_     = preset.break_tune_semis;
     ApplySampleSynthBreakDivide(sample_synth_setup_pending_slices_, sample_synth_setup_tune_semis_);
@@ -11243,6 +11332,7 @@ Ui::EditSnapshot Ui::DexedSnapshot() const
     s.Add(p.delay_send01);
     s.Add(p.fold_amount01);
     s.Add(p.fold_trim01);
+    s.Add(p.gain01);
     return s;
 }
 

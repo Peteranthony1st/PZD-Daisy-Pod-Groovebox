@@ -134,6 +134,16 @@ class DexedSynth
     float GetDelaySend01() const { return delay_send01_; }
     void  SetOutputLevel01(float v01);
     float GetOutputLevel01() const { return output_level01_; }
+    // Gain into the soft limiter, 0 to +12 dB (1x to 4x) -- same control
+    // as EnsembleSynth::SetGain01(), for patches that come out thin and
+    // quiet. Applied before the pre-limiter tap, so the Mix page's meter
+    // shows it.
+    void  SetGain01(float v01)
+    {
+        gain01_ = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01);
+        gain_   = powf(4.f, gain01_);
+    }
+    float GetGain01() const { return gain01_; }
 
     // True for a hold period after the PRE-limiter signal (before
     // tanhf(), see Process()) last crossed unity -- i.e. "the limiter
@@ -270,6 +280,9 @@ class DexedSynth
         // unity (no change).
         float   fold_amount01 = 0.f;
         float   fold_trim01   = 1.f;
+        // Added with the Mix page's Gain -- same trailing-field
+        // convention again; 0 = 0 dB, so older presets sound unchanged.
+        float   gain01 = 0.f;
     };
     void ApplyPreset(const DexedPresetData& p)
     {
@@ -281,6 +294,7 @@ class DexedSynth
         SetDelaySend01(p.delay_send01);
         SetFoldAmount01(p.fold_amount01);
         SetFoldTrim01(p.fold_trim01);
+        SetGain01(p.gain01);
     }
     DexedPresetData CapturePreset() const;
 
@@ -463,6 +477,8 @@ class DexedSynth
     daisysp::Wavefolder fold_;
     float fold_amount01_ = 0.f;
     float fold_trim01_   = 1.f;
+    float gain01_        = 0.f;
+    float gain_          = 1.f; // powf(4, gain01_), cached by SetGain01()
     float fold_trim_     = 1.f; // cached scalar, see SetFoldTrim01()
 
     // msfa's native quantum -- Dx7Note::compute()/EngineMsfa::render()

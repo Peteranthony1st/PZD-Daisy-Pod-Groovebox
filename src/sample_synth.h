@@ -148,6 +148,16 @@ class SampleSynth
     float GetOutputLevel01() const { return output_level01_; }
     void  SetPan01(float v01);
     float GetPan01() const { return pan01_; }
+    // Gain into the soft limiter, 0 to +12 dB (1x to 4x) -- same control
+    // as EnsembleSynth::SetGain01(), for quiet samples. Not part of
+    // SampleSynthPresetData (kits are load-only and that struct is baked
+    // into KIT.DAT); SMPVO/SMPDR user presets carry it alongside instead.
+    void  SetGain01(float v01)
+    {
+        gain01_ = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01);
+        gain_   = powf(4.f, gain01_);
+    }
+    float GetGain01() const { return gain01_; }
 
     // --- Reverb/delay send -- identical shape to DexedSynth/
     // GranularEngine's own, same shared buses in main.cpp. -----------
@@ -325,6 +335,8 @@ class SampleSynth
 
     float output_level01_ = 0.70f;
     float output_level_   = 1.f; // powf(output_level01_,2.5f)*1.4f, cached by the setter
+    float gain01_         = 0.f;
+    float gain_           = 1.f; // powf(4, gain01_), cached by SetGain01()
     float pan01_          = 0.5f;
     float pan_l_gain_ = 0.7071f; // EqualPowerPan(pan01_), control-rate cache
     float pan_r_gain_ = 0.7071f;

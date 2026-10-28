@@ -1237,8 +1237,8 @@ void GranularEngine::Process(size_t size, float* out_l, float* out_r, float* rev
                 }
             }
 
-            fl *= output_level_ * pan_l_gain_;
-            fr *= output_level_ * pan_r_gain_;
+            fl *= output_level_ * gain_ * pan_l_gain_;
+            fr *= output_level_ * gain_ * pan_r_gain_;
 
             // Trim preview (see PlayTrimPreview()'s own comment), injected
             // here -- AFTER output_level_/pan, not mixed into mixed_l/

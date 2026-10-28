@@ -593,8 +593,8 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
             }
         }
 
-        fl *= output_level_;
-        fr *= output_level_;
+        fl *= output_level_ * gain_;
+        fr *= output_level_ * gain_;
 
         // Same PRE-limiter tap convention as DexedSynth::IsLimiting()/
         // GetPreLimiterLevel01() -- read before FastTanh()/pan, see those
