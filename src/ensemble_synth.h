@@ -85,6 +85,7 @@ class EnsembleSynth
     {
         mod_wheel_target_ = (ModWheelTarget)(((int)mod_wheel_target_ + 1) % 4);
     }
+    void SetModWheelTarget(ModWheelTarget t) { mod_wheel_target_ = (ModWheelTarget)((int)t % 4); }
     ModWheelTarget GetModWheelTarget() const { return mod_wheel_target_; }
     const char*    GetModWheelTargetName() const
     {
@@ -219,6 +220,13 @@ class EnsembleSynth
         // Added in preset file v2 -- 0 = unity (how every v1 preset
         // sounded), see SetGain01().
         float   gain01               = 0.f;
+        // Added in preset file v3. -1 = not stored (factory presets and
+        // older files): loading leaves the current target alone.
+        int32_t mod_wheel_target     = -1;
+        // The Ui's own Ensemble MIDI channel (-1 = Omni), filled in by
+        // the Ui on a user save -- CapturePreset() never sets it. -2 =
+        // not stored: loading leaves the current channel alone.
+        int32_t midi_channel         = -2;
     };
     void ApplyPreset(const EnsemblePresetData& p)
     {
@@ -238,6 +246,8 @@ class EnsembleSynth
         SetReverbSend01(p.reverb_send01);
         SetDelaySend01(p.delay_send01);
         SetGain01(p.gain01);
+        if(p.mod_wheel_target >= 0)
+            SetModWheelTarget((ModWheelTarget)p.mod_wheel_target);
     }
     EnsemblePresetData CapturePreset() const;
 

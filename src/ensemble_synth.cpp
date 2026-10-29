@@ -266,6 +266,7 @@ EnsembleSynth::EnsemblePresetData EnsembleSynth::CapturePreset() const
     p.reverb_send01        = reverb_send01_;
     p.delay_send01         = delay_send01_;
     p.gain01               = gain01_;
+    p.mod_wheel_target     = (int32_t)mod_wheel_target_;
     return p;
 }
 

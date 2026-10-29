@@ -112,13 +112,6 @@ bool Save(int                slot,
           float              reverb_input_diffusion2_01,
           float              reverb_decay_diffusion01,
           float              reverb_damping01,
-          // Which MIDI channel each engine listens on -- -1 = Omni. See
-          // Ui::GetDexedMidiChannel()/GetGranularMidiChannel()/
-          // GetEnsembleMidiChannel()/GetSampleSynthMidiChannel().
-          int                dexed_midi_channel,
-          int                granular_midi_channel,
-          int                ensemble_midi_channel,
-          int                sample_synth_midi_channel,
           const DelayState& delay,
           ProgressFn         on_progress = nullptr);
 
@@ -127,11 +120,10 @@ bool Save(int                slot,
 // incremental per-version chunk scheme this uses to stay backward-
 // compatible. A v11 file leaves *out_reverb_predelay01 and friends at
 // the Dattorro library's own tuned defaults (same ones
-// DattorroReverb::Init() uses); a v11 or v12 file leaves
-// *out_dexed_midi_channel/*out_granular_midi_channel at Omni (-1); a
-// v11, v12, or v13 file leaves *out_ensemble_midi_channel at Omni (-1);
-// a v11-v14 file leaves *out_sample_synth_midi_channel at Omni (-1) too
-// -- none of these fail to load.
+// DattorroReverb::Init() uses) -- none of these fail to load. The
+// file's per-engine MIDI channel fields (v13-v15) are no longer read or
+// written: each synth's channel now lives in its own user presets (and
+// the startup defaults, see SavePrefs()), not in a performance.
 bool Load(int          slot,
           TempoClock&  tempo,
           LooperLayer* layers,
@@ -149,10 +141,6 @@ bool Load(int          slot,
           float*       out_reverb_input_diffusion2_01,
           float*       out_reverb_decay_diffusion01,
           float*       out_reverb_damping01,
-          int*         out_dexed_midi_channel,
-          int*         out_granular_midi_channel,
-          int*         out_ensemble_midi_channel,
-          int*         out_sample_synth_midi_channel,
           DelayState*  inout_delay,
           ProgressFn   on_progress = nullptr);
 
@@ -574,6 +562,7 @@ struct SampleSynthVoiceUserPreset
     int8_t  tune_semis = 0;
     bool    mono       = false;
     float   gain01     = 0.f; // Mix page Gain (v2) -- 0 dB for v1 files
+    int32_t midi_channel = -2; // v3: sampler MIDI channel (-1 = Omni); -2 = not stored, keep current
 };
 constexpr int kMaxSampleSynthVoiceUserPresets = 99; // same user headroom as Granular/Ensemble presets
 
@@ -602,6 +591,7 @@ struct SampleSynthDrumUserPreset
     uint8_t break_divide_count = 0;
     int8_t  break_tune_semis   = 0;
     float   gain01             = 0.f; // Mix page Gain (v3) -- 0 dB for v2 files
+    int32_t midi_channel       = -2;  // v4: sampler MIDI channel (-1 = Omni); -2 = not stored, keep current
 };
 constexpr int kMaxSampleSynthDrumUserPresets = 99;
 
@@ -614,6 +604,64 @@ int  NextFreeSampleSynthDrumUserPresetSlot();
 bool DeleteSampleSynthDrumUserPreset(int slot, int* loaded_slot_inout = nullptr);
 bool DuplicateSampleSynthDrumUserPreset(int slot, int* out_new_slot,
                                           ProgressFn on_progress = nullptr);
+
+// Global:Snap -- every synth engine at once: each one's full preset
+// (sound, mix, MIDI channel, wheel target), which engines are on, which
+// face the Sampler shows, and the Grains audio itself (so an unsaved
+// capture comes back too). The Sampler keeps a reference to its Sound or
+// Kit, the same way its User presets do. Lives in SNAPSHOTS/SNAPnnn.DAT.
+struct SynthSnapshot
+{
+    struct Info
+    {
+        bool    granular_on      = false;
+        bool    dexed_on         = false;
+        bool    ensemble_on      = false;
+        bool    sampler_voice_on = false;
+        bool    sampler_drum_on  = false;
+        int32_t sampler_drum     = 0; // which face: 0 = SMPVO, 1 = SMPDR
+        // Each engine's loaded-slot tracking at save time, restored so
+        // its own User page carries on from the same preset.
+        int32_t granular_slot      = 0;
+        int32_t dexed_slot         = 0;
+        int32_t ensemble_slot      = 0;
+        int32_t sampler_voice_slot = 0;
+        int32_t sampler_drum_slot  = 0;
+        char    granular_lib_folder[16] = {};
+        char    granular_lib_name[61]   = {};
+        // What Global:Snap's grid shows for each engine, as named at save
+        // time (Grains, Dexed, Ensemble, Sampler).
+        char names[4][24] = {};
+    };
+    Info                                info;
+    GranularEngine::GranularPresetData  granular;
+    DexedSynth::DexedPresetData         dexed;
+    EnsembleSynth::EnsemblePresetData   ensemble;
+    SampleSynthVoiceUserPreset          sampler_voice;
+    SampleSynthDrumUserPreset           sampler_drum;
+};
+constexpr int kMaxSynthSnapshots = 99;
+
+bool SaveSynthSnapshot(int                  slot,
+                       const SynthSnapshot& snap,
+                       const float*         granular_l,
+                       const float*         granular_r,
+                       size_t               granular_len,
+                       ProgressFn           on_progress = nullptr);
+// out_audio_len == nullptr reads the settings only (no audio) -- what
+// Global:Snap's browse grid uses.
+bool LoadSynthSnapshot(int            slot,
+                       SynthSnapshot* out_snap,
+                       float*         out_granular_l   = nullptr,
+                       float*         out_granular_r   = nullptr,
+                       size_t         granular_capacity = 0,
+                       size_t*        out_audio_len    = nullptr,
+                       ProgressFn     on_progress      = nullptr);
+int ListSynthSnapshots(int* out_numbers, int max_out);
+int NextFreeSynthSnapshotSlot();
+// Global:SdMgmt's Global -> Snapshots box.
+bool DeleteSynthSnapshot(int slot, int* loaded_slot_inout = nullptr);
+bool DuplicateSynthSnapshot(int slot, int* out_new_slot, ProgressFn on_progress = nullptr);
 
 // Writes a trimmed Capture/Trim selection out as a real, plain 16-bit
 // PCM stereo WAV under SAMPLES/<category_folder>/ (e.g. "CAPTURED1"),
@@ -847,5 +895,13 @@ bool LoadPrefs(float*      out_bpm,
                int*        out_ensemble_midi_channel,
                int*        out_sample_synth_midi_channel,
                DelayState* inout_delay);
+
+// Global:Looper's B2 -- whether the looper starts enabled at power-on.
+// Its own tiny LOOPER.DAT rather than a PREFS.DAT field: PREFS.DAT shares
+// the performance file header, so a new field there would change the
+// performance format too. Saved the moment it's toggled. Load returns
+// false (leaving *out_on alone) when the file doesn't exist yet.
+bool SaveLooperDefault(bool on);
+bool LoadLooperDefault(bool* out_on);
 
 } // namespace PerformanceStore

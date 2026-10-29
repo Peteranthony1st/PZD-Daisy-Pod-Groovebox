@@ -63,6 +63,11 @@ struct FmOperatorRouting {
                       // self-feedback -- both FB_IN and FB_OUT set, the
                       // same `(flags & 0xc0) == 0xc0` condition render()
                       // itself checks before routing through compute_fb().
+  bool fb_out;       // FB_OUT alone: on a real DX7 this operator closes a
+                      // feedback loop back to the has_feedback operator
+                      // (algorithm 4: OP4->OP6, 6: OP5->OP6) -- rendered
+                      // by EngineMsfa::render()'s compute_fb_chain() and
+                      // drawn by the Algo diagram.
 };
 
 class FmCore {

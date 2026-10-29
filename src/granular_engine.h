@@ -453,6 +453,18 @@ class GranularEngine
         // of a real save failure found elsewhere -- see
         // kGranularPresetFileVersion's own comment for the real cause.
         float   reverb_send01     = 0.f;
+        // Added in preset file v11, when the Mix page's Level/Pan/Gain
+        // and Delay send joined the preset like every other engine's.
+        // Negative = not stored (v10 files and "New"): loading leaves
+        // the current value alone, so old presets sound as they did.
+        float   output_level01    = -1.f;
+        float   pan01             = -1.f;
+        float   gain01            = -1.f;
+        float   delay_send01      = -1.f;
+        // The Ui's own Grains MIDI channel (-1 = Omni), filled in by the
+        // Ui on a user save -- CapturePreset() never sets it. -2 = not
+        // stored: loading leaves the current channel alone.
+        int32_t midi_channel      = -2;
     };
     void               ApplyPreset(const GranularPresetData& p);
     GranularPresetData CapturePreset() const;

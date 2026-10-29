@@ -914,10 +914,6 @@ bool Save(int                slot,
           float              reverb_input_diffusion2_01,
           float              reverb_decay_diffusion01,
           float              reverb_damping01,
-          int                dexed_midi_channel,
-          int                granular_midi_channel,
-          int                ensemble_midi_channel,
-          int                sample_synth_midi_channel,
           const DelayState&  delay,
           ProgressFn         on_progress)
 {
@@ -981,10 +977,12 @@ bool Save(int                slot,
     hdr.reverb_input_diffusion2_01     = reverb_input_diffusion2_01;
     hdr.reverb_decay_diffusion01       = reverb_decay_diffusion01;
     hdr.reverb_damping01               = reverb_damping01;
-    hdr.dexed_midi_channel             = (int32_t)dexed_midi_channel;
-    hdr.granular_midi_channel          = (int32_t)granular_midi_channel;
-    hdr.ensemble_midi_channel          = (int32_t)ensemble_midi_channel;
-    hdr.sample_synth_midi_channel      = (int32_t)sample_synth_midi_channel;
+    // No longer part of a performance (each synth's user presets carry
+    // their own) -- written as Omni so the fields stay well-defined.
+    hdr.dexed_midi_channel             = -1;
+    hdr.granular_midi_channel          = -1;
+    hdr.ensemble_midi_channel          = -1;
+    hdr.sample_synth_midi_channel      = -1;
     WriteDelayState(hdr, delay);
 
     UINT bw;
@@ -1078,10 +1076,6 @@ bool Load(int          slot,
           float*       out_reverb_input_diffusion2_01,
           float*       out_reverb_decay_diffusion01,
           float*       out_reverb_damping01,
-          int*         out_dexed_midi_channel,
-          int*         out_granular_midi_channel,
-          int*         out_ensemble_midi_channel,
-          int*         out_sample_synth_midi_channel,
           DelayState*  inout_delay,
           ProgressFn   on_progress)
 {
@@ -1254,10 +1248,6 @@ bool Load(int          slot,
         *out_reverb_input_diffusion2_01     = hdr.reverb_input_diffusion2_01;
         *out_reverb_decay_diffusion01       = hdr.reverb_decay_diffusion01;
         *out_reverb_damping01               = hdr.reverb_damping01;
-        *out_dexed_midi_channel             = (int)hdr.dexed_midi_channel;
-        *out_granular_midi_channel          = (int)hdr.granular_midi_channel;
-        *out_ensemble_midi_channel          = (int)hdr.ensemble_midi_channel;
-        *out_sample_synth_midi_channel      = (int)hdr.sample_synth_midi_channel;
         if(has_delay && inout_delay)
             ReadDelayState(hdr, inout_delay);
     }
@@ -1359,7 +1349,15 @@ struct GranularPresetFileHeader
 // during a long SD write the way Load()/Export() already do -- see
 // Ui::TriggerSave()'s/TriggerSaveGranularPreset()'s own comment on
 // g_audio_suspended.
-constexpr uint32_t kGranularPresetFileVersion = 10;
+//
+// 11: + output_level01/pan01/gain01/delay_send01/midi_channel, appended.
+// Unlike every bump before it, v10 still loads: the audio follows the
+// data block directly, so a v10 file is just the data cut short before
+// output_level01, and those fields keep their "not stored" defaults.
+constexpr uint32_t kGranularPresetFileVersion   = 11;
+constexpr uint32_t kGranularPresetFileVersionV10 = 10;
+constexpr size_t   kGranularPresetDataV10Size
+    = offsetof(GranularEngine::GranularPresetData, output_level01);
 
 // Same shape as GranularPresetFileHeader above, own magic/version. No
 // audio, so no audio_len field -- just the header plus one raw
@@ -1370,7 +1368,9 @@ struct DexedPresetFileHeader
     char     magic[4]; // "DEXP"
     uint32_t version;
 };
-constexpr uint32_t kDexedPresetFileVersion   = 4; // bumped: added gain01
+constexpr uint32_t kDexedPresetFileVersion   = 6; // + op_switch
+constexpr uint32_t kDexedPresetFileVersionV5 = 5; // + mod_wheel_target/midi_channel, still loadable
+constexpr uint32_t kDexedPresetFileVersionV4 = 4; // + gain01, still loadable
 constexpr uint32_t kDexedPresetFileVersionV3 = 3; // + fold_amount01/fold_trim01, still loadable
 constexpr uint32_t kDexedPresetFileVersionV2 = 2; // still loadable
 // Same offsetof()-based incremental-version marker FileHeader/LayerHeader
@@ -1383,6 +1383,12 @@ constexpr size_t kDexedPresetDataV2Size
 // ...and the end of v3's (just before gain01).
 constexpr size_t kDexedPresetDataV3Size
     = offsetof(DexedSynth::DexedPresetData, gain01);
+// ...and the end of v4's (just before mod_wheel_target).
+constexpr size_t kDexedPresetDataV4Size
+    = offsetof(DexedSynth::DexedPresetData, mod_wheel_target);
+// ...and the end of v5's (just before op_switch).
+constexpr size_t kDexedPresetDataV5Size
+    = offsetof(DexedSynth::DexedPresetData, op_switch);
 
 // Same shape as DexedPresetFileHeader above, own magic/version -- a
 // single, non-incremental version check is enough here (no backward-
@@ -1393,10 +1399,13 @@ struct EnsemblePresetFileHeader
     char     magic[4]; // "ENSP"
     uint32_t version;
 };
-constexpr uint32_t kEnsemblePresetFileVersion   = 2; // v2: + gain01
+constexpr uint32_t kEnsemblePresetFileVersion   = 3; // v3: + mod_wheel_target/midi_channel
+constexpr uint32_t kEnsemblePresetFileVersionV2 = 2; // v2: + gain01
 constexpr uint32_t kEnsemblePresetFileVersionV1 = 1;
 constexpr size_t   kEnsemblePresetDataV1Size
     = offsetof(EnsembleSynth::EnsemblePresetData, gain01);
+constexpr size_t   kEnsemblePresetDataV2Size
+    = offsetof(EnsembleSynth::EnsemblePresetData, mod_wheel_target);
 } // namespace
 
 namespace
@@ -1545,7 +1554,10 @@ bool LoadGranularPresetFile(const char*                         fname,
     UINT br;
     fr      = f_read(&file, &hdr, sizeof(hdr), &br);
     bool ok = fr == FR_OK && br == sizeof(hdr);
-    if(ok && (memcmp(hdr.magic, "GRNP", 4) != 0 || hdr.version != kGranularPresetFileVersion))
+    if(ok
+       && (memcmp(hdr.magic, "GRNP", 4) != 0
+           || (hdr.version != kGranularPresetFileVersion
+               && hdr.version != kGranularPresetFileVersionV10)))
     {
         ok = false;
         SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
@@ -1559,8 +1571,10 @@ bool LoadGranularPresetFile(const char*                         fname,
     data = GranularEngine::GranularPresetData{};
     if(ok)
     {
-        fr = f_read(&file, &data, sizeof(data), &br);
-        ok = fr == FR_OK && br == sizeof(data);
+        UINT want = hdr.version == kGranularPresetFileVersionV10 ? (UINT)kGranularPresetDataV10Size
+                                                                 : (UINT)sizeof(data);
+        fr = f_read(&file, &data, want, &br);
+        ok = fr == FR_OK && br == want;
         if(!ok)
             SetError("data", fr);
     }
@@ -1983,6 +1997,8 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
     if(ok
        && (memcmp(hdr.magic, "DEXP", 4) != 0
            || (hdr.version != kDexedPresetFileVersion
+               && hdr.version != kDexedPresetFileVersionV5
+               && hdr.version != kDexedPresetFileVersionV4
                && hdr.version != kDexedPresetFileVersionV3
                && hdr.version != kDexedPresetFileVersionV2)))
     {
@@ -1995,7 +2011,9 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
     }
 
     static DexedSynth::DexedPresetData data;
-    // fold_amount01=0/fold_trim01=1 if a v2 file, gain01=0 if v2 or v3.
+    // fold_amount01=0/fold_trim01=1 if a v2 file, gain01=0 if v2 or v3,
+    // mod_wheel_target/midi_channel "not stored" if older than v5,
+    // op_switch "not stored" (all operators on) if older than v6.
     data = DexedSynth::DexedPresetData{};
     if(ok)
     {
@@ -2007,12 +2025,15 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
     }
     if(ok && hdr.version != kDexedPresetFileVersionV2)
     {
-        // v3 and newer -- the 2 trailing fold fields, plus gain01 for v4.
-        // Older files leave data's own default-member-initializer values
-        // in place.
-        UINT want = (UINT)((hdr.version == kDexedPresetFileVersionV3 ? kDexedPresetDataV3Size
-                                                                      : sizeof(data))
-                           - kDexedPresetDataV2Size);
+        // v3 and newer -- the 2 trailing fold fields, plus gain01 for v4,
+        // plus mod_wheel_target/midi_channel for v5, plus op_switch for
+        // v6. Older files leave data's own default-member-initializer
+        // values in place.
+        size_t end = hdr.version == kDexedPresetFileVersionV3   ? kDexedPresetDataV3Size
+                     : hdr.version == kDexedPresetFileVersionV4 ? kDexedPresetDataV4Size
+                     : hdr.version == kDexedPresetFileVersionV5 ? kDexedPresetDataV5Size
+                                                                : sizeof(data);
+        UINT want = (UINT)(end - kDexedPresetDataV2Size);
         UINT fold_br;
         fr = f_read(&file, &data.fold_amount01, want, &fold_br);
         ok = fr == FR_OK && fold_br == want;
@@ -2169,6 +2190,7 @@ bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
     if(ok
        && (memcmp(hdr.magic, "ENSP", 4) != 0
            || (hdr.version != kEnsemblePresetFileVersion
+               && hdr.version != kEnsemblePresetFileVersionV2
                && hdr.version != kEnsemblePresetFileVersionV1)))
     {
         ok = false;
@@ -2184,9 +2206,11 @@ bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
     if(ok)
     {
         // A v1 file stops just before gain01, which then keeps its
-        // default (0 = unity) -- exactly how it sounded before.
-        UINT want = hdr.version == kEnsemblePresetFileVersionV1 ? (UINT)kEnsemblePresetDataV1Size
-                                                                : (UINT)sizeof(data);
+        // default (0 = unity) -- exactly how it sounded before. A v2
+        // file stops before mod_wheel_target ("not stored").
+        UINT want = hdr.version == kEnsemblePresetFileVersionV1   ? (UINT)kEnsemblePresetDataV1Size
+                    : hdr.version == kEnsemblePresetFileVersionV2 ? (UINT)kEnsemblePresetDataV2Size
+                                                                  : (UINT)sizeof(data);
         fr = f_read(&file, &data, want, &br);
         ok = fr == FR_OK && br == want;
         if(!ok)
@@ -3093,10 +3117,14 @@ struct SampleSynthVoiceUserPresetFileHeader
 };
 // 2: + gain01, appended -- a v1 file is everything before it (the
 // struct's own tail padding lands exactly where gain01 now starts).
-constexpr uint32_t kSampleSynthVoiceUserPresetFileVersion   = 2;
+// 3: + midi_channel, appended the same way.
+constexpr uint32_t kSampleSynthVoiceUserPresetFileVersion   = 3;
+constexpr uint32_t kSampleSynthVoiceUserPresetFileVersionV2 = 2;
 constexpr uint32_t kSampleSynthVoiceUserPresetFileVersionV1 = 1;
 constexpr size_t   kSampleSynthVoiceUserPresetV1Size
     = offsetof(SampleSynthVoiceUserPreset, gain01);
+constexpr size_t   kSampleSynthVoiceUserPresetV2Size
+    = offsetof(SampleSynthVoiceUserPreset, midi_channel);
 
 // Nested under kSampleSynthFolder ("SAMPLES/DRUM PRESETS/"), same
 // reasoning as SampleSynthVoiceUserPresetFilename() above.
@@ -3113,10 +3141,14 @@ struct SampleSynthDrumUserPresetFileHeader
 // presets pointed at numbered kits that no longer exist, so they're a
 // clean reject rather than a migration.
 // 3: + gain01, appended, same as the voice presets' v2 above.
-constexpr uint32_t kSampleSynthDrumUserPresetFileVersion   = 3;
+// 4: + midi_channel, appended, same as the voice presets' v3.
+constexpr uint32_t kSampleSynthDrumUserPresetFileVersion   = 4;
+constexpr uint32_t kSampleSynthDrumUserPresetFileVersionV3 = 3;
 constexpr uint32_t kSampleSynthDrumUserPresetFileVersionV2 = 2;
 constexpr size_t   kSampleSynthDrumUserPresetV2Size
     = offsetof(SampleSynthDrumUserPreset, gain01);
+constexpr size_t   kSampleSynthDrumUserPresetV3Size
+    = offsetof(SampleSynthDrumUserPreset, midi_channel);
 } // namespace
 
 bool SaveSampleSynthVoiceUserPreset(int slot, const SampleSynthVoiceUserPreset& preset)
@@ -3196,6 +3228,7 @@ bool LoadSampleSynthVoiceUserPreset(int slot, SampleSynthVoiceUserPreset* out_pr
     if(ok
        && (memcmp(hdr.magic, "SVUP", 4) != 0
            || (hdr.version != kSampleSynthVoiceUserPresetFileVersion
+               && hdr.version != kSampleSynthVoiceUserPresetFileVersionV2
                && hdr.version != kSampleSynthVoiceUserPresetFileVersionV1)))
     {
         ok = false;
@@ -3212,6 +3245,8 @@ bool LoadSampleSynthVoiceUserPreset(int slot, SampleSynthVoiceUserPreset* out_pr
     {
         UINT want = hdr.version == kSampleSynthVoiceUserPresetFileVersionV1
                         ? (UINT)kSampleSynthVoiceUserPresetV1Size
+                    : hdr.version == kSampleSynthVoiceUserPresetFileVersionV2
+                        ? (UINT)kSampleSynthVoiceUserPresetV2Size
                         : (UINT)sizeof(data);
         fr = f_read(&file, &data, want, &br);
         ok = fr == FR_OK && br == want;
@@ -3363,6 +3398,7 @@ bool LoadSampleSynthDrumUserPreset(int slot, SampleSynthDrumUserPreset* out_pres
     if(ok
        && (memcmp(hdr.magic, "SDUP", 4) != 0
            || (hdr.version != kSampleSynthDrumUserPresetFileVersion
+               && hdr.version != kSampleSynthDrumUserPresetFileVersionV3
                && hdr.version != kSampleSynthDrumUserPresetFileVersionV2)))
     {
         ok = false;
@@ -3379,6 +3415,8 @@ bool LoadSampleSynthDrumUserPreset(int slot, SampleSynthDrumUserPreset* out_pres
     {
         UINT want = hdr.version == kSampleSynthDrumUserPresetFileVersionV2
                         ? (UINT)kSampleSynthDrumUserPresetV2Size
+                    : hdr.version == kSampleSynthDrumUserPresetFileVersionV3
+                        ? (UINT)kSampleSynthDrumUserPresetV3Size
                         : (UINT)sizeof(data);
         fr = f_read(&file, &data, want, &br);
         ok = fr == FR_OK && br == want;
@@ -3446,6 +3484,285 @@ bool DuplicateSampleSynthDrumUserPreset(int slot, int* out_new_slot, ProgressFn 
     }
     char dst[40];
     SampleSynthDrumUserPresetFilename(new_slot, dst, sizeof(dst));
+    if(!CopyFileChunked(src, dst, on_progress))
+        return false;
+    *out_new_slot = new_slot;
+    return true;
+}
+
+namespace
+{
+void SynthSnapshotFilename(int slot, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "SNAPSHOTS/SNAP%03d.DAT", slot);
+}
+struct SynthSnapshotFileHeader
+{
+    char     magic[4]; // "SNAP"
+    uint32_t version;
+    uint32_t num_sections;
+    uint32_t audio_len; // Grains audio, samples per channel
+};
+constexpr uint32_t kSynthSnapshotFileVersion = 1;
+// Each section is a uint32 byte size then that struct's raw bytes, in
+// SynthSnapshot's own member order. Every one of these structs only ever
+// grows by appending fields, so a section saved by older firmware is a
+// prefix of today's struct (the rest keeps its defaults), and a longer
+// one from newer firmware is cut to what this build knows -- the same
+// rule each engine's own preset file already follows, without a
+// snapshot version bump every time an engine gains a field.
+constexpr uint32_t kSynthSnapshotNumSections = 6;
+
+void SynthSnapshotSections(SynthSnapshot* s, void** ptrs, uint32_t* sizes)
+{
+    ptrs[0] = &s->info;          sizes[0] = sizeof(s->info);
+    ptrs[1] = &s->granular;      sizes[1] = sizeof(s->granular);
+    ptrs[2] = &s->dexed;         sizes[2] = sizeof(s->dexed);
+    ptrs[3] = &s->ensemble;      sizes[3] = sizeof(s->ensemble);
+    ptrs[4] = &s->sampler_voice; sizes[4] = sizeof(s->sampler_voice);
+    ptrs[5] = &s->sampler_drum;  sizes[5] = sizeof(s->sampler_drum);
+}
+} // namespace
+
+bool SaveSynthSnapshot(int                  slot,
+                       const SynthSnapshot& snap,
+                       const float*         granular_l,
+                       const float*         granular_r,
+                       size_t               granular_len,
+                       ProgressFn           on_progress)
+{
+    if(!card_ready || slot < 1 || slot > kMaxSynthSnapshots)
+        return false;
+
+    FRESULT mkdir_res = f_mkdir("SNAPSHOTS");
+    if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
+    {
+        SetError("mkdir", mkdir_res);
+        return false;
+    }
+
+    char fname[32];
+    SynthSnapshotFilename(slot, fname, sizeof(fname));
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static SynthSnapshotFileHeader hdr;
+    hdr = SynthSnapshotFileHeader{};
+    memcpy(hdr.magic, "SNAP", 4);
+    hdr.version      = kSynthSnapshotFileVersion;
+    hdr.num_sections = kSynthSnapshotNumSections;
+    hdr.audio_len    = (granular_l && granular_r) ? (uint32_t)granular_len : 0;
+
+    static SynthSnapshot data;
+    data = snap;
+    void*    ptrs[kSynthSnapshotNumSections];
+    uint32_t sizes[kSynthSnapshotNumSections];
+    SynthSnapshotSections(&data, ptrs, sizes);
+
+    UINT bw;
+    fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(hdr);
+    for(uint32_t i = 0; ok && i < kSynthSnapshotNumSections; i++)
+    {
+        static uint32_t size;
+        size = sizes[i];
+        fr   = f_write(&file, &size, sizeof(size), &bw);
+        ok   = fr == FR_OK && bw == sizeof(size);
+        if(ok)
+        {
+            fr = f_write(&file, ptrs[i], sizes[i], &bw);
+            ok = fr == FR_OK && bw == sizes[i];
+        }
+    }
+    if(!ok)
+        SetError("data", fr);
+
+    const float* srcs[2] = {granular_l, granular_r};
+    for(int ch = 0; ok && ch < 2 && hdr.audio_len > 0; ch++)
+    {
+        UINT bytes = (UINT)(hdr.audio_len * sizeof(float));
+        fr         = f_write(&file, srcs[ch], bytes, &bw);
+        ok         = fr == FR_OK && bw == bytes;
+        if(!ok)
+        {
+            char step[8];
+            snprintf(step, sizeof(step), "aud%d", ch);
+            SetError(step, fr);
+            break;
+        }
+        if(on_progress)
+            on_progress((float)(ch + 1) / 2.f);
+    }
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+bool LoadSynthSnapshot(int            slot,
+                       SynthSnapshot* out_snap,
+                       float*         out_granular_l,
+                       float*         out_granular_r,
+                       size_t         granular_capacity,
+                       size_t*        out_audio_len,
+                       ProgressFn     on_progress)
+{
+    if(!card_ready || slot < 1 || slot > kMaxSynthSnapshots || !out_snap)
+        return false;
+
+    char fname[32];
+    SynthSnapshotFilename(slot, fname, sizeof(fname));
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, fname, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+
+    static SynthSnapshotFileHeader hdr;
+    hdr = SynthSnapshotFileHeader{};
+    UINT br;
+    fr      = f_read(&file, &hdr, sizeof(hdr), &br);
+    bool ok = fr == FR_OK && br == sizeof(hdr);
+    if(ok && (memcmp(hdr.magic, "SNAP", 4) != 0 || hdr.version != kSynthSnapshotFileVersion))
+    {
+        ok = false;
+        SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
+    }
+    else if(!ok)
+    {
+        SetError("hdr", fr);
+    }
+
+    static SynthSnapshot data;
+    data = SynthSnapshot{};
+    void*    ptrs[kSynthSnapshotNumSections];
+    uint32_t sizes[kSynthSnapshotNumSections];
+    SynthSnapshotSections(&data, ptrs, sizes);
+    for(uint32_t i = 0; ok && i < hdr.num_sections; i++)
+    {
+        static uint32_t size;
+        fr = f_read(&file, &size, sizeof(size), &br);
+        ok = fr == FR_OK && br == sizeof(size);
+        if(!ok)
+            break;
+        // A section this build doesn't know about is skipped whole.
+        uint32_t want = i < kSynthSnapshotNumSections ? (size < sizes[i] ? size : sizes[i]) : 0;
+        if(want > 0)
+        {
+            fr = f_read(&file, ptrs[i], want, &br);
+            ok = fr == FR_OK && br == want;
+        }
+        if(ok && size > want)
+        {
+            fr = f_lseek(&file, f_tell(&file) + (size - want));
+            ok = fr == FR_OK;
+        }
+    }
+    if(!ok && GetLastError()[0] == '\0')
+        SetError("data", fr);
+
+    size_t len = 0;
+    if(ok && out_audio_len)
+    {
+        len = hdr.audio_len;
+        if(len > granular_capacity)
+            len = granular_capacity; // never write past what the caller actually owns
+        float*        dsts[2]     = {out_granular_l, out_granular_r};
+        const FSIZE_t audio_start = f_tell(&file);
+        for(int ch = 0; ok && ch < 2 && len > 0; ch++)
+        {
+            // R starts after the whole saved L channel, even if L was cut short.
+            if(ch == 1)
+            {
+                fr = f_lseek(&file, audio_start + (FSIZE_t)hdr.audio_len * sizeof(float));
+                ok = fr == FR_OK;
+                if(!ok)
+                    break;
+            }
+            UINT bytes = (UINT)(len * sizeof(float));
+            fr         = f_read(&file, dsts[ch], bytes, &br);
+            ok         = fr == FR_OK && br == bytes;
+            if(!ok)
+            {
+                char step[8];
+                snprintf(step, sizeof(step), "aud%d", ch);
+                SetError(step, fr);
+                break;
+            }
+            if(on_progress)
+                on_progress((float)(ch + 1) / 2.f);
+        }
+        *out_audio_len = ok ? len : 0;
+    }
+    if(ok)
+        *out_snap = data;
+
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+int ListSynthSnapshots(int* out_numbers, int max_out)
+{
+    return ListSlotFolder("SNAPSHOTS", "SNAP", 1, kMaxSynthSnapshots, out_numbers, max_out);
+}
+
+int NextFreeSynthSnapshotSlot()
+{
+    return NextFreeSlotFolder("SNAPSHOTS", "SNAP", 1, kMaxSynthSnapshots);
+}
+
+// Same gap-closing delete and chunked copy as every other slot folder
+// (see DeleteGranularPreset()/DuplicateGranularPreset()) -- a snapshot
+// can carry Grains audio, so the copy can take a moment.
+bool DeleteSynthSnapshot(int slot, int* loaded_slot_inout)
+{
+    if(!card_ready || slot < 1 || slot > kMaxSynthSnapshots)
+        return false;
+    char fname[32];
+    SynthSnapshotFilename(slot, fname, sizeof(fname));
+    if(!DeleteFileGeneric(fname))
+        return false;
+    if(loaded_slot_inout && *loaded_slot_inout == slot)
+        *loaded_slot_inout = -1;
+    CompactSlotsAfterDelete(slot, kMaxSynthSnapshots, SynthSnapshotFilename, loaded_slot_inout);
+    return true;
+}
+
+bool DuplicateSynthSnapshot(int slot, int* out_new_slot, ProgressFn on_progress)
+{
+    if(!out_new_slot)
+        return false;
+    *out_new_slot = -1;
+    if(!card_ready || slot < 1 || slot > kMaxSynthSnapshots)
+        return false;
+    char    src[32];
+    FILINFO fno;
+    SynthSnapshotFilename(slot, src, sizeof(src));
+    if(f_stat(src, &fno) != FR_OK)
+    {
+        SetError("dupsrc", FR_NO_FILE);
+        return false;
+    }
+    int new_slot = NextFreeSynthSnapshotSlot();
+    if(new_slot < 0)
+    {
+        SetError("dupslot", FR_OK);
+        return false;
+    }
+    char dst[32];
+    SynthSnapshotFilename(new_slot, dst, sizeof(dst));
     if(!CopyFileChunked(src, dst, on_progress))
         return false;
     *out_new_slot = new_slot;
@@ -5977,6 +6294,65 @@ bool ExportWav(TempoClock&  tempo,
         SetError("close", close_res);
 
     return ok && close_res == FR_OK;
+}
+
+namespace
+{
+constexpr const char* kLooperDefaultFilename = "LOOPER.DAT";
+struct LooperDefaultFile
+{
+    char     magic[4]; // "LOOP"
+    uint32_t version;
+    uint32_t on;
+};
+constexpr uint32_t kLooperDefaultFileVersion = 1;
+} // namespace
+
+bool SaveLooperDefault(bool on)
+{
+    if(!card_ready)
+        return false;
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, kLooperDefaultFilename, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+    static LooperDefaultFile data;
+    data = LooperDefaultFile{};
+    memcpy(data.magic, "LOOP", 4);
+    data.version = kLooperDefaultFileVersion;
+    data.on      = on ? 1u : 0u;
+    UINT bw;
+    fr      = f_write(&file, &data, sizeof(data), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(data);
+    if(!ok)
+        SetError("data", fr);
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+bool LoadLooperDefault(bool* out_on)
+{
+    if(!card_ready || !out_on)
+        return false;
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    if(f_open(&file, kLooperDefaultFilename, FA_READ) != FR_OK)
+        return false; // never saved -- not an error
+    static LooperDefaultFile data;
+    data = LooperDefaultFile{};
+    UINT br;
+    FRESULT fr = f_read(&file, &data, sizeof(data), &br);
+    bool    ok = fr == FR_OK && br == sizeof(data) && memcmp(data.magic, "LOOP", 4) == 0
+              && data.version == kLooperDefaultFileVersion;
+    f_close(&file);
+    if(ok)
+        *out_on = data.on != 0;
+    return ok;
 }
 
 bool SavePrefs(TempoClock&  tempo,

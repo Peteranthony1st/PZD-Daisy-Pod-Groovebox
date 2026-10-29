@@ -98,6 +98,11 @@ class DexedSynth
         mod_wheel_target_ = (ModWheelTarget)(((int)mod_wheel_target_ + 1) % 3);
         ApplyModWheelTarget();
     }
+    void SetModWheelTarget(ModWheelTarget t)
+    {
+        mod_wheel_target_ = (ModWheelTarget)((int)t % 3);
+        ApplyModWheelTarget();
+    }
     ModWheelTarget GetModWheelTarget() const { return mod_wheel_target_; }
     const char*    GetModWheelTargetName() const
     {
@@ -283,9 +288,22 @@ class DexedSynth
         // Added with the Mix page's Gain -- same trailing-field
         // convention again; 0 = 0 dB, so older presets sound unchanged.
         float   gain01 = 0.f;
+        // Added in preset file v5. -1 = not stored (factory patches and
+        // older files): loading leaves the current target alone.
+        int32_t mod_wheel_target = -1;
+        // The Ui's own Dexed MIDI channel (-1 = Omni), filled in by the
+        // Ui on a user save -- CapturePreset() never sets it. -2 = not
+        // stored: loading leaves the current channel alone.
+        int32_t midi_channel = -2;
+        // Added in preset file v6 -- the DX7 front panel's OP ON/OFF
+        // switches (bit n = operator array index n, i.e. HW OP 6-n).
+        // -1 = not stored (factory/SysEx patches and older files):
+        // loading turns all six operators on, same as a real DX7.
+        int32_t op_switch = -1;
     };
     void ApplyPreset(const DexedPresetData& p)
     {
+        SetOpSwitch(p.op_switch >= 0 ? (uint8_t)(p.op_switch & 0x3f) : 0x3f);
         SetPatch(p.patch, p.reverb_send01, p.output_level01);
         SetFilterMode((FilterMode)p.filter_mode);
         SetFilterCutoff01(p.filter_cutoff01);
@@ -295,8 +313,21 @@ class DexedSynth
         SetFoldAmount01(p.fold_amount01);
         SetFoldTrim01(p.fold_trim01);
         SetGain01(p.gain01);
+        if(p.mod_wheel_target >= 0)
+            SetModWheelTarget((ModWheelTarget)p.mod_wheel_target);
     }
     DexedPresetData CapturePreset() const;
+
+    // OP ON/OFF -- bit n = operator array index n (HW OP 6-n), set =
+    // sounding. A muted operator's envelope still runs (see
+    // Dx7Note::compute()), so turning it back on mid-note is seamless.
+    void    SetOpSwitch(uint8_t mask) { ctrls_.opSwitch = mask & 0x3f; }
+    uint8_t GetOpSwitch() const { return ctrls_.opSwitch; }
+
+    // The DX7's own INIT VOICE: algorithm 1, OP1 alone at level 99, a
+    // plain sine with an organ envelope -- the standard blank starting
+    // point for building a sound. Every other field keeps its default.
+    static DexedPresetData GetInitVoice();
 
     // Factory presets: real DX7 patches, embedded from freely-
     // distributed real SysEx bank data (see dexed_factory_data.h/.cpp's
@@ -371,6 +402,8 @@ class DexedSynth
     // the current patch_ to every voice with held_note != -1 via
     // Dx7Note::update(), using that voice's own cached velocity.
     void ApplyPatchToHeldVoices();
+    // A key with TRANSPOSE (patch byte 144) applied, clamped to MIDI range.
+    int  TransposedNote(int note) const;
 
     struct Voice
     {

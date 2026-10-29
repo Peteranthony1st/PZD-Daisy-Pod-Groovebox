@@ -15,7 +15,7 @@ matching Import feature would otherwise silently find nothing:
   DRUM PACK IMPORT/    Sampler drum-pack import: KITS/ and BREAKS/
   SOUND PACK IMPORT/   Sampler sound-pack import
 
-The rest (PERFORMANCES/, GRAINS/, DEXED/, DEXED/IMPORTS/, EXPORTS/,
+The rest (PERFORMANCES/, SNAPSHOTS/, GRAINS/, DEXED/, DEXED/IMPORTS/, EXPORTS/,
 custom/, SAMPLES/...) are included too so a fresh card already looks
 like a populated one and you can see at a glance what each folder is
 for -- see the README.txt inside each one.

@@ -95,6 +95,7 @@ FmOperatorRouting FmCore::get_operator_routing(uint8_t algorithm, int op)
   r.output_bus    = flags & 3;
   r.sums          = (flags & OUT_BUS_ADD) != 0;
   r.has_feedback  = (flags & (FB_IN | FB_OUT)) == (FB_IN | FB_OUT);
+  r.fb_out        = (flags & (FB_IN | FB_OUT)) == FB_OUT;
   return r;
 }
 

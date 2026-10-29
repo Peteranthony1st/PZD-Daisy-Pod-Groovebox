@@ -12,6 +12,11 @@
 #include <cctype>
 #include <math.h>
 
+// msfa's own keyboard level scaling (dx7note.cpp) -- drawn by
+// DrawLevelScalingGraph() so the graph matches what the engine plays.
+int ScaleLevel(int midinote, int break_pt, int left_depth, int right_depth, int left_curve,
+               int right_curve);
+
 using namespace daisy;
 
 namespace
@@ -242,6 +247,12 @@ void Ui::ApplyStartupDefaults()
     int        bars, dexed_ch, granular_ch, ensemble_ch, sample_synth_ch;
     bool       byp, metro_on;
     FilterMode mode;
+    // Global:Looper's power-up default, its own file -- read first, since
+    // a card with no PREFS.DAT returns early below. Nothing is recorded
+    // yet at boot, so starting disabled needs none of B1's resets.
+    if(PerformanceStore::LoadLooperDefault(&looper_default_on_))
+        looper_enabled_ = looper_default_on_;
+
     // Starts as the current values -- only overwritten by a v16+ file.
     PerformanceStore::DelayState prefs_delay = GetDelayState();
     if(!PerformanceStore::LoadPrefs(&bpm, &bars, &master_vol01, &byp, &mode, &cutoff01,
@@ -370,6 +381,11 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             GlobalPage new_page = (GlobalPage)p;
             if(new_page == GlobalPage::File && global_page_ != GlobalPage::File)
                 file_slots_dirty_ = true; // re-scan the card on entry
+            if(new_page == GlobalPage::Snap && global_page_ != GlobalPage::Snap)
+            {
+                snap_slots_dirty_ = true;
+                snap_status_[0]   = '\0';
+            }
             if(new_page == GlobalPage::Export && global_page_ != GlobalPage::Export)
                 export_status_[0] = '\0'; // clear any stale result on entry
             if(new_page == GlobalPage::SdMgmt && global_page_ != GlobalPage::SdMgmt)
@@ -747,6 +763,12 @@ void Ui::HandleButton2(const UiControlEvents& events)
         {
             if(!sd_mgmt_in_folder_)
                 SdMgmtOpenBox();
+            else if(!in_items && SdMgmtGlobalBox())
+            {
+                sd_mgmt_global_kind_ = sd_mgmt_list_cursor_ > 0 ? 1 : 0; // 0 Perf, 1 Snapshots
+                sd_mgmt_cursor_      = 0;
+                sd_mgmt_status_[0]   = '\0';
+            }
             else if(!in_items && SdMgmtDrumUserBox())
             {
                 sd_mgmt_drum_kind_ = sd_mgmt_list_cursor_ > 0 ? 1 : 0; // 0 Kits, 1 Breaks
@@ -783,6 +805,74 @@ void Ui::HandleButton2(const UiControlEvents& events)
             }
             else if(!button2_long_fired_ && events.btn2_held_ms > kSdMgmtDeleteHoldMs)
                 TriggerSdMgmtDelete();
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::Global && global_page_ == GlobalPage::Looper)
+    {
+        // Default On/Off for power-up -- saved straight away, separate
+        // from B1's live On/Off.
+        if(events.btn2_released)
+        {
+            if(!PerformanceStore::IsCardPresent())
+                PerformanceStore::Remount();
+            bool next         = !looper_default_on_;
+            g_audio_suspended = true; // see TriggerSave() -- a blocking SD write
+            bool ok           = PerformanceStore::SaveLooperDefault(next);
+            g_audio_suspended = false;
+            if(ok)
+            {
+                looper_default_on_ = next;
+                looper_status_[0]  = '\0';
+            }
+            else
+                snprintf(looper_status_, sizeof(looper_status_), "%s",
+                          PerformanceStore::IsCardPresent() ? "Save failed" : "No SD card");
+            button2_long_fired_ = false;
+        }
+    }
+    else if(screen_ == Screen::Global && global_page_ == GlobalPage::Snap)
+    {
+        // Tap to open the list; inside it, a tap loads the highlighted
+        // snapshot and stays in the list. Saving keeps Global:Perf's
+        // 800 ms hold (it can overwrite).
+        bool can_confirm_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
+        if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_ && can_confirm_save)
+        {
+            button2_long_fired_ = true;
+            TriggerSaveSnapshot(save_as_new_);
+            save_load_mode_ = SaveLoadMode::Idle;
+        }
+        if(events.btn2_released)
+        {
+            if(button2_long_fired_)
+            {
+                // The hold above already saved -- this release ends it.
+            }
+            else if(can_confirm_save)
+            {
+                if(events.btn2_held_ms > 800.f)
+                {
+                    TriggerSaveSnapshot(save_as_new_);
+                    save_load_mode_ = SaveLoadMode::Idle;
+                }
+            }
+            else if(save_load_mode_ == SaveLoadMode::BrowsingLoad)
+            {
+                if(snap_cursor_ < snap_slot_count_)
+                    TriggerLoadSnapshot(snap_slots_[snap_cursor_]);
+            }
+            else if(!PerformanceStore::IsCardPresent())
+            {
+                PerformanceStore::Remount();
+                snap_slots_dirty_ = true;
+            }
+            else
+            {
+                save_load_mode_   = SaveLoadMode::BrowsingLoad;
+                snap_slots_dirty_ = true;
+                snap_status_[0]   = '\0';
+            }
             button2_long_fired_ = false;
         }
     }
@@ -1496,6 +1586,23 @@ void Ui::OnButton1Short()
                     save_as_new_    = loaded_slot_ < 0;
                 }
             }
+            else if(global_page_ == GlobalPage::Snap)
+            {
+                if(save_load_mode_ != SaveLoadMode::Idle)
+                    save_load_mode_ = SaveLoadMode::Idle; // Back
+                else if(!PerformanceStore::IsCardPresent())
+                {
+                    PerformanceStore::Remount();
+                    snap_slots_dirty_ = true;
+                }
+                else
+                {
+                    // Reveal Overwrite / Save New -- K1 picks, holding
+                    // Button2 confirms, same as Global:Perf.
+                    save_load_mode_ = SaveLoadMode::ChoosingSave;
+                    save_as_new_    = snap_loaded_slot_ < 0;
+                }
+            }
             else if(global_page_ == GlobalPage::Export)
             {
                 if(!PerformanceStore::IsCardPresent())
@@ -1604,6 +1711,8 @@ void Ui::OnButton1Short()
                     sd_mgmt_bank_ = -1;
                 else if(SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ >= 0)
                     sd_mgmt_drum_kind_ = -1;
+                else if(SdMgmtGlobalBox() && sd_mgmt_global_kind_ >= 0)
+                    sd_mgmt_global_kind_ = -1;
                 else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports
                         && sd_mgmt_smp_kind_ >= 0)
                 {
@@ -1705,17 +1814,7 @@ void Ui::OnButton1Short()
             }
             break;
         case Screen::Dexed:
-            if(dexed_param_page_ == DexedParamPage::Algo && dexed_)
-            {
-                // Button1 cycles backward, Button2 (OnButton2Short())
-                // cycles forward -- a two-direction cycle since, unlike
-                // Layer:Filter/Granular:Filter's short mode lists,
-                // stepping past algorithm 32 back around to 1 (or vice
-                // versa) to reach a nearby one is a real, common need.
-                int algo = (dexed_->GetPatchByte(134) + 31) % 32;
-                dexed_->SetPatchByte(134, (uint8_t)algo);
-            }
-            else if(dexed_param_page_ == DexedParamPage::Filter && dexed_)
+            if(dexed_param_page_ == DexedParamPage::Filter && dexed_)
             {
                 // Same "Button1 cycles" idiom as Layer:Filter/Granular:Filter.
                 int n = (int)FilterMode::kNumModes;
@@ -1803,11 +1902,14 @@ void Ui::OnButton1Short()
             break;
         case Screen::DexedOperator:
         {
+            if(IsDexedVoicePage(dexed_op_page_))
+                break; // voice-wide pages -- no operator to select
             // Button1 cycles which of the 6 operators is being edited --
             // rotate stays reserved for DexedOpParamPage navigation, same
             // "Button1 cycles a non-page selector" convention as Algo's
             // own algorithm cycle above.
-            dexed_op_index_ = (dexed_op_index_ + 1) % 6;
+            // OP1 -> OP6 order: array index 5 is OP1, so step downward.
+            dexed_op_index_ = (dexed_op_index_ + 5) % 6;
             // Real bug, confirmed on hardware: DexedOpRatioLevel/Detune/
             // EgRateAD/etc. are each ONE KnobContext shared across all 6
             // operators (branching internally on dexed_op_index_, same
@@ -2000,34 +2102,19 @@ void Ui::OnButton2Short()
     }
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::Export)
         TriggerExportMicroDexed();
-    else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::Algo && dexed_)
-    {
-        // Forward direction of the Algo page's two-way cycle -- see
-        // OnButton1Short()'s own comment for why this page (uniquely)
-        // gets both directions.
-        int algo = (dexed_->GetPatchByte(134) + 1) % 32;
-        dexed_->SetPatchByte(134, (uint8_t)algo);
-    }
     else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::FX)
         dexed_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
     else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::Mix)
         dexed_mix_target_gain_ = true; // knobs -> Gain
     else if(screen_ == Screen::Dexed && dexed_param_page_ == DexedParamPage::Vibrato)
         // Toggles (not just sets true) -- same reasoning as
-        // DexedOpParamPage::EgRate's own Button2 above: Button1 on this
+        // Screen::DexedOperator's own Button2 toggles: Button1 on this
         // page is already committed to cycling the mod wheel's target,
         // so there's no second button free to select Speed/Depth
         // explicitly; Button2 alone has to cover both directions.
         dexed_vibrato_target_sens_ = !dexed_vibrato_target_sens_;
-    else if(screen_ == Screen::DexedOperator && dexed_op_page_ == DexedOpParamPage::EgRate)
-        // Toggles (not just sets true) -- unlike Granular's own ADSR
-        // page, Button1 is already committed to operator-select duty
-        // here (see OnButton1Short()), so there's no second button free
-        // to select AD explicitly; Button2 alone has to cover both
-        // directions.
-        dexed_op_egrate_target_sr_ = !dexed_op_egrate_target_sr_;
-    else if(screen_ == Screen::DexedOperator && dexed_op_page_ == DexedOpParamPage::EgLevel)
-        dexed_op_eglevel_target_sr_ = !dexed_op_eglevel_target_sr_;
+    else if(screen_ == Screen::DexedOperator)
+        OnDexedOperatorButton2();
     else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::Grain)
         granular_grain_target_gap_jitter_ = true; // knobs -> Gap+Jitter
     else if(screen_ == Screen::Granular && granular_param_page_ == GranularParamPage::Position
@@ -2108,7 +2195,8 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                                : KnobContext::GlobalReverbTonePreDelay;
                 case GlobalPage::ReverbDiffusion: return KnobContext::GlobalReverbDiffusion;
                 case GlobalPage::Speed: return KnobContext::GlobalSpeed;
-                case GlobalPage::File: return KnobContext::GlobalFile;
+                case GlobalPage::File:
+                case GlobalPage::Snap: return KnobContext::GlobalFile; // list browse, no pickup
                 case GlobalPage::Export: return KnobContext::GlobalExport;
                 case GlobalPage::Granular: return KnobContext::GlobalGranular;
                 case GlobalPage::Looper: return KnobContext::GlobalLooper;
@@ -2149,18 +2237,33 @@ Ui::KnobContext Ui::CurrentKnobContext() const
             switch(dexed_op_page_)
             {
                 case DexedOpParamPage::Algo: return KnobContext::DexedOpAlgo;
-                case DexedOpParamPage::RatioLevel: return KnobContext::DexedOpRatioLevel;
+                case DexedOpParamPage::Frequency: return KnobContext::DexedOpFrequency;
                 case DexedOpParamPage::Detune: return KnobContext::DexedOpDetune;
+                case DexedOpParamPage::OutputLevel: return KnobContext::DexedOpOutputLevel;
                 case DexedOpParamPage::EgRate:
-                    return dexed_op_egrate_target_sr_ ? KnobContext::DexedOpEgRateSR
-                                                          : KnobContext::DexedOpEgRateAD;
+                    return dexed_op_egrate_target34_ ? KnobContext::DexedOpEgRate34
+                                                     : KnobContext::DexedOpEgRate12;
                 case DexedOpParamPage::EgLevel:
-                    return dexed_op_eglevel_target_sr_ ? KnobContext::DexedOpEgLevelSR
-                                                           : KnobContext::DexedOpEgLevelAD;
-                case DexedOpParamPage::AmpModSens: return KnobContext::DexedOpAmpModSens;
-                case DexedOpParamPage::VelocitySens: return KnobContext::DexedOpVelocitySens;
-                case DexedOpParamPage::KeybRateScale: return KnobContext::DexedOpKeybRateScale;
-                default: return KnobContext::DexedOpRatioLevel;
+                    return dexed_op_eglevel_target34_ ? KnobContext::DexedOpEgLevel34
+                                                      : KnobContext::DexedOpEgLevel12;
+                case DexedOpParamPage::LevelScalingCurve:
+                    return dexed_op_bp_target_ ? KnobContext::DexedOpBreakPoint
+                                               : KnobContext::DexedOpLevelScalingCurve;
+                case DexedOpParamPage::LevelScalingDepth:
+                    return KnobContext::DexedOpLevelScalingDepth;
+                case DexedOpParamPage::RateScaling: return KnobContext::DexedOpRateScaling;
+                case DexedOpParamPage::Sensitivity: return KnobContext::DexedOpSensitivity;
+                case DexedOpParamPage::PitchEgRate:
+                    return dexed_pitch_egrate_target34_ ? KnobContext::DexedVoicePitchEgRate34
+                                                        : KnobContext::DexedVoicePitchEgRate12;
+                case DexedOpParamPage::PitchEgLevel:
+                    return dexed_pitch_eglevel_target34_ ? KnobContext::DexedVoicePitchEgLevel34
+                                                         : KnobContext::DexedVoicePitchEgLevel12;
+                case DexedOpParamPage::Lfo: return KnobContext::DexedVoiceLfo;
+                case DexedOpParamPage::LfoDepth: return KnobContext::DexedVoiceLfoDepth;
+                case DexedOpParamPage::ModSens: return KnobContext::DexedVoiceModSens;
+                case DexedOpParamPage::Transpose: return KnobContext::DexedVoiceTranspose;
+                default: return KnobContext::DexedOpAlgo;
             }
         case Screen::Ensemble:
             switch(ensemble_param_page_)
@@ -2349,13 +2452,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::GlobalSdMgmt: break; // browses a list directly, no pickup used
         case KnobContext::GlobalDexed: break; // entry point only -- see Screen::Dexed instead
         case KnobContext::GlobalEnsemble: break; // entry point only -- see Screen::Ensemble instead
-        case KnobContext::DexedAlgo:
-            if(dexed_)
-                // Centre of the current algorithm's 1/32 step -- ApplyKnobs()
-                // floors k1*32, so the step's start would hand a knob just
-                // below it the previous algorithm.
-                k1_pickup_raw_[i] = ((float)dexed_->GetPatchByte(134) + 0.5f) / 32.f;
-            break;
+        case KnobContext::DexedAlgo: break; // view-only -- ALGORITHM is set in Advanced
         case KnobContext::DexedFeedback:
             if(dexed_)
                 k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(135) / 7.f;
@@ -2429,73 +2526,36 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::DexedPreset: break; // browses a list directly, no pickup used
         case KnobContext::DexedUser: break;   // ditto
         case KnobContext::DexedImport: break; // ditto
-        case KnobContext::DexedOpAlgo: break; // view-only here -- see its own comment
-        case KnobContext::DexedOpRatioLevel:
-            if(dexed_)
-            {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 18) / 32.f; // coarse
-                k2_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 16) / 99.f; // output level
-            }
-            break;
+        case KnobContext::DexedOpAlgo:
+        case KnobContext::DexedOpFrequency:
         case KnobContext::DexedOpDetune:
+        case KnobContext::DexedOpOutputLevel:
+        case KnobContext::DexedOpEgRate12:
+        case KnobContext::DexedOpEgRate34:
+        case KnobContext::DexedOpEgLevel12:
+        case KnobContext::DexedOpEgLevel34:
+        case KnobContext::DexedOpLevelScalingCurve:
+        case KnobContext::DexedOpBreakPoint:
+        case KnobContext::DexedOpLevelScalingDepth:
+        case KnobContext::DexedOpRateScaling:
+        case KnobContext::DexedOpSensitivity:
+        case KnobContext::DexedVoicePitchEgRate12:
+        case KnobContext::DexedVoicePitchEgRate34:
+        case KnobContext::DexedVoicePitchEgLevel12:
+        case KnobContext::DexedVoicePitchEgLevel34:
+        case KnobContext::DexedVoiceLfo:
+        case KnobContext::DexedVoiceLfoDepth:
+        case KnobContext::DexedVoiceModSens:
+        case KnobContext::DexedVoiceTranspose:
             if(dexed_)
             {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 20) / 14.f;
-            }
-            break;
-        case KnobContext::DexedOpEgRateAD:
-            if(dexed_)
-            {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 0) / 99.f; // Rate1
-                k2_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 1) / 99.f; // Rate2
-            }
-            break;
-        case KnobContext::DexedOpEgRateSR:
-            if(dexed_)
-            {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 2) / 99.f; // Rate3
-                k2_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 3) / 99.f; // Rate4
-            }
-            break;
-        case KnobContext::DexedOpEgLevelAD:
-            if(dexed_)
-            {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 4) / 99.f; // Level1
-                k2_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 5) / 99.f; // Level2
-            }
-            break;
-        case KnobContext::DexedOpEgLevelSR:
-            if(dexed_)
-            {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 6) / 99.f; // Level3
-                k2_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 7) / 99.f; // Level4
-            }
-            break;
-        case KnobContext::DexedOpAmpModSens:
-            if(dexed_)
-            {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)(dexed_->GetPatchByte(base + 14) & 3) / 3.f;
-            }
-            break;
-        case KnobContext::DexedOpVelocitySens:
-            if(dexed_)
-            {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 15) / 7.f;
-            }
-            break;
-        case KnobContext::DexedOpKeybRateScale:
-            if(dexed_)
-            {
-                int base = dexed_op_index_ * 21;
-                k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(base + 13) / 7.f;
+                // Same value/max scale ApplyKnobs() rounds back from.
+                DexedEditByte e1, e2;
+                DexedEditBytesFor(ctx, &e1, &e2);
+                if(e1.offset >= 0)
+                    k1_pickup_raw_[i] = (float)dexed_->GetPatchByte(e1.offset) / (float)e1.max;
+                if(e2.offset >= 0)
+                    k2_pickup_raw_[i] = (float)dexed_->GetPatchByte(e2.offset) / (float)e2.max;
             }
             break;
         case KnobContext::EnsembleRegistration:
@@ -3094,6 +3154,20 @@ void Ui::ApplyKnobs()
                     file_cursor_ = idx;
                 }
             }
+            else if(global_page_ == GlobalPage::Snap)
+            {
+                if(save_load_mode_ == SaveLoadMode::ChoosingSave)
+                    save_as_new_ = snap_loaded_slot_ < 0 ? true : k1 >= 0.5f;
+                else if(save_load_mode_ == SaveLoadMode::BrowsingLoad && snap_slot_count_ > 0)
+                {
+                    int idx = (int)(Clampf(k2, 0.f, 1.f) * snap_slot_count_);
+                    if(idx >= snap_slot_count_)
+                        idx = snap_slot_count_ - 1;
+                    if(idx != snap_cursor_)
+                        snap_status_[0] = '\0';
+                    snap_cursor_ = idx;
+                }
+            }
             else if(global_page_ == GlobalPage::Mixer)
             {
                 // The two volumes you reach for live: Master, and Bypass
@@ -3357,15 +3431,7 @@ void Ui::ApplyKnobs()
                 // section time with several notes held to audibly drop
                 // notes while turning the knob, confirmed on real
                 // hardware.
-                case DexedParamPage::Algo:
-                    if(PickUpK1(k1))
-                    {
-                        int algo = (int)(Clampf(k1, 0.f, 1.f) * 32.f);
-                        algo     = algo > 31 ? 31 : algo;
-                        if((uint8_t)algo != dexed_->GetPatchByte(134))
-                            dexed_->SetPatchByte(134, (uint8_t)algo);
-                    }
-                    break;
+                case DexedParamPage::Algo: break; // view-only -- set in Advanced
                 case DexedParamPage::Feedback:
                     if(PickUpK1(k1))
                     {
@@ -3973,111 +4039,23 @@ void Ui::ApplyKnobs()
         {
             if(!dexed_)
                 break;
-            int base = dexed_op_index_ * 21;
-            switch(dexed_op_page_)
+            // Every Advanced page is one or two plain patch bytes -- see
+            // DexedEditBytesFor() for the per-page mapping.
+            DexedEditByte e1, e2;
+            DexedEditBytesFor(CurrentKnobContext(), &e1, &e2);
+            if(e1.offset >= 0 && PickUpK1(k1))
             {
-                case DexedOpParamPage::Algo: break; // view-only here -- see its own comment
-                case DexedOpParamPage::RatioLevel:
-                    if(PickUpK1(k1))
-                    {
-                        int coarse = (int)(Clampf(k1, 0.f, 1.f) * 32.f);
-                        coarse     = coarse > 31 ? 31 : coarse;
-                        if((uint8_t)coarse != dexed_->GetPatchByte(base + 18))
-                            dexed_->SetPatchByte(base + 18, (uint8_t)coarse);
-                    }
-                    if(PickUpK2(k2))
-                    {
-                        int level = (int)(Clampf(k2, 0.f, 1.f) * 99.f + 0.5f);
-                        level     = level > 99 ? 99 : level;
-                        if((uint8_t)level != dexed_->GetPatchByte(base + 16))
-                            dexed_->SetPatchByte(base + 16, (uint8_t)level);
-                    }
-                    break;
-                case DexedOpParamPage::Detune:
-                    if(PickUpK1(k1))
-                    {
-                        int detune = (int)(Clampf(k1, 0.f, 1.f) * 14.f + 0.5f);
-                        detune     = detune > 14 ? 14 : detune;
-                        if((uint8_t)detune != dexed_->GetPatchByte(base + 20))
-                            dexed_->SetPatchByte(base + 20, (uint8_t)detune);
-                    }
-                    break;
-                case DexedOpParamPage::EgRate:
-                {
-                    int off1 = dexed_op_egrate_target_sr_ ? base + 2 : base + 0;
-                    int off2 = dexed_op_egrate_target_sr_ ? base + 3 : base + 1;
-                    if(PickUpK1(k1))
-                    {
-                        int rate = (int)(Clampf(k1, 0.f, 1.f) * 99.f + 0.5f);
-                        rate     = rate > 99 ? 99 : rate;
-                        if((uint8_t)rate != dexed_->GetPatchByte(off1))
-                            dexed_->SetPatchByte(off1, (uint8_t)rate);
-                    }
-                    if(PickUpK2(k2))
-                    {
-                        int rate = (int)(Clampf(k2, 0.f, 1.f) * 99.f + 0.5f);
-                        rate     = rate > 99 ? 99 : rate;
-                        if((uint8_t)rate != dexed_->GetPatchByte(off2))
-                            dexed_->SetPatchByte(off2, (uint8_t)rate);
-                    }
-                    break;
-                }
-                case DexedOpParamPage::EgLevel:
-                {
-                    int off1 = dexed_op_eglevel_target_sr_ ? base + 6 : base + 4;
-                    int off2 = dexed_op_eglevel_target_sr_ ? base + 7 : base + 5;
-                    if(PickUpK1(k1))
-                    {
-                        int level = (int)(Clampf(k1, 0.f, 1.f) * 99.f + 0.5f);
-                        level     = level > 99 ? 99 : level;
-                        if((uint8_t)level != dexed_->GetPatchByte(off1))
-                            dexed_->SetPatchByte(off1, (uint8_t)level);
-                    }
-                    if(PickUpK2(k2))
-                    {
-                        int level = (int)(Clampf(k2, 0.f, 1.f) * 99.f + 0.5f);
-                        level     = level > 99 ? 99 : level;
-                        if((uint8_t)level != dexed_->GetPatchByte(off2))
-                            dexed_->SetPatchByte(off2, (uint8_t)level);
-                    }
-                    break;
-                }
-                case DexedOpParamPage::AmpModSens:
-                    if(PickUpK1(k1))
-                    {
-                        // Only bits 0-1 of this byte are ever read
-                        // (patch[off+14] & 3, see msfa's own
-                        // ampmodsenstab lookup), so only those 4 values
-                        // are worth quantizing to.
-                        int sens = (int)(Clampf(k1, 0.f, 1.f) * 3.f + 0.5f);
-                        sens     = sens > 3 ? 3 : sens;
-                        if((uint8_t)sens != (dexed_->GetPatchByte(base + 14) & 3))
-                            dexed_->SetPatchByte(base + 14, (uint8_t)sens);
-                    }
-                    break;
-                case DexedOpParamPage::VelocitySens:
-                    if(PickUpK1(k1))
-                    {
-                        // Real DX7 key velocity sensitivity range, read
-                        // directly (unmasked) by ScaleVelocity().
-                        int sens = (int)(Clampf(k1, 0.f, 1.f) * 7.f + 0.5f);
-                        sens     = sens > 7 ? 7 : sens;
-                        if((uint8_t)sens != dexed_->GetPatchByte(base + 15))
-                            dexed_->SetPatchByte(base + 15, (uint8_t)sens);
-                    }
-                    break;
-                case DexedOpParamPage::KeybRateScale:
-                    if(PickUpK1(k1))
-                    {
-                        // Real DX7 keyboard rate scaling range, read
-                        // directly (unmasked) by ScaleRate().
-                        int rs = (int)(Clampf(k1, 0.f, 1.f) * 7.f + 0.5f);
-                        rs     = rs > 7 ? 7 : rs;
-                        if((uint8_t)rs != dexed_->GetPatchByte(base + 13))
-                            dexed_->SetPatchByte(base + 13, (uint8_t)rs);
-                    }
-                    break;
-                default: break;
+                int v = (int)(Clampf(k1, 0.f, 1.f) * (float)e1.max + 0.5f);
+                v     = v > e1.max ? e1.max : v;
+                if((uint8_t)v != dexed_->GetPatchByte(e1.offset))
+                    dexed_->SetPatchByte(e1.offset, (uint8_t)v);
+            }
+            if(e2.offset >= 0 && PickUpK2(k2))
+            {
+                int v = (int)(Clampf(k2, 0.f, 1.f) * (float)e2.max + 0.5f);
+                v     = v > e2.max ? e2.max : v;
+                if((uint8_t)v != dexed_->GetPatchByte(e2.offset))
+                    dexed_->SetPatchByte(e2.offset, (uint8_t)v);
             }
             break;
         }
@@ -4790,6 +4768,11 @@ void Ui::DrawGlobalScreen()
         DrawFileScreen();
         return;
     }
+    if(global_page_ == GlobalPage::Snap)
+    {
+        DrawSnapScreen();
+        return;
+    }
     if(global_page_ == GlobalPage::SdMgmt)
     {
         DrawSdMgmtScreen();
@@ -4831,8 +4814,12 @@ void Ui::DrawGlobalScreen()
         disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
         disp_->SetCursor(0, 20);
         WriteUpper(looper_enabled_ ? "Enabled" : "Disabled");
+        disp_->SetCursor(0, 30);
+        WriteUpper(looper_status_[0] != '\0' ? looper_status_
+                                              : (looper_default_on_ ? "Default On" : "Default Off"));
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Toggle On/Off", "", "", "");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Toggle On/Off", "", "",
+                         "Default");
         return;
     }
     if(global_page_ == GlobalPage::Mixer)
@@ -5216,6 +5203,419 @@ void Ui::FormatDelayTime(float time01, char* out, size_t out_size) const
                   (int)(SharedDelay::TimeMs(time01, false, tempo_->GetBpm()) + 0.5f));
 }
 
+// Global:Snap's browse grid reads the highlighted snapshot's settings
+// (no audio) once per slot -- static, not on the stack, at ~1 KB.
+static PerformanceStore::SynthSnapshot g_snap_browse;
+
+void Ui::RefreshSnapSlots()
+{
+    snap_slot_count_ = PerformanceStore::ListSynthSnapshots(snap_slots_,
+                                                             PerformanceStore::kMaxSynthSnapshots);
+    if(PerformanceStore::GetLastError()[0] != '\0')
+        snprintf(snap_status_, sizeof(snap_status_), "Read fail:%s",
+                  PerformanceStore::GetLastError());
+    if(snap_cursor_ >= snap_slot_count_)
+        snap_cursor_ = snap_slot_count_ > 0 ? snap_slot_count_ - 1 : 0;
+    snap_browse_slot_ = -1; // re-read whatever's highlighted
+    snap_slots_dirty_ = false;
+}
+
+void Ui::LiveSnapEngineName(int engine, char* out, size_t out_size)
+{
+    switch(engine)
+    {
+        case 0: // Grains
+            if(!granular_ || granular_->GetSourceLen() == 0)
+                snprintf(out, out_size, "Empty");
+            else if(granular_loaded_lib_name_[0] != '\0')
+                GranularLibDisplayName(granular_loaded_lib_name_, out, out_size);
+            else if(granular_loaded_preset_slot_ > 0)
+                snprintf(out, out_size, "GRAINS%d", granular_loaded_preset_slot_);
+            else
+                snprintf(out, out_size, "Capture");
+            break;
+        case 1: // Dexed -- the patch's own 10-character voice name
+        {
+            char name[11] = {};
+            for(int i = 0; i < 10 && dexed_; i++)
+                name[i] = (char)dexed_->GetPatchByte(145 + i);
+            for(int i = 9; i >= 0 && (name[i] == ' ' || name[i] == '\0'); i--)
+                name[i] = '\0';
+            snprintf(out, out_size, "%s", name[0] != '\0' ? name : "?");
+            break;
+        }
+        case 2: // Ensemble
+        {
+            int loaded = ensemble_loaded_preset_slot_;
+            if(loaded <= 0)
+                snprintf(out, out_size, "New");
+            else if(EnsembleIsFactorySlot(loaded))
+                snprintf(out, out_size, "%s",
+                          EnsembleSynth::GetFactoryPresetName(loaded - kEnsembleFactorySlotBase));
+            else
+                snprintf(out, out_size, "ENSM%d", loaded);
+            break;
+        }
+        default: // Sampler -- whichever face is showing
+            if(sample_synth_mode_ == SampleSynthMode::Drum)
+            {
+                const char* ref   = sample_synth_drum_kit_ref_;
+                const char* slash = strrchr(ref, '/');
+                snprintf(out, out_size, "%s", ref[0] == '\0' ? "Empty" : (slash ? slash + 1 : ref));
+            }
+            else if(sample_synth_voice_source_ == SampleSynthVoiceSource::Imported
+                    && sample_synth_voice_sound_name_[0] != '\0')
+            {
+                snprintf(out, out_size, "%s", sample_synth_voice_sound_name_);
+                size_t len = strlen(out);
+                if(len > 4 && strcasecmp(out + len - 4, ".wav") == 0)
+                    out[len - 4] = '\0';
+            }
+            else if(sample_synth_voice_source_ == SampleSynthVoiceSource::Captured)
+                snprintf(out, out_size, "Capture");
+            else
+                snprintf(out, out_size, "Empty");
+            break;
+    }
+}
+
+void Ui::CaptureSynthSnapshot(PerformanceStore::SynthSnapshot* out)
+{
+    PerformanceStore::SynthSnapshot& snap = *out;
+    snap                                  = PerformanceStore::SynthSnapshot{};
+    PerformanceStore::SynthSnapshot::Info& in = snap.info;
+    in.granular_on        = granular_enabled_;
+    in.dexed_on           = dexed_enabled_;
+    in.ensemble_on        = ensemble_enabled_;
+    in.sampler_voice_on   = sample_synth_voice_enabled_;
+    in.sampler_drum_on    = sample_synth_drum_enabled_;
+    in.sampler_drum       = sample_synth_mode_ == SampleSynthMode::Drum ? 1 : 0;
+    in.granular_slot      = granular_loaded_preset_slot_;
+    in.dexed_slot         = dexed_loaded_preset_slot_;
+    in.ensemble_slot      = ensemble_loaded_preset_slot_;
+    in.sampler_voice_slot = sample_synth_voice_user_loaded_slot_;
+    in.sampler_drum_slot  = sample_synth_drum_user_loaded_slot_;
+    snprintf(in.granular_lib_folder, sizeof(in.granular_lib_folder), "%s",
+              granular_loaded_lib_folder_);
+    snprintf(in.granular_lib_name, sizeof(in.granular_lib_name), "%s", granular_loaded_lib_name_);
+    for(int e = 0; e < 4; e++)
+        LiveSnapEngineName(e, in.names[e], sizeof(in.names[e]));
+
+    if(granular_)
+    {
+        snap.granular              = granular_->CapturePreset();
+        snap.granular.midi_channel = granular_midi_channel_;
+    }
+    if(dexed_)
+    {
+        snap.dexed              = dexed_->CapturePreset();
+        snap.dexed.midi_channel = dexed_midi_channel_;
+    }
+    if(ensemble_)
+    {
+        snap.ensemble              = ensemble_->CapturePreset();
+        snap.ensemble.midi_channel = ensemble_midi_channel_;
+    }
+    if(sample_synth_)
+    {
+        // Only the face that's showing -- the same thing its own User
+        // preset would save. A Voice capture that was never saved as a
+        // Sound has no file to point at, so only its settings go in.
+        if(in.sampler_drum)
+        {
+            PerformanceStore::SampleSynthDrumUserPreset& d = snap.sampler_drum;
+            snprintf(d.kit_ref, sizeof(d.kit_ref), "%s", sample_synth_drum_kit_ref_);
+            d.params             = sample_synth_->CapturePreset();
+            d.break_divide_count = (uint8_t)sample_synth_setup_applied_slices_;
+            d.break_tune_semis   = sample_synth_setup_tune_semis_;
+            d.gain01             = sample_synth_->GetGain01();
+            d.midi_channel       = sample_synth_midi_channel_;
+        }
+        else
+        {
+            PerformanceStore::SampleSynthVoiceUserPreset& v = snap.sampler_voice;
+            if(sample_synth_voice_source_ == SampleSynthVoiceSource::Imported)
+            {
+                snprintf(v.category, sizeof(v.category), "%s", sample_synth_voice_sound_category_);
+                snprintf(v.filename, sizeof(v.filename), "%s", sample_synth_voice_sound_name_);
+            }
+            v.params       = sample_synth_->CapturePreset();
+            v.tune_semis   = sample_synth_imp_tune_semis_;
+            v.mono         = sample_synth_imp_mono_;
+            v.gain01       = sample_synth_->GetGain01();
+            v.midi_channel = sample_synth_midi_channel_;
+        }
+    }
+}
+
+void Ui::TriggerSaveSnapshot(bool force_new)
+{
+    int slot = (!force_new && snap_loaded_slot_ > 0) ? snap_loaded_slot_
+                                                     : PerformanceStore::NextFreeSynthSnapshotSlot();
+    if(slot < 0)
+    {
+        snprintf(snap_status_, sizeof(snap_status_), "Card full/missing");
+        return;
+    }
+    static PerformanceStore::SynthSnapshot snap;
+    CaptureSynthSnapshot(&snap);
+
+    // Carries the Grains audio, so this is a long write -- same
+    // suspend-and-show-progress treatment as TriggerSaveGranularPreset().
+    g_audio_suspended = true;
+    g_progress_disp   = disp_;
+    bool ok = PerformanceStore::SaveSynthSnapshot(
+        slot, snap, granular_ ? granular_->GetSourceL() : nullptr,
+        granular_ ? granular_->GetSourceR() : nullptr, granular_ ? granular_->GetSourceLen() : 0,
+        &Ui::OnSaveLoadProgress);
+    g_progress_disp   = nullptr;
+    g_audio_suspended = false;
+
+    if(ok)
+    {
+        snap_loaded_slot_ = slot;
+        snap_slots_dirty_ = true; // a new slot now exists
+        snprintf(snap_status_, sizeof(snap_status_), "Saved SNAP%d", slot);
+    }
+    else
+    {
+        snprintf(snap_status_, sizeof(snap_status_), "Fail:%s", PerformanceStore::GetLastError());
+    }
+}
+
+void Ui::TriggerLoadSnapshot(int slot)
+{
+    static PerformanceStore::SynthSnapshot snap;
+    size_t audio_len = 0;
+    g_audio_suspended = true; // see LoadGranularUserSlot()
+    g_progress_disp   = disp_;
+    bool ok = PerformanceStore::LoadSynthSnapshot(slot, &snap, granular_capture_buf_l_,
+                                                   granular_capture_buf_r_,
+                                                   granular_capture_capacity_, &audio_len,
+                                                   &Ui::OnSaveLoadProgress);
+    g_progress_disp   = nullptr;
+    g_audio_suspended = false;
+    if(!ok)
+    {
+        snprintf(snap_status_, sizeof(snap_status_), "Fail:%s", PerformanceStore::GetLastError());
+        return;
+    }
+    const PerformanceStore::SynthSnapshot::Info& in = snap.info;
+
+    // Each engine comes back the way its own preset load leaves it --
+    // settings, MIDI channel, loaded-slot tracking, a clean "*" -- plus
+    // its on/off state. Every voice is released first so nothing hangs
+    // over from the sound being replaced.
+    if(granular_)
+    {
+        granular_->AllNotesOff();
+        granular_->ApplyPreset(snap.granular);
+        ApplyPresetMidiChannel(snap.granular.midi_channel, &granular_midi_channel_);
+        granular_->SetSource(granular_capture_buf_l_, granular_capture_buf_r_, audio_len);
+        OnNewGranularCapture(audio_len); // clears the library name, so restore it after
+        granular_loaded_preset_slot_ = in.granular_slot;
+        snprintf(granular_loaded_lib_folder_, sizeof(granular_loaded_lib_folder_), "%s",
+                  in.granular_lib_folder);
+        snprintf(granular_loaded_lib_name_, sizeof(granular_loaded_lib_name_), "%s",
+                  in.granular_lib_name);
+        MarkGranularClean();
+    }
+    granular_enabled_ = in.granular_on;
+
+    if(dexed_)
+    {
+        dexed_->AllNotesOff();
+        dexed_->ApplyPreset(snap.dexed);
+        ApplyPresetMidiChannel(snap.dexed.midi_channel, &dexed_midi_channel_);
+        dexed_loaded_preset_slot_ = in.dexed_slot;
+        dexed_browse_name_slot_   = -2;
+        MarkDexedClean();
+    }
+    dexed_enabled_ = in.dexed_on;
+
+    if(ensemble_)
+    {
+        ensemble_->AllNotesOff();
+        ensemble_->ApplyPreset(snap.ensemble);
+        ApplyPresetMidiChannel(snap.ensemble.midi_channel, &ensemble_midi_channel_);
+        ensemble_loaded_preset_slot_ = in.ensemble_slot;
+        MarkEnsembleClean();
+    }
+    ensemble_enabled_ = in.ensemble_on;
+
+    bool kit_missing = false;
+    if(sample_synth_)
+    {
+        sample_synth_->AllNotesOff();
+        SwitchSampleSynthMode(in.sampler_drum ? SampleSynthMode::Drum : SampleSynthMode::Voice);
+        if(in.sampler_drum)
+        {
+            kit_missing = !ApplySampleSynthDrumUserPreset(snap.sampler_drum);
+            sample_synth_drum_user_loaded_slot_ = in.sampler_drum_slot;
+        }
+        else
+        {
+            ApplySampleSynthVoiceUserPreset(snap.sampler_voice);
+            sample_synth_voice_user_loaded_slot_ = in.sampler_voice_slot;
+        }
+        MarkSampleSynthClean();
+    }
+    sample_synth_voice_enabled_ = in.sampler_voice_on;
+    sample_synth_drum_enabled_  = in.sampler_drum_on;
+
+    snap_loaded_slot_ = slot;
+    snprintf(snap_status_, sizeof(snap_status_),
+              kit_missing ? "SNAP%d: kit missing" : "Loaded SNAP%d", slot);
+}
+
+void Ui::DrawSnapScreen()
+{
+    disp_->SetCursor(0, 0);
+    WriteUpper("Global:Snap");
+    DrawBeatIndicator(disp_->Width() - 41, 0, 3);
+    disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
+
+    if(!PerformanceStore::IsCardPresent())
+    {
+        const char* msg = "No SD card";
+        int         x   = (disp_->Width() - 6 * (int)strlen(msg)) / 2;
+        disp_->SetCursor(x < 0 ? 0 : x, 24);
+        WriteUpper(msg);
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Retry", "", "", "");
+        return;
+    }
+    if(snap_slots_dirty_)
+        RefreshSnapSlots();
+
+    bool browsing      = save_load_mode_ == SaveLoadMode::BrowsingLoad;
+    bool choosing_save = save_load_mode_ == SaveLoadMode::ChoosingSave;
+
+    // Saving keeps its hold-to-confirm bar, same as Global:Perf.
+    if(pod_->button2.Pressed() && choosing_save)
+    {
+        float held = pod_->button2.TimeHeldMs();
+        int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
+        disp_->SetCursor(0, 20);
+        WriteUpper("Hold: Save...");
+        disp_->DrawRect(0, 30, disp_->Width() - 1, 34, true, false);
+        if(w > 0)
+            disp_->DrawRect(1, 31, w, 33, true, true);
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+        return;
+    }
+    if(choosing_save)
+    {
+        TomThumbDrawText(disp_, 0, 15, "Synth engine snapshots", true);
+        char line1[24], line2[16];
+        if(snap_loaded_slot_ > 0)
+            snprintf(line1, sizeof(line1), "%c Overwrite %d", !save_as_new_ ? '>' : ' ',
+                      snap_loaded_slot_);
+        else
+            snprintf(line1, sizeof(line1), "  Overwrite (n/a)");
+        snprintf(line2, sizeof(line2), "%c Save New", save_as_new_ ? '>' : ' ');
+        disp_->SetCursor(0, 24);
+        WriteUpper(line1);
+        disp_->SetCursor(0, 34);
+        WriteUpper(line2);
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Select", "", "", "");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Back", "", "", "Hold=Save");
+        return;
+    }
+
+    // While browsing, the grid shows the highlighted snapshot; otherwise
+    // what's live right now.
+    const PerformanceStore::SynthSnapshot* shown = nullptr;
+    if(browsing && snap_slot_count_ > 0)
+    {
+        int slot = snap_slots_[snap_cursor_];
+        if(slot != snap_browse_slot_)
+        {
+            snap_browse_ok_   = PerformanceStore::LoadSynthSnapshot(slot, &g_snap_browse);
+            snap_browse_slot_ = slot;
+        }
+        if(snap_browse_ok_)
+            shown = &g_snap_browse;
+    }
+
+    char top[40];
+    if(snap_status_[0] != '\0')
+        snprintf(top, sizeof(top), "%s", snap_status_);
+    else if(browsing && snap_slot_count_ == 0)
+        snprintf(top, sizeof(top), "No snapshots yet");
+    else if(browsing)
+    {
+        int slot = snap_slots_[snap_cursor_];
+        snprintf(top, sizeof(top), "%sSNAP%d  (%d/%d)%s", slot == snap_loaded_slot_ ? "> " : "",
+                  slot, snap_cursor_ + 1, snap_slot_count_, snap_browse_ok_ ? "" : " unreadable");
+    }
+    else
+        snprintf(top, sizeof(top), "Synth engine snapshots");
+    TomThumbDrawText(disp_, 0, 15, top, true);
+
+    // One row per engine: on/off dot, engine, sound, MIDI channel.
+    if(!browsing || shown)
+    {
+        for(int e = 0; e < 4; e++)
+        {
+            bool        on;
+            int         ch;
+            const char* label;
+            char        name[24];
+            bool        drum = shown ? shown->info.sampler_drum != 0
+                                     : sample_synth_mode_ == SampleSynthMode::Drum;
+            switch(e)
+            {
+                case 0:
+                    label = "Grns";
+                    on    = shown ? shown->info.granular_on : granular_enabled_;
+                    ch    = shown ? shown->granular.midi_channel : granular_midi_channel_;
+                    break;
+                case 1:
+                    label = "Dexd";
+                    on    = shown ? shown->info.dexed_on : dexed_enabled_;
+                    ch    = shown ? shown->dexed.midi_channel : dexed_midi_channel_;
+                    break;
+                case 2:
+                    label = "Ensm";
+                    on    = shown ? shown->info.ensemble_on : ensemble_enabled_;
+                    ch    = shown ? shown->ensemble.midi_channel : ensemble_midi_channel_;
+                    break;
+                default:
+                    label = drum ? "SMPDR" : "SMPVO";
+                    on    = shown ? (drum ? shown->info.sampler_drum_on : shown->info.sampler_voice_on)
+                                  : (drum ? sample_synth_drum_enabled_ : sample_synth_voice_enabled_);
+                    ch    = shown ? (drum ? shown->sampler_drum.midi_channel
+                                          : shown->sampler_voice.midi_channel)
+                                  : sample_synth_midi_channel_;
+                    break;
+            }
+            if(shown)
+                snprintf(name, sizeof(name), "%s", shown->info.names[e]);
+            else
+                LiveSnapEngineName(e, name, sizeof(name));
+            name[19] = '\0'; // 19 Tom Thumb characters fit before the channel column
+
+            int y = 22 + e * 7; // text baseline; 22..43 clears the rule and the footer
+            disp_->DrawRect(0, y - 4, 2, y - 2, true, on); // filled = engine on
+            TomThumbDrawText(disp_, 5, y, label, true);
+            TomThumbDrawText(disp_, 27, y, name, true);
+            char ch_txt[8];
+            if(ch < 0)
+                snprintf(ch_txt, sizeof(ch_txt), "Omni");
+            else
+                snprintf(ch_txt, sizeof(ch_txt), "Ch%d", ch + 1);
+            TomThumbDrawText(disp_, disp_->Width() - TomThumbAdvanceWidth(ch_txt), y, ch_txt,
+                              true);
+        }
+    }
+
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", browsing ? "Scroll" : "");
+    DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, browsing ? "Back" : "Save", "",
+                     "", browsing ? "Load" : "Open");
+}
+
 void Ui::DrawFileScreen()
 {
     disp_->SetCursor(0, 0);
@@ -5317,7 +5717,7 @@ const char* Ui::SdMgmtFolderName(SdMgmtFolder f)
 {
     switch(f)
     {
-        case SdMgmtFolder::Performances: return "Performances";
+        case SdMgmtFolder::Global: return "Global";
         case SdMgmtFolder::GranularPresets: return "Grains Presets";
         case SdMgmtFolder::DexedPresets: return "Dexed Presets";
         case SdMgmtFolder::EnsemblePresets: return "Ensemble Presets";
@@ -5333,7 +5733,7 @@ const char* Ui::SdMgmtFolderShortLabel(SdMgmtFolder f)
 {
     switch(f)
     {
-        case SdMgmtFolder::Performances: return "PERF";
+        case SdMgmtFolder::Global: return "GLOBAL";
         case SdMgmtFolder::GranularPresets: return "GRAINS";
         case SdMgmtFolder::DexedPresets: return "DEXED";
         case SdMgmtFolder::EnsemblePresets: return "ENSM";
@@ -5453,6 +5853,8 @@ void Ui::DrawSdMgmtScreen()
                       sd_mgmt_capt_kind_ == 1 ? "Grains" : "Sampler");
         else if(SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ >= 0)
             snprintf(line1, sizeof(line1), "SMPDR %s:", sd_mgmt_drum_kind_ == 1 ? "Breaks" : "Kits");
+        else if(SdMgmtGlobalBox() && sd_mgmt_global_kind_ >= 0)
+            snprintf(line1, sizeof(line1), "%s:", SdMgmtSnapshots() ? "Snapshots" : "Performances");
         else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports && sd_mgmt_smp_kind_ == 0)
             snprintf(line1, sizeof(line1), "%s:",
                       sd_mgmt_smp_sub_kind_ < 0  ? "Voice Imports"
@@ -5500,7 +5902,28 @@ void Ui::DrawSdMgmtScreen()
             const int* slots = SdMgmtSlots(&count);
             char       line2[24];
             static const char* const kDrumKinds[2] = {"Kits", "Breaks"};
-            if(SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ < 0)
+            if(SdMgmtGlobalBox() && sd_mgmt_global_kind_ < 0)
+            {
+                // Counts for both, so each choice shows what's inside.
+                if(file_slots_dirty_)
+                    RefreshFileSlots();
+                if(snap_slots_dirty_)
+                    RefreshSnapSlots();
+                bool snaps = sd_mgmt_list_cursor_ > 0;
+                snprintf(line2, sizeof(line2), "%s (%d)", snaps ? "Snapshots" : "Perf",
+                          snaps ? snap_slot_count_ : file_slot_count_);
+            }
+            else if(SdMgmtGlobalBox())
+            {
+                if(sd_mgmt_cursor_ >= count)
+                    sd_mgmt_cursor_ = count > 0 ? count - 1 : 0;
+                if(slots && count > 0)
+                    snprintf(line2, sizeof(line2), "%s%d", SdMgmtItemPrefix(),
+                              slots[sd_mgmt_cursor_]);
+                else
+                    snprintf(line2, sizeof(line2), "(empty)");
+            }
+            else if(SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ < 0)
             {
                 int k = sd_mgmt_list_cursor_ > 0 ? 1 : 0;
                 snprintf(line2, sizeof(line2), "%s (%d)", kDrumKinds[k],
@@ -6658,12 +7081,10 @@ void Ui::DrawDexedScreen()
         case DexedParamPage::Algo:
         {
             int algo0 = dexed_->GetPatchByte(134);
+            // View-only: ALGORITHM is chosen on Advanced's first page.
             DrawAlgorithmDiagram(algo0);
-            char algo_val[8];
-            snprintf(algo_val, sizeof(algo_val), "%d", algo0 + 1);
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Algo", algo_val, "", "");
-            DrawControlRow(
-                kFooterRow2Y, true, kFooterInterRowDividerY, "Cycle -", "", "", "Cycle +");
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
             break;
         }
         case DexedParamPage::Feedback:
@@ -6848,7 +7269,7 @@ void Ui::DrawDexedScreen()
             // pages, just reached by a click on this page instead of a
             // Global one.
             disp_->SetCursor(0, 20);
-            WriteUpper("Per-operator editor");
+            WriteUpper("Full DX7 voice edit");
             disp_->SetCursor(0, 30);
             WriteUpper("Click to open");
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
@@ -7412,6 +7833,7 @@ Ui::EditSnapshot Ui::SampleSynthSnapshot() const
     s.Add(p.output_level01); s.Add(p.pan01); s.Add(p.reverb_send01); s.Add(p.delay_send01);
     s.Add(p.mono_choke);
     s.Add(sample_synth_->GetGain01());
+    s.Add(sample_synth_midi_channel_);
     if(sample_synth_mode_ == SampleSynthMode::Voice)
     {
         s.Add(sample_synth_imp_tune_semis_);
@@ -8184,6 +8606,94 @@ void Ui::DrawSampleSynthScreen()
     }
 }
 
+void Ui::DexedEditBytesFor(KnobContext ctx, DexedEditByte* k1, DexedEditByte* k2) const
+{
+    // Operator bytes are relative to the selected operator's own 21-byte
+    // block; voice bytes are absolute. Byte map: see dexed_synth.cpp.
+    int b = dexed_op_index_ * 21;
+    *k1   = {-1, 0};
+    *k2   = {-1, 0};
+    switch(ctx)
+    {
+        case KnobContext::DexedOpAlgo: *k1 = {134, 31}; break; // ALGORITHM 1-32
+        case KnobContext::DexedOpFrequency: *k1 = {b + 18, 31}; *k2 = {b + 19, 99}; break;
+        case KnobContext::DexedOpDetune: *k1 = {b + 20, 14}; break;
+        case KnobContext::DexedOpOutputLevel: *k1 = {b + 16, 99}; break;
+        case KnobContext::DexedOpEgRate12: *k1 = {b + 0, 99}; *k2 = {b + 1, 99}; break;
+        case KnobContext::DexedOpEgRate34: *k1 = {b + 2, 99}; *k2 = {b + 3, 99}; break;
+        case KnobContext::DexedOpEgLevel12: *k1 = {b + 4, 99}; *k2 = {b + 5, 99}; break;
+        case KnobContext::DexedOpEgLevel34: *k1 = {b + 6, 99}; *k2 = {b + 7, 99}; break;
+        case KnobContext::DexedOpLevelScalingCurve: *k1 = {b + 11, 3}; *k2 = {b + 12, 3}; break;
+        case KnobContext::DexedOpBreakPoint: *k1 = {b + 8, 99}; *k2 = {b + 12, 3}; break;
+        case KnobContext::DexedOpLevelScalingDepth: *k1 = {b + 9, 99}; *k2 = {b + 10, 99}; break;
+        case KnobContext::DexedOpRateScaling: *k1 = {b + 13, 7}; break;
+        case KnobContext::DexedOpSensitivity: *k1 = {b + 15, 7}; *k2 = {b + 14, 3}; break;
+        case KnobContext::DexedVoicePitchEgRate12: *k1 = {126, 99}; *k2 = {127, 99}; break;
+        case KnobContext::DexedVoicePitchEgRate34: *k1 = {128, 99}; *k2 = {129, 99}; break;
+        case KnobContext::DexedVoicePitchEgLevel12: *k1 = {130, 99}; *k2 = {131, 99}; break;
+        case KnobContext::DexedVoicePitchEgLevel34: *k1 = {132, 99}; *k2 = {133, 99}; break;
+        case KnobContext::DexedVoiceLfo: *k1 = {137, 99}; *k2 = {138, 99}; break;
+        case KnobContext::DexedVoiceLfoDepth: *k1 = {139, 99}; *k2 = {140, 99}; break;
+        case KnobContext::DexedVoiceModSens: *k1 = {143, 7}; break;
+        case KnobContext::DexedVoiceTranspose: *k1 = {144, 48}; break;
+        default: break;
+    }
+}
+
+void Ui::OnDexedOperatorButton2()
+{
+    if(!dexed_)
+        return;
+    int b = dexed_op_index_ * 21;
+    switch(dexed_op_page_)
+    {
+        case DexedOpParamPage::Frequency: // OSC MODE RATIO <-> FIXED
+            dexed_->SetPatchByte(b + 17, dexed_->GetPatchByte(b + 17) ? 0 : 1);
+            break;
+        case DexedOpParamPage::OutputLevel: // OP ON/OFF
+            dexed_->SetOpSwitch(dexed_->GetOpSwitch() ^ (uint8_t)(1 << dexed_op_index_));
+            break;
+        // Pair toggles -- these change CurrentKnobContext(), so pickup
+        // re-arms on its own (see ApplyKnobs()).
+        case DexedOpParamPage::EgRate: dexed_op_egrate_target34_ = !dexed_op_egrate_target34_; break;
+        case DexedOpParamPage::EgLevel: dexed_op_eglevel_target34_ = !dexed_op_eglevel_target34_; break;
+        case DexedOpParamPage::LevelScalingCurve: dexed_op_bp_target_ = !dexed_op_bp_target_; break;
+        case DexedOpParamPage::PitchEgRate:
+            dexed_pitch_egrate_target34_ = !dexed_pitch_egrate_target34_;
+            break;
+        case DexedOpParamPage::PitchEgLevel:
+            dexed_pitch_eglevel_target34_ = !dexed_pitch_eglevel_target34_;
+            break;
+        case DexedOpParamPage::Lfo: // LFO WAVE, 6 shapes
+            dexed_->SetPatchByte(142, (uint8_t)((dexed_->GetPatchByte(142) + 1) % 6));
+            break;
+        case DexedOpParamPage::LfoDepth: // LFO KEY SYNC
+            dexed_->SetPatchByte(141, dexed_->GetPatchByte(141) ? 0 : 1);
+            break;
+        case DexedOpParamPage::ModSens: // OSC KEY SYNC
+            dexed_->SetPatchByte(136, dexed_->GetPatchByte(136) ? 0 : 1);
+            break;
+        default: break;
+    }
+}
+
+namespace
+{
+// Yamaha note naming, middle C (MIDI 60) = C3 -- the DX7's own
+// BREAK POINT/TRANSPOSE display.
+void Dx7NoteName(int midi, char* out, size_t out_size)
+{
+    static const char* const kNames[12]
+        = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    int n = midi < 0 ? 0 : midi;
+    snprintf(out, out_size, "%s%d", kNames[n % 12], n / 12 - 2);
+}
+
+const char* const kDx7CurveNames[4] = {"-LIN", "-EXP", "+EXP", "+LIN"};
+const char* const kDx7LfoWaveNames[6]
+    = {"TRIANGL", "SAW DWN", "SAW UP", "SQUARE", "SINE", "S/HOLD"};
+} // namespace
+
 void Ui::DrawDexedOperatorScreen()
 {
     if(!dexed_)
@@ -8192,145 +8702,414 @@ void Ui::DrawDexedOperatorScreen()
     // Real HW op number (6-index), same convention the Algo diagram
     // already uses -- confirmed from the real DX7 SysEx spec that array
     // index 0 is HW OP6, index 5 is OP1.
-    int hw_op = 6 - dexed_op_index_;
-    int base  = dexed_op_index_ * 21;
+    int  hw_op  = 6 - dexed_op_index_;
+    int  base   = dexed_op_index_ * 21;
+    bool voice  = IsDexedVoicePage(dexed_op_page_);
+    bool op_on  = (dexed_->GetOpSwitch() >> dexed_op_index_) & 1;
 
-    const char* page_name = "Ratio";
-    switch(dexed_op_page_)
-    {
-        case DexedOpParamPage::Algo: page_name = "Algo"; break;
-        case DexedOpParamPage::RatioLevel: page_name = "Ratio"; break;
-        case DexedOpParamPage::Detune: page_name = "Detune"; break;
-        case DexedOpParamPage::EgRate: page_name = "EG Rate"; break;
-        case DexedOpParamPage::EgLevel: page_name = "EG Level"; break;
-        case DexedOpParamPage::AmpModSens: page_name = "AmpSens"; break;
-        case DexedOpParamPage::VelocitySens: page_name = "VelSens"; break;
-        case DexedOpParamPage::KeybRateScale: page_name = "RateScale"; break;
-        default: break;
-    }
-    char title[24];
-    snprintf(title, sizeof(title), "Op %d:%s", hw_op, page_name);
-    disp_->SetCursor(0, 0);
-    WriteUpper(title);
+    char title[16];
+    if(voice)
+        snprintf(title, sizeof(title), "VOICE");
+    else
+        snprintf(title, sizeof(title), op_on ? "OP%d" : "OP%d OFF", hw_op);
+    DrawPageTitle(title, DexedUnsaved());
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
     disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
+    // The DX7's own name for what this page edits, under the title.
+    const char* name = "";
+    switch(dexed_op_page_)
+    {
+        case DexedOpParamPage::Algo: name = "ALGORITHM"; break;
+        case DexedOpParamPage::Frequency: name = "OSC FREQUENCY"; break;
+        case DexedOpParamPage::Detune: name = "OSC DETUNE"; break;
+        case DexedOpParamPage::OutputLevel: name = "OUTPUT LEVEL"; break;
+        case DexedOpParamPage::EgRate: name = "EG RATE"; break;
+        case DexedOpParamPage::EgLevel: name = "EG LEVEL"; break;
+        case DexedOpParamPage::LevelScalingCurve: name = "KEYBOARD LEVEL SCALING CURVE"; break;
+        case DexedOpParamPage::LevelScalingDepth: name = "KEYBOARD LEVEL SCALING DEPTH"; break;
+        case DexedOpParamPage::RateScaling: name = "KEYBOARD RATE SCALING"; break;
+        case DexedOpParamPage::Sensitivity: name = "SENSITIVITY"; break;
+        case DexedOpParamPage::PitchEgRate: name = "PITCH EG RATE"; break;
+        case DexedOpParamPage::PitchEgLevel: name = "PITCH EG LEVEL"; break;
+        case DexedOpParamPage::Lfo: name = "LFO"; break;
+        case DexedOpParamPage::LfoDepth: name = "LFO DEPTH"; break;
+        case DexedOpParamPage::ModSens: name = "P MOD SENS / OSC KEY SYNC"; break;
+        case DexedOpParamPage::Transpose: name = "KEY TRANSPOSE"; break;
+        default: break;
+    }
+    if(dexed_op_page_ != DexedOpParamPage::Algo)
+        TomThumbDrawText(disp_, 0, 16, name, true);
+
+    // Footer row 2: B1 = operator select on operator pages only.
+    const char* b1 = voice ? "" : "OP";
+
+    // One big centred 6x8 line in the body -- the page's main readout.
+    auto big = [&](const char* text, int y) {
+        int x = (disp_->Width() - (int)strlen(text) * 6) / 2;
+        disp_->SetCursor(x < 0 ? 0 : x, y);
+        WriteUpper(text);
+    };
+    auto pb = [&](int off) { return (int)dexed_->GetPatchByte(off); };
+
+    char v1[12] = "", v2[12] = "", line[24];
     switch(dexed_op_page_)
     {
         case DexedOpParamPage::Algo:
-        {
-            // Read-only here -- see DexedOpParamPage::Algo's own comment
-            // for why Button1/Button2 don't cycle the algorithm on this
-            // page the way Screen::Dexed's own Algo page lets them.
-            DrawAlgorithmDiagram(dexed_->GetPatchByte(134));
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Op", "", "", "");
+            // K1 picks ALGORITHM 1-32 (the main Dexed Algo page only shows it).
+            DrawAlgorithmDiagram(pb(134));
+            snprintf(v1, sizeof(v1), "%d", pb(134) + 1);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "ALGORITHM", v1, "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "", "");
             break;
-        }
-        case DexedOpParamPage::RatioLevel:
+        case DexedOpParamPage::Frequency:
         {
-            char ratio_val[8], level_val[8];
-            snprintf(ratio_val, sizeof(ratio_val), "%d", dexed_->GetPatchByte(base + 18));
-            snprintf(level_val, sizeof(level_val), "%d", dexed_->GetPatchByte(base + 16));
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Ratio", ratio_val, level_val,
-                             "Level");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Op", "", "", "");
+            // Same frequency the engine plays (msfa osc_freq()): RATIO is
+            // COARSE (0 = 0.50) x (1 + FINE/100); FIXED is 10^(COARSE&3)
+            // Hz scaled up by FINE/100 of a decade.
+            int  coarse = pb(base + 18), fine = pb(base + 19);
+            bool fixed  = pb(base + 17) != 0;
+            if(fixed)
+            {
+                float hz = powf(10.f, (float)(coarse & 3)) * powf(10.f, (float)fine / 100.f);
+                snprintf(line, sizeof(line), hz < 1000.f ? "FIXED %.1fHz" : "FIXED %.0fHz", hz);
+            }
+            else
+            {
+                float ratio = (coarse == 0 ? 0.5f : (float)coarse) * (1.f + (float)fine / 100.f);
+                snprintf(line, sizeof(line), "RATIO %.2f", ratio);
+            }
+            big(line, 26);
+            snprintf(v1, sizeof(v1), "%d", coarse);
+            snprintf(v2, sizeof(v2), "%d", fine);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "F COARSE", v1, v2, "F FINE");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "",
+                           fixed ? "RATIO" : "FIXED");
             break;
         }
         case DexedOpParamPage::Detune:
         {
-            char val[8];
-            snprintf(val, sizeof(val), "%d", dexed_->GetPatchByte(base + 20));
-            disp_->SetCursor(0, 20);
-            WriteUpper("7 = centered");
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Detune", val, "", "");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Op", "", "", "");
+            int d = pb(base + 20) - 7;
+            snprintf(v1, sizeof(v1), d > 0 ? "+%d" : "%d", d);
+            big(v1, 26);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "DETUNE", v1, "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "", "");
+            break;
+        }
+        case DexedOpParamPage::OutputLevel:
+        {
+            big(op_on ? "OPERATOR ON" : "OPERATOR OFF", 22);
+            // Level bar, 0-99 across the body width.
+            int lvl = pb(base + 16);
+            disp_->DrawRect(1, 34, disp_->Width() - 2, 40, true, false);
+            disp_->DrawRect(1, 34, 1 + lvl * (disp_->Width() - 3) / 99, 40, true, true);
+            snprintf(v1, sizeof(v1), "%d", lvl);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "OUTPUT LEVEL", v1, "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "",
+                           op_on ? "OFF" : "ON");
             break;
         }
         case DexedOpParamPage::EgRate:
-        {
-            // Real DX7 R1-R4 aren't literally an ADSR envelope, but
-            // naming them Attack/Decay/Sustain/Release (matching this
-            // same AD/SR-toggle idiom's own "AD"/"SR" pairing) reads far
-            // more clearly than "Rate1..4" -- requested directly after
-            // real hardware testing.
-            bool    sr = dexed_op_egrate_target_sr_;
-            uint8_t rates[4], levels[4];
-            for(int i = 0; i < 4; i++)
-            {
-                rates[i]  = dexed_->GetPatchByte(base + i);
-                levels[i] = dexed_->GetPatchByte(base + 4 + i);
-            }
-            DrawDx7EnvelopeShape(14, 44, rates, levels);
-            char v1[8], v2[8];
-            snprintf(v1, sizeof(v1), "%d", dexed_->GetPatchByte(sr ? base + 2 : base + 0));
-            snprintf(v2, sizeof(v2), "%d", dexed_->GetPatchByte(sr ? base + 3 : base + 1));
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, sr ? "Sustain" : "Attack", v1, v2,
-                             sr ? "Release" : "Decay");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Op", "", "", "AD/SR");
-            break;
-        }
         case DexedOpParamPage::EgLevel:
+        case DexedOpParamPage::PitchEgRate:
+        case DexedOpParamPage::PitchEgLevel:
         {
-            // Same Attack/Decay/Sustain/Release naming as the EgRate
-            // page above, and for the same reason -- the title bar
-            // ("Op N:EG Level" vs "...EG Rate") already disambiguates
-            // level from rate, so reusing identical stage names here
-            // instead of "Level1..4" is consistent, not ambiguous.
-            bool    sr = dexed_op_eglevel_target_sr_;
+            bool pitch = dexed_op_page_ == DexedOpParamPage::PitchEgRate
+                         || dexed_op_page_ == DexedOpParamPage::PitchEgLevel;
+            bool rate_page = dexed_op_page_ == DexedOpParamPage::EgRate
+                             || dexed_op_page_ == DexedOpParamPage::PitchEgRate;
+            bool pair34 = dexed_op_page_ == DexedOpParamPage::EgRate    ? dexed_op_egrate_target34_
+                          : dexed_op_page_ == DexedOpParamPage::EgLevel ? dexed_op_eglevel_target34_
+                          : rate_page ? dexed_pitch_egrate_target34_
+                                      : dexed_pitch_eglevel_target34_;
+            int     rate_off  = pitch ? 126 : base;
+            int     level_off = pitch ? 130 : base + 4;
             uint8_t rates[4], levels[4];
             for(int i = 0; i < 4; i++)
             {
-                rates[i]  = dexed_->GetPatchByte(base + i);
-                levels[i] = dexed_->GetPatchByte(base + 4 + i);
+                rates[i]  = (uint8_t)pb(rate_off + i);
+                levels[i] = (uint8_t)pb(level_off + i);
             }
-            DrawDx7EnvelopeShape(14, 44, rates, levels);
-            char v1[8], v2[8];
-            snprintf(v1, sizeof(v1), "%d", dexed_->GetPatchByte(sr ? base + 6 : base + 4));
-            snprintf(v2, sizeof(v2), "%d", dexed_->GetPatchByte(sr ? base + 7 : base + 5));
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, sr ? "Sustain" : "Attack", v1, v2,
-                             sr ? "Release" : "Decay");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Op", "", "", "AD/SR");
+            uint8_t hl = pair34 ? 0x0c : 0x03;
+            DrawDx7EnvelopeShape(18, 44, rates, levels, rate_page ? hl : 0, rate_page ? 0 : hl,
+                                 pitch);
+            int first = pair34 ? 2 : 0;
+            int off   = rate_page ? rate_off : level_off;
+            snprintf(v1, sizeof(v1), "%d", pb(off + first));
+            snprintf(v2, sizeof(v2), "%d", pb(off + first + 1));
+            char l1[4], l2[4];
+            snprintf(l1, sizeof(l1), "%c%d", rate_page ? 'R' : 'L', first + 1);
+            snprintf(l2, sizeof(l2), "%c%d", rate_page ? 'R' : 'L', first + 2);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, l1, v1, v2, l2);
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "", "");
+            {
+                // B2: "1/2*  3/4" / "1/2  3/4*" -- every piece has a fixed
+                // spot (the "*" slot is reserved after both), so only the
+                // asterisk moves. Centred in the space right of the icon.
+                const int star_w = TomThumbAdvanceWidth("*");
+                const int w12    = TomThumbAdvanceWidth("1/2");
+                const int w34    = TomThumbAdvanceWidth("3/4");
+                const int gap    = 6;
+                const int total  = w12 + star_w + gap + w34 + star_w;
+                const int left   = disp_->Width() / 2 + 4;
+                const int x      = left + (disp_->Width() - 1 - left - total) / 2;
+                const int base_y = kFooterRow2Y + kTomThumbRowHeight - 1;
+                const int x34    = x + w12 + star_w + gap;
+                TomThumbDrawText(disp_, x, base_y, "1/2", true);
+                TomThumbDrawText(disp_, x34, base_y, "3/4", true);
+                TomThumbDrawText(disp_, pair34 ? x34 + w34 : x + w12, base_y, "*", true);
+            }
             break;
         }
-        case DexedOpParamPage::AmpModSens:
+        case DexedOpParamPage::LevelScalingCurve:
+        case DexedOpParamPage::LevelScalingDepth:
         {
-            char val[8];
-            snprintf(val, sizeof(val), "%d", dexed_->GetPatchByte(base + 14) & 3);
-            disp_->SetCursor(0, 20);
-            WriteUpper("0 = no wheel effect"); // 19 chars -- Font_6x8 only
-                                                 // fits 21 at this width,
-                                                 // "...has no effect" (23)
-                                                 // ran 10px off the right
-                                                 // edge
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "AmpSens", val, "", "");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Op", "", "", "");
+            DrawLevelScalingGraph(19, 44, base);
+            bool curve = dexed_op_page_ == DexedOpParamPage::LevelScalingCurve;
+            if(curve)
+            {
+                if(dexed_op_bp_target_)
+                    Dx7NoteName(pb(base + 8) + 21, v1, sizeof(v1));
+                else
+                    snprintf(v1, sizeof(v1), "%s", kDx7CurveNames[pb(base + 11) & 3]);
+                snprintf(v2, sizeof(v2), "%s", kDx7CurveNames[pb(base + 12) & 3]);
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY,
+                               dexed_op_bp_target_ ? "BREAK POINT" : "L CURVE", v1, v2, "R CURVE");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "",
+                               dexed_op_bp_target_ ? "L CURVE" : "BREAK PT");
+            }
+            else
+            {
+                snprintf(v1, sizeof(v1), "%d", pb(base + 9));
+                snprintf(v2, sizeof(v2), "%d", pb(base + 10));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "L DEPTH", v1, v2, "R DEPTH");
+                DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "", "");
+            }
             break;
         }
-        case DexedOpParamPage::VelocitySens:
+        case DexedOpParamPage::RateScaling:
         {
-            char val[8];
-            snprintf(val, sizeof(val), "%d", dexed_->GetPatchByte(base + 15));
-            disp_->SetCursor(0, 20);
-            WriteUpper("0 = no vel. response");
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "VelSens", val, "", "");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Op", "", "", "");
+            snprintf(v1, sizeof(v1), "%d", pb(base + 13));
+            big(v1, 24);
+            TomThumbDrawText(disp_, 0, 42, "0 = SAME SPEED ON EVERY KEY", true);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "RATE SCALING", v1, "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "", "");
             break;
         }
-        case DexedOpParamPage::KeybRateScale:
+        case DexedOpParamPage::Sensitivity:
         {
-            char val[8];
-            snprintf(val, sizeof(val), "%d", dexed_->GetPatchByte(base + 13));
-            disp_->SetCursor(0, 20);
-            WriteUpper("0 = flat across keys"); // 22 chars ("...all
-                                                  // keys") ran 4px off
-                                                  // the right edge
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "RateScale", val, "", "");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Op", "", "", "");
+            snprintf(v1, sizeof(v1), "%d", pb(base + 15));
+            snprintf(v2, sizeof(v2), "%d", pb(base + 14) & 3);
+            TomThumbDrawText(disp_, 0, 26, "KEY VELOCITY  0-7", true);
+            TomThumbDrawText(disp_, 0, 34, "A MOD SENS    0-3", true);
+            TomThumbDrawText(disp_, 0, 42, "0 = NO RESPONSE", true);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "KEY VELOCITY", v1, v2,
+                           "A MOD SENS");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "", "");
+            break;
+        }
+        case DexedOpParamPage::Lfo:
+        {
+            snprintf(line, sizeof(line), "%s", kDx7LfoWaveNames[pb(142) % 6]);
+            big(line, 26);
+            snprintf(v1, sizeof(v1), "%d", pb(137));
+            snprintf(v2, sizeof(v2), "%d", pb(138));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "LFO SPEED", v1, v2, "LFO DELAY");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "", "LFO WAVE");
+            break;
+        }
+        case DexedOpParamPage::LfoDepth:
+        {
+            snprintf(line, sizeof(line), "KEY SYNC %s", pb(141) ? "ON" : "OFF");
+            big(line, 26);
+            snprintf(v1, sizeof(v1), "%d", pb(139));
+            snprintf(v2, sizeof(v2), "%d", pb(140));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "PM DEPTH", v1, v2, "AM DEPTH");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "",
+                           "LFO KEY SYNC");
+            break;
+        }
+        case DexedOpParamPage::ModSens:
+        {
+            snprintf(line, sizeof(line), "KEY SYNC %s", pb(136) ? "ON" : "OFF");
+            big(line, 26);
+            snprintf(v1, sizeof(v1), "%d", pb(143) & 7);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "P MOD SENS", v1, "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "",
+                           "OSC KEY SYNC");
+            break;
+        }
+        case DexedOpParamPage::Transpose:
+        {
+            int t = pb(144) > 48 ? 24 : pb(144);
+            Dx7NoteName(t + 36, v1, sizeof(v1));
+            snprintf(line, sizeof(line), "MIDDLE C = %s", v1);
+            big(line, 26);
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "TRANSPOSE", v1, "", "");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, b1, "", "", "");
             break;
         }
         default: break;
     }
+}
+
+void Ui::DrawDx7EnvelopeShape(int top, int bottom, const uint8_t rates[4], const uint8_t levels[4],
+                              uint8_t hl_rates, uint8_t hl_levels, bool center_line)
+{
+    // L1-L4 are numbered 7x7 squares (big enough for a Tom Thumb digit),
+    // R1-R4 the numbered slopes joining them. A band at the top holds
+    // the key-release "OFF" label.
+    const int kSq          = 7;
+    const int kHalf        = kSq / 2;
+    const int label_bottom = top + 4;
+    const int g_top        = top + 6 + kHalf; // highest square centre
+    const int g_bottom     = bottom - kHalf;  // lowest square centre
+    const int x0           = 1 + kHalf;
+    const int x_end        = disp_->Width() - 2;
+    // Key release sits at a fixed spot, so turning RATE 1-3 moves the
+    // squares but RATE 4's slope always starts in the same place.
+    const int x_off = 1 + (x_end - 1) * 70 / 100;
+    // Every slope is at least this wide, so neighbouring squares never
+    // overlap and there's room for the slope's own number.
+    const float kMinSeg     = 13.f;
+    const int   kMinSustain = 8;
+
+    auto level_y = [&](int lvl) {
+        lvl = lvl < 0 ? 0 : (lvl > 99 ? 99 : lvl);
+        return g_bottom - lvl * (g_bottom - g_top) / 99;
+    };
+    // A RATE is a speed, not a time: the slope's width is the level
+    // distance it travels times a factor that halves every 16 steps of
+    // rate (higher = steeper).
+    auto seg_w = [&](int from, int to, int rate) {
+        int dist = from > to ? from - to : to - from;
+        return (float)dist / 99.f * 28.f * powf(2.f, (50.f - (float)rate) / 16.f);
+    };
+
+    float w[4];
+    int   prev = levels[3]; // every cycle starts from LEVEL 4
+    for(int i = 0; i < 3; i++)
+    {
+        w[i] = seg_w(prev, levels[i], rates[i]);
+        prev = levels[i];
+    }
+    w[3] = seg_w(levels[2], levels[3], rates[3]);
+    // Slow rates would run past key release -- scale the slopes down
+    // together (above the minimum) so their proportions stay true.
+    float avail = (float)(x_off - x0 - kMinSustain) - 3.f * kMinSeg;
+    float sum   = w[0] + w[1] + w[2];
+    float scale = sum > avail ? avail / sum : 1.f;
+    for(int i = 0; i < 4; i++)
+        w[i] = kMinSeg + w[i] * scale;
+    float r4_max = (float)(x_end - kHalf - x_off);
+    if(w[3] > r4_max)
+        w[3] = r4_max;
+
+    if(center_line)
+    {
+        int cy = level_y(50);
+        for(int x = 1; x <= x_end; x += 2)
+            disp_->DrawPixel(x, cy, true);
+    }
+    // Key release marker -- dotted, labelled in the top band.
+    for(int y = top + 6; y <= bottom; y += 2)
+        disp_->DrawPixel(x_off, y, true);
+    TomThumbDrawText(disp_, x_off - TomThumbInkWidth("OFF") / 2, label_bottom, "OFF", true);
+
+    // Square centres: L4 (start), L1, L2, L3, then L4 again after R4.
+    int sx[5], sy[5];
+    sx[0]   = x0;
+    sy[0]   = level_y(levels[3]);
+    float x = (float)x0;
+    for(int i = 0; i < 3; i++)
+    {
+        x += w[i];
+        sx[i + 1] = (int)(x + 0.5f);
+        sy[i + 1] = level_y(levels[i]);
+    }
+    int end_x = x_off + (int)(w[3] + 0.5f);
+    int end_y = sy[0];
+
+    // Slopes first, so the squares sit on top of their ends. Every line
+    // stays 1px; what the knobs edit is marked on the numbers. Each
+    // slope's number goes above it -- left of a rising slope, right of
+    // a falling one, centred over a flat one -- so it never crosses the
+    // line; below instead when there's no room above.
+    auto slope = [&](int xa, int ya, int xb, int yb, int n, bool hl) {
+        disp_->DrawLine(xa, ya, xb, yb, true);
+        int  mx = (xa + xb) / 2, my = (ya + yb) / 2;
+        char num[2] = {(char)('0' + n), 0};
+        int  lx = yb < ya ? mx - 5 : (yb > ya ? mx + 3 : mx - 1);
+        int  ly = my - 3;          // baseline: glyph spans my-7..my-3
+        if(ly - 4 < top + 6)
+            ly = my + 8;           // no room above -- glyph my+4..my+8
+        // A rate the knobs are editing gets its number reversed out of a
+        // small filled box -- the same marking as a filled level square.
+        if(hl)
+            disp_->DrawRect(lx - 1, ly - 5, lx + TomThumbInkWidth(num), ly + 1, true, true);
+        TomThumbDrawText(disp_, lx, ly, num, !hl);
+    };
+    for(int i = 0; i < 3; i++)
+        slope(sx[i], sy[i], sx[i + 1], sy[i + 1], i + 1, (hl_rates >> i) & 1);
+    disp_->DrawLine(sx[3], sy[3], x_off, sy[3], true); // LEVEL 3 held until release
+    slope(x_off, sy[3], end_x, end_y, 4, (hl_rates >> 3) & 1);
+
+    // Squares: outlined with the number, or filled with the number
+    // punched out for the levels the knobs are editing (same look as a
+    // carrier box in the algorithm diagram).
+    auto square = [&](int cx, int cy, int n, bool hl) {
+        int xa = cx - kHalf, ya = cy - kHalf;
+        disp_->DrawRect(xa, ya, xa + kSq - 1, ya + kSq - 1, false, true);
+        disp_->DrawRect(xa, ya, xa + kSq - 1, ya + kSq - 1, true, hl);
+        char num[2] = {(char)('0' + n), 0};
+        int  ink_w  = TomThumbInkWidth(num);
+        TomThumbDrawText(disp_, xa + 1 + (kSq - 2 - ink_w) / 2, ya + 6, num, !hl);
+    };
+    for(int i = 0; i < 3; i++)
+        square(sx[i + 1], sy[i + 1], i + 1, (hl_levels >> i) & 1);
+    square(sx[0], sy[0], 4, (hl_levels >> 3) & 1);
+    square(end_x, end_y, 4, (hl_levels >> 3) & 1);
+}
+
+void Ui::DrawLevelScalingGraph(int top, int bottom, int base)
+{
+    // X = the DX7's keyboard range, A-1 (BREAK POINT 0) to C8 (99);
+    // Y = the level change msfa's own ScaleLevel() adds at that key,
+    // around a dotted "no change" line in the middle.
+    if(!dexed_)
+        return;
+    const int x0  = 1;
+    const int x1  = disp_->Width() - 2;
+    const int mid = (top + bottom) / 2;
+    const int bp  = dexed_->GetPatchByte(base + 8);
+    for(int x = x0; x <= x1; x += 2)
+        disp_->DrawPixel(x, mid, true);
+
+    int prev_y = mid;
+    for(int x = x0; x <= x1; x++)
+    {
+        int key   = 21 + (x - x0) * 99 / (x1 - x0);
+        int delta = ScaleLevel(key, bp, dexed_->GetPatchByte(base + 9),
+                               dexed_->GetPatchByte(base + 10), dexed_->GetPatchByte(base + 11),
+                               dexed_->GetPatchByte(base + 12));
+        // Output level is 0-127 internally; +-127 fills half the height.
+        delta   = delta > 127 ? 127 : (delta < -127 ? -127 : delta);
+        int y   = mid - delta * (mid - top) / 127;
+        if(x == x0)
+            prev_y = y;
+        disp_->DrawLine(x - 1 < x0 ? x0 : x - 1, prev_y, x, y, true);
+        prev_y = y;
+    }
+
+    // BREAK POINT marker: dotted line plus its note name.
+    int bx = x0 + bp * (x1 - x0) / 99;
+    for(int y = top; y <= bottom; y += 2)
+        disp_->DrawPixel(bx, y, true);
+    char nm[6];
+    Dx7NoteName(bp + 21, nm, sizeof(nm));
+    int w  = TomThumbInkWidth(nm);
+    int tx = bx + 2 + w <= x1 ? bx + 2 : bx - 2 - w;
+    TomThumbDrawText(disp_, tx, top + 5, nm, true);
 }
 
 void Ui::DrawMixerScreen()
@@ -8502,42 +9281,6 @@ void Ui::DrawAdsrShape(int top, int bottom, float attack_s, float decay_s, float
     disp_->DrawLine(x_release_peak, bottom_y, zone4, bottom_y, true);  // hold at 0
 }
 
-void Ui::DrawDx7EnvelopeShape(int top, int bottom, const uint8_t rates[4], const uint8_t levels[4])
-{
-    const int total_w = disp_->Width() - 2;
-    const int x0       = 1;
-
-    int prev_x = x0;
-    int prev_y = bottom; // the envelope always starts silent before Rate1/Level1 fires
-
-    for(int seg = 0; seg < 4; seg++)
-    {
-        int zone_start = x0 + total_w * seg / 4;
-        int zone_end   = x0 + total_w * (seg + 1) / 4;
-
-        // Higher rate = faster = reaches its own target level sooner
-        // within the zone (a narrower ramp, more flat hold afterward) --
-        // same "ramp then hold flat for the rest of the zone" idiom
-        // DrawAdsrShape() above uses, just driven by a 0-99 rate byte
-        // (bigger = faster) instead of a seconds value.
-        float rate01 = Clampf((float)rates[seg] / 99.f, 0.f, 1.f);
-        int   ramp_w = (int)((1.f - rate01) * (float)(zone_end - zone_start));
-        if(ramp_w < 1)
-            ramp_w = 1;
-        int target_x = zone_start + ramp_w;
-        if(target_x > zone_end)
-            target_x = zone_end;
-        int target_y
-            = bottom - (int)(Clampf((float)levels[seg] / 99.f, 0.f, 1.f) * (float)(bottom - top));
-
-        disp_->DrawLine(prev_x, prev_y, target_x, target_y, true); // this segment's own ramp
-        if(target_x < zone_end)
-            disp_->DrawLine(target_x, target_y, zone_end, target_y, true); // hold for the rest
-
-        prev_x = zone_end;
-        prev_y = target_y;
-    }
-}
 
 void Ui::DrawAlgorithmDiagram(int algo0)
 {
@@ -8559,7 +9302,7 @@ void Ui::DrawAlgorithmDiagram(int algo0)
     // operator(s) wrote it, so a single forward pass is enough to
     // resolve every edge and depth.
     int  input_bus[6], output_bus[6];
-    bool sums[6], is_carrier[6] = {}, has_fb[6];
+    bool sums[6], is_carrier[6] = {}, has_fb[6], fb_out[6];
     for(int i = 0; i < 6; i++)
     {
         FmOperatorRouting r = FmCore::get_operator_routing((uint8_t)algo0, i);
@@ -8567,6 +9310,7 @@ void Ui::DrawAlgorithmDiagram(int algo0)
         output_bus[i] = r.output_bus;
         sums[i]       = r.sums;
         has_fb[i]     = r.has_feedback;
+        fb_out[i]     = r.fb_out;
     }
 
     int  edge_count[6] = {};
@@ -8594,27 +9338,6 @@ void Ui::DrawAlgorithmDiagram(int algo0)
         {
             cur_writers[ob][0] = i;
             cur_writer_count[ob] = 1;
-        }
-    }
-
-    // Row = depth from this operator's own chain root.
-    int depth[6];
-    for(int i = 0; i < 6; i++)
-    {
-        if(edge_count[i] == 0)
-        {
-            depth[i] = 0;
-        }
-        else
-        {
-            int maxd = 0;
-            for(int k = 0; k < edge_count[i]; k++)
-            {
-                int pd = depth[edge_from[i][k]];
-                if(pd > maxd)
-                    maxd = pd;
-            }
-            depth[i] = maxd + 1;
         }
     }
 
@@ -8659,11 +9382,24 @@ void Ui::DrawAlgorithmDiagram(int algo0)
         }
     }
     int num_columns = next_root_col;
-    int max_depth   = 0;
+    // Rows count UP from the bottom, like the DX7's own diagrams: every
+    // carrier sits on the same bottom row just above the OUT line, and
+    // each modulator one row above the highest operator it feeds.
+    // Children always have a higher index than their parents, so one
+    // reverse pass settles every height.
+    int height[6] = {};
+    for(int i = 5; i >= 0; i--)
+        for(int k = 0; k < edge_count[i]; k++)
+        {
+            int p = edge_from[i][k];
+            if(height[i] + 1 > height[p])
+                height[p] = height[i] + 1;
+        }
+    int max_height = 0;
     for(int i = 0; i < 6; i++)
-        if(depth[i] > max_depth)
-            max_depth = depth[i];
-    int num_rows = max_depth + 1;
+        if(height[i] > max_height)
+            max_height = height[i];
+    int num_rows = max_height + 1;
 
     // --- Pixel layout, orthogonal connectors only -------------
     // Diagram width stops short of the full screen width, and the
@@ -8676,7 +9412,8 @@ void Ui::DrawAlgorithmDiagram(int algo0)
     const int kOutLineY  = kFooterDividerY - 1; // 45, just above the footer rule
     const int kDiagWidth = disp_->Width() - kOutLabelW;
     const float col_pitch = (float)kDiagWidth / (float)num_columns;
-    const float row_pitch = (float)(kOutLineY - kDiagTop) / (float)num_rows;
+    const int   kRowBase  = kOutLineY - 3; // carriers' bottom row ends here
+    const float row_pitch = (float)(kRowBase - kDiagTop) / (float)num_rows;
     // Width is fixed and snug around the number's own ink (3px
     // wide, see font_tomthumb.cpp's glyph table) plus a real 1px
     // gap and a 1px border on each side -- not stretched to the
@@ -8696,8 +9433,11 @@ void Ui::DrawAlgorithmDiagram(int algo0)
     int cx[6], cy[6];
     for(int i = 0; i < 6; i++)
     {
-        cx[i] = (int)(col_pitch * (column[i] + 0.5f));
-        cy[i] = kDiagTop + (int)(row_pitch * ((float)depth[i] + 0.5f));
+        // Mirrored so the layout reads like the DX7's own diagrams:
+        // columns are assigned in processing order (OP6 first), so
+        // flipping puts OP1's chain on the left.
+        cx[i] = (int)(col_pitch * ((float)(num_columns - 1) - column[i] + 0.5f));
+        cy[i] = kRowBase - (int)(row_pitch * ((float)height[i] + 0.5f));
     }
 
     // Connectors first (drawn under the boxes). A same-column
@@ -8747,7 +9487,25 @@ void Ui::DrawAlgorithmDiagram(int algo0)
     {
         int x0 = cx[i] - box_w / 2, x1 = cx[i] + box_w / 2;
         int y0 = cy[i] - box_h / 2, y1 = cy[i] + box_h / 2;
-        disp_->DrawRect(x0, y0, x1, y1, true, is_carrier[i]);
+        // OP ON/OFF: a switched-off operator is a dotted, empty box
+        // (whether carrier or modulator) so it reads as silent.
+        bool op_off = dexed_ && !((dexed_->GetOpSwitch() >> i) & 1);
+        if(op_off)
+        {
+            disp_->DrawRect(x0, y0, x1, y1, false, true);
+            for(int x = x0; x <= x1; x += 2)
+            {
+                disp_->DrawPixel(x, y0, true);
+                disp_->DrawPixel(x, y1, true);
+            }
+            for(int y = y0; y <= y1; y += 2)
+            {
+                disp_->DrawPixel(x0, y, true);
+                disp_->DrawPixel(x1, y, true);
+            }
+        }
+        else
+            disp_->DrawRect(x0, y0, x1, y1, true, is_carrier[i]);
         char num[2]  = {(char)('0' + (6 - i)), 0};
         int  ink_w   = TomThumbInkWidth(num);
         // Centered on ink width (not advance width) so the
@@ -8764,7 +9522,7 @@ void Ui::DrawAlgorithmDiagram(int algo0)
         // grows into a real, symmetric gap on every algorithm
         // with a taller box to spare.
         int pen_y = y0 + 6 + (box_h - 7) / 2;
-        TomThumbDrawText(disp_, pen_x, pen_y, num, !is_carrier[i]);
+        TomThumbDrawText(disp_, pen_x, pen_y, num, op_off || !is_carrier[i]);
 
         // Feedback: an explicit "FB" tag beside the one operator
         // (if any) with real self-feedback -- a small pixel
@@ -8777,7 +9535,12 @@ void Ui::DrawAlgorithmDiagram(int algo0)
         // are always free for this label. Prefers the right side;
         // falls back to the left if that would run past the
         // reserved OUT-label strip.
-        if(has_fb[i])
+        // A feedback loop over several operators (algorithm 4: OP6-OP4,
+        // 6: OP6-OP5) is drawn after this loop instead.
+        bool fb_loop = false;
+        for(int k = i + 1; k < 6; k++)
+            fb_loop = fb_loop || (has_fb[i] && fb_out[k]);
+        if(has_fb[i] && !fb_loop)
         {
             const char* fb = "FB";
             int         fb_w = TomThumbInkWidth(fb);
@@ -8786,6 +9549,41 @@ void Ui::DrawAlgorithmDiagram(int algo0)
                 fb_x = x0 - 2 - fb_w;
             TomThumbDrawText(disp_, fb_x, pen_y, fb, true);
         }
+    }
+
+    // Multi-operator feedback: a vertical line beside the whole loop,
+    // from the top of the operator that receives the feedback to the
+    // bottom of the last one that sends it, with "FB" centred on it.
+    for(int f = 0; f < 6; f++)
+    {
+        if(!has_fb[f])
+            continue;
+        int g = -1;
+        for(int k = f + 1; k < 6; k++)
+            if(fb_out[k])
+                g = k;
+        if(g < 0)
+            continue;
+        int top_y = cy[f] - box_h / 2, bot_y = cy[g] + box_h / 2;
+        int right = cx[f];
+        for(int k = f; k <= g; k++)
+            if(cx[k] > right)
+                right = cx[k];
+        const char* fb   = "FB";
+        int         fb_w = TomThumbInkWidth(fb);
+        int         lx   = right + box_w / 2 + 2;
+        int         tx   = lx + 2;
+        if(tx + fb_w > kDiagWidth) // no room on the right -- go left
+        {
+            int left = cx[f];
+            for(int k = f; k <= g; k++)
+                if(cx[k] < left)
+                    left = cx[k];
+            lx = left - box_w / 2 - 2;
+            tx = lx - 2 - fb_w;
+        }
+        disp_->DrawLine(lx, top_y, lx, bot_y, true);
+        TomThumbDrawText(disp_, tx, (top_y + bot_y) / 2 + 2, fb, true);
     }
 }
 
@@ -8887,9 +9685,7 @@ void Ui::TriggerSave(bool force_new)
                                        bypass_reverb_send01_, reverb_predelay01_,
                                        reverb_prefilter01_, reverb_input_diffusion1_01_,
                                        reverb_input_diffusion2_01_, reverb_decay_diffusion01_,
-                                       reverb_damping01_, dexed_midi_channel_,
-                                       granular_midi_channel_, ensemble_midi_channel_,
-                                       sample_synth_midi_channel_, GetDelayState(),
+                                       reverb_damping01_, GetDelayState(),
                                        &Ui::OnSaveLoadProgress);
     file_op_in_progress_ = false;
     g_progress_disp       = nullptr;
@@ -8938,8 +9734,6 @@ void Ui::TriggerLoad(int slot)
                                        &reverb_prefilter01_, &reverb_input_diffusion1_01_,
                                        &reverb_input_diffusion2_01_,
                                        &reverb_decay_diffusion01_, &reverb_damping01_,
-                                       &dexed_midi_channel_, &granular_midi_channel_,
-                                       &ensemble_midi_channel_, &sample_synth_midi_channel_,
                                        &loaded_delay, &Ui::OnSaveLoadProgress);
     file_op_in_progress_ = false;
     g_progress_disp       = nullptr;
@@ -8975,7 +9769,14 @@ const int* Ui::SdMgmtSlots(int* out_count)
 {
     switch(sd_mgmt_folder_)
     {
-        case SdMgmtFolder::Performances:
+        case SdMgmtFolder::Global:
+            if(SdMgmtSnapshots())
+            {
+                if(snap_slots_dirty_)
+                    RefreshSnapSlots();
+                *out_count = snap_slot_count_;
+                return snap_slots_;
+            }
             if(file_slots_dirty_)
                 RefreshFileSlots();
             *out_count = file_slot_count_;
@@ -9020,7 +9821,11 @@ void Ui::SdMgmtOpenBox()
     sd_mgmt_status_[0] = '\0';
     switch(sd_mgmt_folder_)
     {
-        case SdMgmtFolder::Performances: file_slots_dirty_ = true; break;
+        case SdMgmtFolder::Global:
+            file_slots_dirty_    = true;
+            snap_slots_dirty_    = true;
+            sd_mgmt_global_kind_ = -1; // Perf/Snapshots choice first
+            break;
         case SdMgmtFolder::GranularPresets: granular_preset_slots_dirty_ = true; break;
         case SdMgmtFolder::DexedPresets:
             dexed_preset_slots_dirty_ = true;
@@ -9124,6 +9929,8 @@ void Ui::RefreshSdMgmtItems()
 
 int Ui::SdMgmtListCount()
 {
+    if(SdMgmtGlobalBox() && sd_mgmt_global_kind_ < 0)
+        return 2; // Perf / Snapshots
     if(SdMgmtDrumUserBox())
     {
         int n = 0;
@@ -9410,8 +10217,11 @@ void Ui::TriggerSdMgmtDuplicate()
     g_progress_disp = disp_;
     switch(sd_mgmt_folder_)
     {
-        case SdMgmtFolder::Performances:
-            ok = PerformanceStore::DuplicateSlot(slot, &new_slot, &Ui::OnSaveLoadProgress);
+        case SdMgmtFolder::Global:
+            ok = SdMgmtSnapshots()
+                     ? PerformanceStore::DuplicateSynthSnapshot(slot, &new_slot,
+                                                                &Ui::OnSaveLoadProgress)
+                     : PerformanceStore::DuplicateSlot(slot, &new_slot, &Ui::OnSaveLoadProgress);
             break;
         case SdMgmtFolder::GranularPresets:
             ok = PerformanceStore::DuplicateGranularPreset(slot, &new_slot,
@@ -9444,10 +10254,13 @@ void Ui::TriggerSdMgmtDuplicate()
         // (SdMgmtFolderShortLabel()), same vocabulary as every other
         // per-engine site.
         snprintf(sd_mgmt_status_, sizeof(sd_mgmt_status_), "Copied to %s%d",
-                  SdMgmtFolderShortLabel(sd_mgmt_folder_), new_slot);
+                  SdMgmtItemPrefix(), new_slot);
         switch(sd_mgmt_folder_)
         {
-            case SdMgmtFolder::Performances: file_slots_dirty_ = true; break;
+            case SdMgmtFolder::Global:
+                file_slots_dirty_ = true;
+                snap_slots_dirty_ = true;
+                break;
             case SdMgmtFolder::GranularPresets: granular_preset_slots_dirty_ = true; break;
             case SdMgmtFolder::DexedPresets:
                 dexed_preset_slots_dirty_ = true;
@@ -9492,8 +10305,9 @@ void Ui::TriggerSdMgmtDelete()
     // above it shifts down.
     switch(sd_mgmt_folder_)
     {
-        case SdMgmtFolder::Performances:
-            ok = PerformanceStore::DeleteSlot(slot, &loaded_slot_);
+        case SdMgmtFolder::Global:
+            ok = SdMgmtSnapshots() ? PerformanceStore::DeleteSynthSnapshot(slot, &snap_loaded_slot_)
+                                   : PerformanceStore::DeleteSlot(slot, &loaded_slot_);
             break;
         case SdMgmtFolder::GranularPresets:
             ok = PerformanceStore::DeleteGranularPreset(slot, &granular_loaded_preset_slot_);
@@ -9518,10 +10332,13 @@ void Ui::TriggerSdMgmtDelete()
     if(ok)
     {
         snprintf(sd_mgmt_status_, sizeof(sd_mgmt_status_), "Deleted %s%d",
-                  SdMgmtFolderShortLabel(sd_mgmt_folder_), slot);
+                  SdMgmtItemPrefix(), slot);
         switch(sd_mgmt_folder_)
         {
-            case SdMgmtFolder::Performances: file_slots_dirty_ = true; break;
+            case SdMgmtFolder::Global:
+                file_slots_dirty_ = true;
+                snap_slots_dirty_ = true;
+                break;
             case SdMgmtFolder::GranularPresets: granular_preset_slots_dirty_ = true; break;
             case SdMgmtFolder::DexedPresets:
                 dexed_preset_slots_dirty_ = true;
@@ -10727,6 +11544,7 @@ void Ui::TriggerSaveSampleSynthVoiceUserPreset(bool force_new)
     preset.tune_semis = sample_synth_imp_tune_semis_;
     preset.mono       = sample_synth_imp_mono_;
     preset.gain01     = sample_synth_->GetGain01();
+    preset.midi_channel = sample_synth_midi_channel_;
 
     g_audio_suspended = true;
     bool ok           = PerformanceStore::SaveSampleSynthVoiceUserPreset(slot, preset);
@@ -10761,6 +11579,15 @@ void Ui::TriggerLoadSampleSynthVoiceUserPreset()
                   "Fail:%s", PerformanceStore::GetLastError());
         return;
     }
+    ApplySampleSynthVoiceUserPreset(preset);
+    sample_synth_voice_user_loaded_slot_ = slot;
+    snprintf(sample_synth_voice_user_status_, sizeof(sample_synth_voice_user_status_),
+              "Loaded SMPVO%d", slot);
+    MarkSampleSynthClean();
+}
+
+void Ui::ApplySampleSynthVoiceUserPreset(PerformanceStore::SampleSynthVoiceUserPreset& preset)
+{
     // Load the referenced Sound first (sets sample_synth_voice_source_/
     // _sound_name_/_category_ correctly on its own), THEN apply the
     // saved settings on top -- same order Tune's own K2/B2 handlers
@@ -10769,20 +11596,20 @@ void Ui::TriggerLoadSampleSynthVoiceUserPreset()
     // what's now SOUNDS1.
     if(strcmp(preset.category, "SOUNDS") == 0)
         snprintf(preset.category, sizeof(preset.category), "SOUNDS1");
-    sample_synth_capture_unsaved_ = false; // the capture is being replaced
-    LoadSampleSynthFileIntoEngine(preset.category, preset.filename);
+    if(preset.filename[0] != '\0')
+    {
+        sample_synth_capture_unsaved_ = false; // the capture is being replaced
+        LoadSampleSynthFileIntoEngine(preset.category, preset.filename);
+    }
     sample_synth_->ApplyPreset(preset.params);
     sample_synth_->SetGain01(preset.gain01);
+    ApplyPresetMidiChannel(preset.midi_channel, &sample_synth_midi_channel_);
     sample_synth_->SetChromaticMono(preset.mono);
     sample_synth_imp_tune_semis_ = preset.tune_semis;
     sample_synth_imp_mono_       = preset.mono;
     for(int si = 0; si < SampleSynth::kMaxSampleSlots; si++)
         if(sample_synth_->SlotHasSample(si))
             sample_synth_->SetSlotPitchOffsetSemis(si, preset.tune_semis);
-    sample_synth_voice_user_loaded_slot_ = slot;
-    snprintf(sample_synth_voice_user_status_, sizeof(sample_synth_voice_user_status_),
-              "Loaded SMPVO%d", slot);
-    MarkSampleSynthClean();
 }
 
 void Ui::TriggerSaveSampleSynthDrumUserPreset(bool force_new)
@@ -10811,6 +11638,7 @@ void Ui::TriggerSaveSampleSynthDrumUserPreset(bool force_new)
     preset.break_divide_count = (uint8_t)sample_synth_setup_applied_slices_;
     preset.break_tune_semis   = sample_synth_setup_tune_semis_;
     preset.gain01             = sample_synth_->GetGain01();
+    preset.midi_channel       = sample_synth_midi_channel_;
 
     g_audio_suspended = true;
     bool ok           = PerformanceStore::SaveSampleSynthDrumUserPreset(slot, preset);
@@ -10845,14 +11673,25 @@ void Ui::TriggerLoadSampleSynthDrumUserPreset()
                   PerformanceStore::GetLastError());
         return;
     }
-    if(!LoadSampleSynthKitByRef(preset.kit_ref))
+    if(!ApplySampleSynthDrumUserPreset(preset))
     {
         snprintf(sample_synth_drum_user_status_, sizeof(sample_synth_drum_user_status_),
                   "Kit missing");
         return;
     }
+    sample_synth_drum_user_loaded_slot_       = slot;
+    snprintf(sample_synth_drum_user_status_, sizeof(sample_synth_drum_user_status_),
+              "Loaded SMPDR%d", slot);
+    MarkSampleSynthClean();
+}
+
+bool Ui::ApplySampleSynthDrumUserPreset(const PerformanceStore::SampleSynthDrumUserPreset& preset)
+{
+    if(preset.kit_ref[0] != '\0' && !LoadSampleSynthKitByRef(preset.kit_ref))
+        return false;
     sample_synth_->ApplyPreset(preset.params);
     sample_synth_->SetGain01(preset.gain01);
+    ApplyPresetMidiChannel(preset.midi_channel, &sample_synth_midi_channel_);
     sample_synth_setup_pending_slices_ = preset.break_divide_count;
     sample_synth_setup_tune_semis_     = preset.break_tune_semis;
     ApplySampleSynthBreakDivide(sample_synth_setup_pending_slices_, sample_synth_setup_tune_semis_);
@@ -10862,10 +11701,7 @@ void Ui::TriggerLoadSampleSynthDrumUserPreset()
     // sample_synth_drum_remembered_slices_'s own comment.
     sample_synth_drum_remembered_slices_     = sample_synth_setup_applied_slices_;
     sample_synth_drum_remembered_tune_semis_ = sample_synth_setup_tune_semis_;
-    sample_synth_drum_user_loaded_slot_       = slot;
-    snprintf(sample_synth_drum_user_status_, sizeof(sample_synth_drum_user_status_),
-              "Loaded SMPDR%d", slot);
-    MarkSampleSynthClean();
+    return true;
 }
 
 void Ui::RefreshGranularPresetSlots()
@@ -10895,6 +11731,7 @@ void Ui::TriggerSaveGranularPreset(bool force_new)
     }
 
     GranularEngine::GranularPresetData preset = granular_->CapturePreset();
+    preset.midi_channel = granular_midi_channel_;
 
     // See the g_audio_suspended comment in TriggerSave() above -- same
     // long blocking SD write, same intermittent "Fail:close9"
@@ -10964,6 +11801,7 @@ void Ui::LoadGranularUserSlot(int slot)
     if(ok)
     {
         granular_->ApplyPreset(preset);
+        ApplyPresetMidiChannel(preset.midi_channel, &granular_midi_channel_);
         granular_->SetSource(granular_capture_buf_l_, granular_capture_buf_r_, audio_len);
         OnNewGranularCapture(audio_len);
         granular_loaded_preset_slot_   = slot;
@@ -11022,6 +11860,7 @@ void Ui::LoadGranularLibraryItem()
     if(ok)
     {
         granular_->ApplyPreset(preset);
+        ApplyPresetMidiChannel(preset.midi_channel, &granular_midi_channel_);
         granular_->SetSource(granular_capture_buf_l_, granular_capture_buf_r_, audio_len);
         OnNewGranularCapture(audio_len);
         // Not a user save -- the User page's Save starts as Save New.
@@ -11121,6 +11960,11 @@ Ui::EditSnapshot Ui::GranularSnapshot() const
     s.Add(p.jitter01);
     s.Add(p.scan_bounce);
     s.Add(p.reverb_send01);
+    s.Add(p.output_level01);
+    s.Add(p.pan01);
+    s.Add(p.gain01);
+    s.Add(p.delay_send01);
+    s.Add(granular_midi_channel_);
     s.Add(granular_trim_start01_);
     s.Add(granular_trim_end01_);
     return s;
@@ -11232,18 +12076,32 @@ void Ui::TriggerSaveDexedPreset(bool force_new)
         snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Card full/missing");
         return;
     }
+    DexedSynth::DexedPresetData preset = dexed_->CapturePreset();
+    preset.midi_channel                = dexed_midi_channel_;
     // See the g_audio_suspended comment in TriggerSave() above. Dexed
     // presets are a single small struct (no chunked audio), so the write
     // is much shorter-lived than Performance/Grains, but it's still a
-    // blocking SD write and the same race is possible in principle.
+    // blocking SD write and the same race is possible in principle. The
+    // name check reads every User save's name, so it sits inside too.
     g_audio_suspended = true;
-    bool ok           = PerformanceStore::SaveDexedPreset(slot, dexed_->CapturePreset());
+    bool renamed      = NumberDexedSaveName(&preset, slot);
+    bool ok           = PerformanceStore::SaveDexedPreset(slot, preset);
     g_audio_suspended = false;
+    if(ok && renamed)
+    {
+        // The live patch takes the new name too, so it matches the save.
+        for(int i = 0; i < 10; i++)
+            dexed_->SetPatchByte(145 + i, preset.patch[145 + i]);
+    }
     if(ok)
     {
         dexed_loaded_preset_slot_ = slot;
         dexed_browse_name_slot_   = -2; // its name may have changed
-        snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Saved DEXED%d", slot);
+        if(renamed)
+            snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Saved as %s",
+                      DexedSynth::GetPresetDataName(preset));
+        else
+            snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Saved DEXED%d", slot);
         dexed_preset_slots_dirty_ = true; // a new slot may now exist
         MarkDexedClean();
     }
@@ -11254,14 +12112,93 @@ void Ui::TriggerSaveDexedPreset(bool force_new)
     }
 }
 
+bool Ui::NumberDexedSaveName(DexedSynth::DexedPresetData* p, int target_slot)
+{
+    // Every other User save's name (not factory or imported voices --
+    // those live in their own groups). static: up to 200 x 11 bytes.
+    static char names[kMaxDexedPresetSlots][11];
+    if(dexed_preset_slots_dirty_)
+        RefreshDexedPresetSlots();
+    int n_names = 0;
+    for(int i = 0; i < dexed_preset_user_slot_count_; i++)
+    {
+        if(dexed_preset_user_slots_[i] == target_slot)
+            continue; // overwriting this one -- its old name doesn't count
+        DexedSynth::DexedPresetData other;
+        if(PerformanceStore::LoadDexedPreset(dexed_preset_user_slots_[i], &other))
+            snprintf(names[n_names++], 11, "%s", DexedSynth::GetPresetDataName(other));
+    }
+    auto taken = [&](const char* name) {
+        for(int i = 0; i < n_names; i++)
+            if(strcmp(names[i], name) == 0)
+                return true;
+        return false;
+    };
+
+    char name[11];
+    snprintf(name, sizeof(name), "%s", DexedSynth::GetPresetDataName(*p));
+    if(!taken(name))
+        return false;
+
+    // Saving again from an already-numbered copy ("BASS 2", where "BASS"
+    // is also a save) numbers from the base name, not "BASS 2 2".
+    char   base[11];
+    snprintf(base, sizeof(base), "%s", name);
+    size_t len = strlen(base);
+    size_t d   = len;
+    while(d > 0 && base[d - 1] >= '0' && base[d - 1] <= '9')
+        d--;
+    if(d > 1 && d < len && base[d - 1] == ' ')
+    {
+        char stripped[11];
+        snprintf(stripped, sizeof(stripped), "%.*s", (int)(d - 1), base);
+        if(taken(stripped))
+            snprintf(base, sizeof(base), "%s", stripped);
+    }
+
+    // "NAME n", with NAME cut short to fit DX7's 10 characters.
+    char candidate[11];
+    for(int num = 2; num < 1000; num++)
+    {
+        char suffix[6];
+        snprintf(suffix, sizeof(suffix), " %d", num);
+        int keep = 10 - (int)strlen(suffix);
+        int blen = (int)strlen(base);
+        if(blen > keep)
+            blen = keep;
+        while(blen > 0 && base[blen - 1] == ' ')
+            blen--;
+        snprintf(candidate, sizeof(candidate), "%.*s%s", blen, base, suffix);
+        if(!taken(candidate))
+            break;
+    }
+    // Space-padded, the DX7 patch's own name format.
+    size_t clen = strlen(candidate);
+    for(int i = 0; i < 10; i++)
+        p->patch[145 + i] = (uint8_t)(i < (int)clen ? candidate[i] : ' ');
+    return true;
+}
+
 void Ui::TriggerNewDexedPreset()
 {
     if(!dexed_)
         return;
-    dexed_->ApplyPreset(DexedSynth::GetFactoryPreset(0));
-    dexed_loaded_preset_slot_ = 1;
-    snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "New (%s)",
-              DexedSynth::GetFactoryPresetName(0));
+    // INIT VOICE, with the Pod's own sound extras back to neutral
+    // (Filter open, Fold off, wheel on Pitch -- Brightness/Env Speed
+    // re-centre inside SetPatch()). Mix (Level/Pan/Gain/sends) and the
+    // MIDI channel are where the sound sits in your setup, not the
+    // sound itself, so they stay as they are.
+    DexedSynth::DexedPresetData cur  = dexed_->CapturePreset();
+    DexedSynth::DexedPresetData init = DexedSynth::GetInitVoice();
+    init.reverb_send01    = cur.reverb_send01;
+    init.output_level01   = cur.output_level01;
+    init.pan01            = cur.pan01;
+    init.delay_send01     = cur.delay_send01;
+    init.gain01           = cur.gain01;
+    init.mod_wheel_target = (int32_t)DexedSynth::ModWheelTarget::Pitch;
+    dexed_->ApplyPreset(init);
+    dexed_loaded_preset_slot_ = 0; // not a stored slot -- shown by its patch name
+    snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "New (INIT VOICE)");
     MarkDexedClean();
 }
 
@@ -11274,6 +12211,7 @@ void Ui::LoadDexedSlot(int slot)
     if(ok)
     {
         dexed_->ApplyPreset(preset);
+        ApplyPresetMidiChannel(preset.midi_channel, &dexed_midi_channel_);
         dexed_loaded_preset_slot_ = slot;
         snprintf(dexed_preset_status_, sizeof(dexed_preset_status_), "Loaded %s",
                   DexedSlotName(slot));
@@ -11289,7 +12227,19 @@ void Ui::LoadDexedSlot(int slot)
 const char* Ui::DexedSlotName(int slot)
 {
     if(slot <= 0)
-        return "(custom)";
+    {
+        // Nothing stored is loaded (New) -- name it by the live patch's
+        // own name bytes, e.g. INIT VOICE.
+        if(!dexed_)
+            return "(custom)";
+        static char live[11];
+        for(int i = 0; i < 10; i++)
+            live[i] = (char)dexed_->GetPatchByte(145 + i);
+        live[10] = '\0';
+        for(int i = 9; i >= 0 && live[i] == ' '; i--)
+            live[i] = '\0';
+        return live[0] ? live : "(custom)";
+    }
     if(slot <= DexedSynth::GetNumFactoryPresets())
         return DexedSynth::GetFactoryPresetName(slot - 1);
     // A user slot's name lives inside its own saved file -- read it once
@@ -11333,6 +12283,9 @@ Ui::EditSnapshot Ui::DexedSnapshot() const
     s.Add(p.fold_amount01);
     s.Add(p.fold_trim01);
     s.Add(p.gain01);
+    s.Add(p.mod_wheel_target);
+    s.Add(p.op_switch);
+    s.Add(dexed_midi_channel_);
     return s;
 }
 
@@ -11484,11 +12437,13 @@ void Ui::TriggerSaveEnsemblePreset(bool force_new)
         snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Card full/missing");
         return;
     }
+    EnsembleSynth::EnsemblePresetData preset = ensemble_->CapturePreset();
+    preset.midi_channel                      = ensemble_midi_channel_;
     // See the g_audio_suspended comment in TriggerSave() above -- same
     // short-lived single-struct write as TriggerSaveDexedPreset(), same
     // in-principle race.
     g_audio_suspended = true;
-    bool ok           = PerformanceStore::SaveEnsemblePreset(slot, ensemble_->CapturePreset());
+    bool ok           = PerformanceStore::SaveEnsemblePreset(slot, preset);
     g_audio_suspended = false;
     if(ok)
     {
@@ -11527,6 +12482,7 @@ void Ui::LoadEnsembleSlot(int slot)
     if(ok)
     {
         ensemble_->ApplyPreset(preset);
+        ApplyPresetMidiChannel(preset.midi_channel, &ensemble_midi_channel_);
         ensemble_loaded_preset_slot_ = slot;
         if(factory)
             snprintf(ensemble_preset_status_, sizeof(ensemble_preset_status_), "Loaded %s",
@@ -11564,6 +12520,8 @@ Ui::EditSnapshot Ui::EnsembleSnapshot() const
     s.Add(p.reverb_send01);
     s.Add(p.delay_send01);
     s.Add(p.gain01);
+    s.Add(p.mod_wheel_target);
+    s.Add(ensemble_midi_channel_);
     return s;
 }
 

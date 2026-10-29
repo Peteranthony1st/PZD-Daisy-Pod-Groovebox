@@ -1345,6 +1345,14 @@ void GranularEngine::ApplyPreset(const GranularPresetData& p)
     SetJitter01(p.jitter01);
     scan_bounce_ = p.scan_bounce;
     SetReverbSend01(p.reverb_send01);
+    if(p.output_level01 >= 0.f)
+        SetOutputLevel01(p.output_level01);
+    if(p.pan01 >= 0.f)
+        SetPan01(p.pan01);
+    if(p.gain01 >= 0.f)
+        SetGain01(p.gain01);
+    if(p.delay_send01 >= 0.f)
+        SetDelaySend01(p.delay_send01);
 }
 
 GranularEngine::GranularPresetData GranularEngine::CapturePreset() const
@@ -1377,5 +1385,9 @@ GranularEngine::GranularPresetData GranularEngine::CapturePreset() const
     p.jitter01            = jitter01_;
     p.scan_bounce         = scan_bounce_;
     p.reverb_send01       = reverb_send01_;
+    p.output_level01      = output_level01_;
+    p.pan01               = pan01_;
+    p.gain01              = gain01_;
+    p.delay_send01        = delay_send01_;
     return p;
 }

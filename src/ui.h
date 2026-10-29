@@ -407,6 +407,9 @@ class Ui
         // same shape as every engine's own FX page: B1 = Reverb (K1
         // Send, K2 shared Size), B2 = Delay (K1 Send, K2 shared Time).
         Bypass,
+        // Every synth engine at once -- B1 saves a new snapshot, B2 opens
+        // the list (K2 scrolls, B2 loads). See PerformanceStore::SynthSnapshot.
+        Snap,
         File,
         // File management: Knob1 picks which of the 2 save folders
         // (Performances/Grains Presets) then Button1 tap drills in; once
@@ -454,10 +457,12 @@ class Ui
     // maps (int)SdMgmtFolder straight to a row-major cell index (4
     // columns x 2 rows) -- reordering these moves which box each one
     // draws in. Never persisted anywhere (sd_mgmt_folder_ always boots
-    // back to Performances), so reordering is otherwise free.
+    // back to Global), so reordering is otherwise free.
     enum class SdMgmtFolder
     {
-        Performances,     // row0 col0
+        // Performances and Global:Snap's snapshots, chosen inside the box
+        // (see sd_mgmt_global_kind_).
+        Global,           // row0 col0
         GranularPresets,  // row0 col1
         // User-saved Dexed presets only, same "factory bank is built
         // into firmware, nothing to delete there" split GranularPresets
@@ -604,7 +609,7 @@ class Ui
     // phase), reached by an encoder click from the Preset page below.
     enum class DexedParamPage
     {
-        Algo,       // Button1 cycles the 32 real DX7 algorithms; no knobs
+        Algo,       // view-only diagram -- ALGORITHM is set in Advanced
         Feedback,   // K1 only, 0-7
         // K1 = LFO speed, K2 = LFO pitch mod depth -- the patch's own
         // baked-in automatic vibrato, distinct from the mod wheel's own
@@ -826,60 +831,36 @@ class Ui
         kCount
     };
 
-    // Screen::DexedOperator's own pages -- the v1 "core set" advanced
-    // per-operator editor scope (Ratio/Level, Detune, and the 4 EG
-    // Rates + 4 EG Levels via the existing AD/SR Button2-toggle idiom
-    // already used for every ADSR-shaped page in this codebase -- see
-    // dexed_op_egrate_target_sr_/dexed_op_eglevel_target_sr_). AmpModSens
-    // was added in a later increment (see its own comment below);
-    // VelocitySens and KeybRateScale (keyboard RATE scaling only -- the
-    // full keyboard LEVEL scaling block, breakpoint + left/right depth +
-    // curve, is a separate, bigger feature, still deliberately deferred)
-    // were added after that, prompted by a real user report that a
-    // low-velocity note sounded unexpectedly loud -- traced to this
-    // patch's own velocity sensitivity byte being 0 (a real, legitimate
-    // per-patch sound-design choice some patches make on purpose), with
-    // no on-device way to see or change it until now. Operator select
-    // (1-6, shown as the real HW op number, i.e. 6-dexed_op_index_) is
-    // Button1-cycled, not a page of its own -- rotate stays reserved
-    // for page navigation, matching every other screen's own
-    // rotate-cycles-pages convention.
+    // Screen::DexedOperator's own pages -- the full DX7 voice, named
+    // with the DX7's own parameter wording. Operator pages first
+    // (Button1 cycles OP1-6, shown as the real HW op number, i.e.
+    // 6-dexed_op_index_), then the voice-wide pages from PitchEgRate on
+    // (Button1 unused -- see IsDexedVoicePage()). Rotate stays reserved
+    // for page navigation, matching every other screen. Button2 is each
+    // page's own toggle, listed per page below. Every value here is a
+    // byte of the 156-byte unpacked patch (byte map in dexed_synth.cpp)
+    // except OP ON/OFF, which is DexedSynth::SetOpSwitch().
     enum class DexedOpParamPage
     {
-        // Read-only reference view, same diagram Screen::Dexed's own
-        // Algo page shows (see Ui::DrawAlgorithmDiagram(), shared
-        // between both) -- added as the first page here after a real
-        // user request, so you can see the current routing/carriers
-        // while browsing per-operator pages without leaving this
-        // screen. No knob of its own: Button1 is already committed to
-        // operator-select duty on every page in this screen, so
-        // there's no button left free to cycle the algorithm the way
-        // Screen::Dexed's own Algo page does -- change it from there
-        // instead.
+        // ALGORITHM on K1 (1-32) with the routing diagram -- the one
+        // place it's set; Screen::Dexed's own Algo page only shows it.
         Algo,
-        RatioLevel, // K1 = Coarse ratio (quantized 0-31), K2 = Output Level
-        Detune,     // K1 only, 0-14 centered on 7
-        EgRate,     // K1/K2 = Rate1/Rate2 (AD) or Rate3/Rate4 (SR), Button2 toggles
-        EgLevel,    // K1/K2 = Level1/Level2 (AD) or Level3/Level4 (SR), Button2 toggles
-        // K1 only, 0-3 (patch[off+14] & 3, ampmodsenstab in msfa) -- gates
-        // whether this operator responds to the mod wheel's Amp/EG Bias
-        // targets at all (0 = never, regardless of wheel position); see
-        // DexedSynth::ModWheelTarget's own comment. Explicitly deferred in
-        // the original advanced-editor plan, added once a real user
-        // report ("I can hear no effect... on all of the cycles") traced
-        // Amp/EG's silence to this byte never being exposed anywhere.
-        AmpModSens,
-        // K1 only, 0-7 (patch[off+15], read directly by msfa's own
-        // ScaleVelocity() -- see dx7note.cpp). 0 means this operator's
-        // output level never changes with velocity at all, by design --
-        // some real DX7 patches (pads, organs, certain basses) are built
-        // that way on purpose, not a bug.
-        VelocitySens,
-        // K1 only, 0-7 (patch[off+13], read directly by msfa's own
-        // ScaleRate() -- see dx7note.cpp). How much playing higher up
-        // the keyboard speeds up this operator's envelope rates; 0 means
-        // every key uses the same rates regardless of pitch.
-        KeybRateScale,
+        Frequency,         // F COARSE / F FINE, B2 = OSC MODE RATIO/FIXED
+        Detune,            // OSC DETUNE, shown -7..+7
+        OutputLevel,       // OUTPUT LEVEL, B2 = OP ON/OFF
+        EgRate,            // RATE 1/2, B2 -> RATE 3/4
+        EgLevel,           // LEVEL 1/2, B2 -> LEVEL 3/4
+        LevelScalingCurve, // L CURVE / R CURVE, B2 swaps K1 to BREAK POINT
+        LevelScalingDepth, // L DEPTH / R DEPTH
+        RateScaling,       // RATE SCALING 0-7
+        Sensitivity,       // KEY VELOCITY 0-7 / A MOD SENS 0-3
+        // --- voice-wide from here on ---
+        PitchEgRate,  // PITCH EG RATE 1/2, B2 -> 3/4
+        PitchEgLevel, // PITCH EG LEVEL 1/2, B2 -> 3/4
+        Lfo,          // LFO SPEED / LFO DELAY, B2 cycles LFO WAVE
+        LfoDepth,     // LFO PM DEPTH / LFO AM DEPTH, B2 = LFO KEY SYNC
+        ModSens,      // P MOD SENS, B2 = OSC KEY SYNC
+        Transpose,    // TRANSPOSE, shown as the note middle C plays
         kCount
     };
 
@@ -992,16 +973,27 @@ class Ui
         // already uses for cursor_layer_/Cur(). EgRate/EgLevel each
         // split into two contexts for the AD/SR toggle, same shape as
         // GranularEnvAD/GranularEnvSR above.
-        DexedOpAlgo, // view-only -- see DexedOpParamPage::Algo's own comment
-        DexedOpRatioLevel,
+        DexedOpAlgo, // K1 = ALGORITHM
+        DexedOpFrequency,
         DexedOpDetune,
-        DexedOpEgRateAD,
-        DexedOpEgRateSR,
-        DexedOpEgLevelAD,
-        DexedOpEgLevelSR,
-        DexedOpAmpModSens,
-        DexedOpVelocitySens,
-        DexedOpKeybRateScale,
+        DexedOpOutputLevel,
+        DexedOpEgRate12,
+        DexedOpEgRate34,
+        DexedOpEgLevel12,
+        DexedOpEgLevel34,
+        DexedOpLevelScalingCurve,
+        DexedOpBreakPoint, // LevelScalingCurve with K1 swapped to BREAK POINT
+        DexedOpLevelScalingDepth,
+        DexedOpRateScaling,
+        DexedOpSensitivity,
+        DexedVoicePitchEgRate12,
+        DexedVoicePitchEgRate34,
+        DexedVoicePitchEgLevel12,
+        DexedVoicePitchEgLevel34,
+        DexedVoiceLfo,
+        DexedVoiceLfoDepth,
+        DexedVoiceModSens,
+        DexedVoiceTranspose,
         // Screen::Ensemble's own pages -- see EnsembleParamPage for what
         // each one's knobs do.
         EnsemblePreset, // browses a list directly, no pickup used
@@ -1168,20 +1160,23 @@ class Ui
                         float decay_s,
                         float sustain01,
                         float release_s);
-    // Real DX7 4-segment operator envelope (R1/L1..R4/L4) -- genuinely
-    // different shape from DrawAdsrShape() above, not a reuse of it:
-    // each of the 4 equal-width zones ramps from wherever the previous
-    // segment left off to its OWN target level (rates/levels[0..3], raw
-    // 0-99 patch bytes), holding flat for whatever's left of that zone
-    // once it gets there -- unlike a classic ADSR, a real DX7 envelope
-    // can rise and fall repeatedly across its 4 stages, so the fixed
-    // up/down/flat/down topology DrawAdsrShape() assumes doesn't apply.
-    // Higher rate = faster = reaches its target sooner within the zone
-    // (the opposite direction from DrawAdsrShape()'s own seconds
-    // parameters, where smaller = faster). Shared by
-    // DexedOpParamPage::EgRate/EgLevel -- both show the same real shape
-    // regardless of which pair is currently the editable one.
-    void DrawDx7EnvelopeShape(int top, int bottom, const uint8_t rates[4], const uint8_t levels[4]);
+    // Real DX7 4-rate/4-level envelope (operator or PITCH EG) --
+    // genuinely different from DrawAdsrShape() above: it can rise and
+    // fall repeatedly, and never has to start or end at zero.
+    // Drawn to match the DX7's own picture: the line starts at LEVEL
+    // 4, each RATE is a slope between level vertices (higher rate =
+    // steeper, and a bigger level move takes longer), LEVEL 3 holds
+    // until a dotted key-release marker, then RATE 4 falls back to
+    // LEVEL 4. hl_rates/hl_levels are bitmasks (bit n = RATE/LEVEL n+1)
+    // of what the knobs are editing -- reversed slope numbers and filled
+    // level squares. center_line draws a
+    // dotted line at level 50, for PITCH EG.
+    void DrawDx7EnvelopeShape(int top, int bottom, const uint8_t rates[4], const uint8_t levels[4],
+                              uint8_t hl_rates = 0, uint8_t hl_levels = 0,
+                              bool center_line = false);
+    // Keyboard level scaling across the whole keyboard: the level drop
+    // left/right of BREAK POINT (marked) for the given operator.
+    void DrawLevelScalingGraph(int top, int bottom, int base);
     // Real box-and-arrow diagram of algo0's exact operator routing
     // (0-indexed, i.e. patch byte 134 as-is) -- generically derived from
     // FmCore::get_operator_routing() every call, never hand-authored per
@@ -1257,6 +1252,22 @@ class Ui
     // may now exist). Cheap (kMaxSlots f_stat() calls, only on a real SD
     // card access, not every frame).
     void RefreshFileSlots();
+    // Global:Snap -- see GlobalPage::Snap.
+    void RefreshSnapSlots();
+    // Overwrites snap_loaded_slot_ unless force_new (or nothing's loaded).
+    void TriggerSaveSnapshot(bool force_new);
+    void TriggerLoadSnapshot(int slot);
+    void DrawSnapScreen();
+    void CaptureSynthSnapshot(PerformanceStore::SynthSnapshot* out);
+    // The name Global:Snap's grid shows for engine 0-3 (Grains, Dexed,
+    // Ensemble, Sampler) as it is right now.
+    void LiveSnapEngineName(int engine, char* out, size_t out_size);
+    // The SMPVO/SMPDR User preset "apply" steps, shared by their own
+    // Load and by snapshot loads. An empty filename/kit_ref keeps
+    // whatever sound is there and applies the settings only. Drum
+    // returns false if its Kit is missing.
+    void ApplySampleSynthVoiceUserPreset(PerformanceStore::SampleSynthVoiceUserPreset& preset);
+    bool ApplySampleSynthDrumUserPreset(const PerformanceStore::SampleSynthDrumUserPreset& preset);
     // Button1 short: save the current in-memory performance. Overwrites
     // loaded_slot_ if a performance is currently loaded/was just saved;
     // otherwise saves to the next free slot and adopts it as
@@ -1309,7 +1320,19 @@ class Ui
     {
         return sd_mgmt_in_folder_
                && ((SdMgmtIsBankFolder() && sd_mgmt_bank_ < 0)
-                   || (SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ < 0));
+                   || (SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ < 0)
+                   || (SdMgmtGlobalBox() && sd_mgmt_global_kind_ < 0));
+    }
+    // GLOBAL box: Performances and Global:Snap's snapshots, picked first.
+    bool SdMgmtGlobalBox() const { return sd_mgmt_folder_ == SdMgmtFolder::Global; }
+    bool SdMgmtSnapshots() const { return SdMgmtGlobalBox() && sd_mgmt_global_kind_ == 1; }
+    // The file prefix SdMgmt's status line names an item by (PERF3,
+    // SNAP3, DEXED12...).
+    const char* SdMgmtItemPrefix() const
+    {
+        if(SdMgmtGlobalBox())
+            return SdMgmtSnapshots() ? "SNAP" : "PERF";
+        return SdMgmtFolderShortLabel(sd_mgmt_folder_);
     }
     // SMPDR box: user saves split into Kits / Breaks folders first, same
     // as the SMPDR User page (see sample_synth_drum_user_is_break_).
@@ -1493,6 +1516,10 @@ class Ui
     // Loads one preset by real slot number (factory or user), shared by
     // the Preset and User pages.
     void LoadDexedSlot(int slot);
+    // Before a Dexed User save: if another User save already has this
+    // patch's name, renames it "NAME 2", "NAME 3"... (cut to fit 10
+    // characters). Returns true if it renamed. Reads the card.
+    bool NumberDexedSaveName(DexedSynth::DexedPresetData* p, int target_slot);
     // Screen name for a slot: factory names straight from the firmware
     // table, a user slot's from its own file (cached per slot, see
     // dexed_browse_name_slot_), "DEXEDn" if it has no embedded name.
@@ -1679,6 +1706,14 @@ class Ui
     float delay_to_reverb01_ = 0.f;   // Global:Dly-Rev K1
     // -1 = Omni (default) -- see GetDexedMidiChannel()/GetGranularMidiChannel()/
     // GetSampleSynthMidiChannel().
+    // A user preset's saved MIDI channel (-1 = Omni) replaces *channel;
+    // -2 ("not stored": factory sounds, files saved before presets
+    // carried a channel) leaves it alone.
+    static void ApplyPresetMidiChannel(int32_t saved, int* channel)
+    {
+        if(saved >= -1 && saved <= 15)
+            *channel = (int)saved;
+    }
     int dexed_midi_channel_        = -1;
     int granular_midi_channel_     = -1;
     int ensemble_midi_channel_     = -1;
@@ -1756,6 +1791,10 @@ class Ui
     // --- Per-engine on/off (see IsGranularEnabled()).
     bool granular_enabled_ = false;
     bool looper_enabled_   = true; // see IsLooperEnabled()'s own comment for why true
+    // Global:Looper B2: whether looper_enabled_ starts true at power-on
+    // (PerformanceStore::LoadLooperDefault(), read in ApplyStartupDefaults()).
+    bool looper_default_on_ = true;
+    char looper_status_[24] = {}; // last Default save result, if it failed
     // Same false default as Granular's own now that Global:Dexed's real
     // on/off toggle exists (was temporarily true during Phase 4-6, back
     // when there was no UI toggle yet and defaulting off would have made
@@ -1842,6 +1881,16 @@ class Ui
     bool file_slots_dirty_          = true; // forces one RefreshFileSlots() on first Draw()
     bool file_op_in_progress_       = false; // true only while inside Save()/Load()
     char file_status_[24]           = {};    // last result, shown briefly on the page
+    // Global:Snap's list -- same shape as the File page's above, no "New".
+    int  snap_slots_[PerformanceStore::kMaxSynthSnapshots] = {};
+    int  snap_slot_count_  = 0;
+    int  snap_cursor_      = 0;
+    bool snap_slots_dirty_ = true;
+    int  snap_loaded_slot_ = -1;
+    // The browsed snapshot's settings (no audio), read once per slot.
+    int  snap_browse_slot_ = -1;
+    bool snap_browse_ok_   = false;
+    char snap_status_[32]  = {};
 
     // --- SD MGMT (Global:SdMgmt page) ------------------------------------
     // Reuses file_slots_/granular_preset_user_slots_ (and their own dirty
@@ -1851,12 +1900,13 @@ class Ui
     // project (800ms elsewhere) -- unlike an overwrite or a wipe, there's
     // no "just re-save/re-load" undo for it.
     static constexpr float kSdMgmtDeleteHoldMs = 1500.f;
-    SdMgmtFolder sd_mgmt_folder_    = SdMgmtFolder::Performances;
+    SdMgmtFolder sd_mgmt_folder_    = SdMgmtFolder::Global;
     bool         sd_mgmt_in_folder_ = false; // false = picking a folder, true = browsing its files
     int          sd_mgmt_cursor_    = 0;     // item list cursor (K2)
     int          sd_mgmt_list_cursor_ = 0;   // folder-list cursor (K1): Sampler/Grains, banks
     int          sd_mgmt_capt_kind_   = -1;  // CAPT box: -1 = choosing, 0 = Sampler, 1 = Grains
     int          sd_mgmt_drum_kind_   = -1;  // SMPDR box: -1 = choosing, 0 = Kits, 1 = Breaks
+    int          sd_mgmt_global_kind_ = -1;  // GLOBAL box: -1 = choosing, 0 = Perf, 1 = Snapshots
     int          sd_mgmt_smp_kind_      = -1; // SMPIMP box: -1 = choosing, 0 = Voice, 1 = Drum
     // SMPIMP's second choice: -1 = choosing; Voice -> 0 Sounds, 1 Multi;
     // Drum -> 0 Kits, 1 Breaks.
@@ -2113,14 +2163,33 @@ class Ui
     // 0-5, array index into patch_[] (op*21) -- 0 = HW OP6, 5 = OP1, same
     // convention confirmed from the real DX7 SysEx spec and already used
     // throughout the Algo diagram. Button1-cycled, not a page of its own.
-    int                dexed_op_index_ = 0;
+    int                dexed_op_index_ = 5; // starts on OP1
     DexedOpParamPage   dexed_op_page_  = DexedOpParamPage::Algo;
-    // AD/SR toggles for the EgRate/EgLevel pages, same idiom as
-    // granular_adsr_target_sr_ -- two independent bools since the two
-    // pages' own toggle state shouldn't reset just from navigating
-    // between them.
-    bool dexed_op_egrate_target_sr_  = false;
-    bool dexed_op_eglevel_target_sr_ = false;
+    // Button2 pair toggles (false = 1/2, true = 3/4) for the EG pages,
+    // same idiom as granular_adsr_target_sr_ -- independent bools so a
+    // page's own toggle state doesn't reset just from navigating away.
+    bool dexed_op_egrate_target34_     = false;
+    bool dexed_op_eglevel_target34_    = false;
+    bool dexed_pitch_egrate_target34_  = false;
+    bool dexed_pitch_eglevel_target34_ = false;
+    // LevelScalingCurve's Button2: K1 = BREAK POINT instead of L CURVE.
+    bool dexed_op_bp_target_ = false;
+    // Which patch byte each knob edits on the current Advanced page
+    // context (-1 = none), with its 0..max range -- one table shared by
+    // pickup seeding, ApplyKnobs() and nothing else, so a page's knob
+    // mapping lives in exactly one place.
+    struct DexedEditByte
+    {
+        int     offset;
+        uint8_t max;
+    };
+    static bool IsDexedVoicePage(DexedOpParamPage p)
+    {
+        return (int)p >= (int)DexedOpParamPage::PitchEgRate;
+    }
+    void DexedEditBytesFor(KnobContext ctx, DexedEditByte* k1, DexedEditByte* k2) const;
+    // Screen::DexedOperator's Button2 -- each page's own toggle.
+    void OnDexedOperatorButton2();
     void DrawDexedOperatorScreen();
     void DrawEnsembleScreen();
 

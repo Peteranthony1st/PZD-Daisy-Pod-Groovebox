@@ -325,8 +325,16 @@ void DexedSynth::NoteOn(uint8_t note, uint8_t velocity)
     // of work, never a loop over unbounded data) is enough to make it
     // atomic with respect to the audio ISR without meaningfully risking
     // that ISR's own timing.
+    // TRANSPOSE (patch byte 144, 24 = middle C plays C3) moves the
+    // pitch only -- held_note stays the key actually pressed, so
+    // NoteOff() still finds it. LFO KEY SYNC/LFO DELAY restart and OSC
+    // KEY SYNC both happen on every key, same as Dexed's own keydown.
+    int played = TransposedNote(note);
     __disable_irq();
-    v.note.init(patch_, note, velocity, note, -1, &ctrls_);
+    lfo_.keydown();
+    v.note.init(patch_, played, velocity, played, -1, &ctrls_);
+    if(patch_[136])
+        v.note.oscSync();
     v.played = true;
     v.held_note    = note;
     v.velocity     = velocity;
@@ -619,7 +627,7 @@ void DexedSynth::ApplyPatchToHeldVoices()
         if(v.held_note != -1)
         {
             __disable_irq();
-            v.note.update(patch_, v.held_note, v.velocity, -1, &ctrls_);
+            v.note.update(patch_, TransposedNote(v.held_note), v.velocity, -1, &ctrls_);
             __enable_irq();
         }
     }
@@ -692,9 +700,49 @@ void DexedSynth::SetPatchByte(int byte_index, uint8_t value)
         return;
     patch_[byte_index]          = value;
     patch_baseline_[byte_index] = value;
-    if(byte_index == 137) // LFO speed -- Lfo::reset() reads params[6] starting here
+    if(byte_index >= 137 && byte_index <= 142) // Lfo::reset() reads params[6] from 137
         lfo_.reset(&patch_[137]);
     ApplyPatchToHeldVoices();
+}
+
+int DexedSynth::TransposedNote(int note) const
+{
+    int t = patch_[144] > 48 ? 24 : patch_[144];
+    int n = note + t - 24;
+    return n < 0 ? 0 : (n > 127 ? 127 : n);
+}
+
+DexedSynth::DexedPresetData DexedSynth::GetInitVoice()
+{
+    DexedPresetData p;
+    for(int op = 0; op < 6; op++)
+    {
+        uint8_t* o = &p.patch[op * 21];
+        for(int i = 0; i < 4; i++)
+        {
+            o[i]     = 99;               // RATE 1-4
+            o[4 + i] = i < 3 ? 99 : 0;   // LEVEL 1-3 = 99, LEVEL 4 = 0
+        }
+        o[8]  = 39;                      // BREAK POINT = C3
+        o[11] = 0;                       // L CURVE = -LIN
+        o[12] = 0;                       // R CURVE = -LIN
+        o[16] = op == 5 ? 99 : 0;        // OUTPUT LEVEL -- OP1 (index 5) only
+        o[17] = 0;                       // OSC MODE = RATIO
+        o[18] = 1;                       // F COARSE = 1
+        o[20] = 7;                       // OSC DETUNE = 0
+    }
+    for(int i = 0; i < 4; i++)
+    {
+        p.patch[126 + i] = 99; // PITCH EG RATE 1-4
+        p.patch[130 + i] = 50; // PITCH EG LEVEL 1-4 (no pitch change)
+    }
+    p.patch[136] = 1;  // OSC KEY SYNC = ON
+    p.patch[137] = 35; // LFO SPEED
+    p.patch[141] = 1;  // LFO KEY SYNC = ON
+    p.patch[143] = 3;  // P MOD SENS
+    p.patch[144] = 24; // TRANSPOSE = C3
+    std::memcpy(&p.patch[145], "INIT VOICE", 10);
+    return p;
 }
 
 void DexedSynth::ApplyModWheelTarget()
@@ -719,6 +767,8 @@ DexedSynth::DexedPresetData DexedSynth::CapturePreset() const
     p.fold_amount01   = fold_amount01_;
     p.fold_trim01     = fold_trim01_;
     p.gain01          = gain01_;
+    p.mod_wheel_target = (int32_t)mod_wheel_target_;
+    p.op_switch        = ctrls_.opSwitch;
     return p;
 }
 
