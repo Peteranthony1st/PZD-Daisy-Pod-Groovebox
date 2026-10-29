@@ -433,8 +433,10 @@ capture in progress.
 | User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 The Algo page shows a real box-and-arrow diagram of whichever algorithm
-is loaded (filled boxes = carriers, outlined = modulators, "FB" tags the
-feedback operator). Clicking the encoder on any Dexed page other than
+is loaded, drawn like the DX7's own (OP1 on the left, every carrier on
+one row above the OUT line, filled boxes = carriers, outlined =
+modulators, "FB" tags the feedback operator). New on the User page loads
+INIT VOICE like a DX7, keeping your Mix and MIDI settings. Clicking the encoder on any Dexed page other than
 Advanced goes back to `Global:Dexed`. Pan isn't on this screen — see
 Mixer below.
 
@@ -483,6 +485,8 @@ operator pages.
 - Algorithms 4 and 6 feed back through 2-3 operators like a real DX7
   (OP4 or OP5 back into OP6), so they no longer sound the same as 3 and
   5. The diagram shows the loop as a line beside those operators.
+- TRANSPOSE, OSC KEY SYNC, LFO KEY SYNC and LFO DELAY now affect the
+  sound (older firmware stored them but ignored them).
 - ALGORITHM is only set here. The Dexed Algo page just shows the diagram.
 - The Dexed Vibrato page is a shortcut to the same LFO SPEED, LFO PM
   DEPTH and P MOD SENS as the voice pages.

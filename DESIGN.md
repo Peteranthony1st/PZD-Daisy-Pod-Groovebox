@@ -1445,7 +1445,7 @@ folder list, so an imported preset never shows up twice). Roms/Dexed/
 Imports each still open onto their own folder list beneath the group;
 User has no folder level of its own (there's nothing to sub-group), so
 opening it goes straight to its own flat list, the same one-level shape
-Global:File's own numbered list always used.
+Global:Perf's own numbered list always used.
 
 **Back (Button 1) / Open (Button 2) split, at the group and folder-list
 levels only**: a direct request ("within these we need a back button")
@@ -3129,7 +3129,7 @@ like every other load, for consistency.
 
 `PerformanceStore` saves/loads a whole performance (all 4 layers' audio
 plus tempo/global/per-layer settings) as one flat binary file per slot,
-`PERF/PERF001.DAT` .. `PERF/PERF099.DAT`, via Global:File — kept in its
+`PERF/PERF001.DAT` .. `PERF/PERF099.DAT`, via Global:Perf — kept in its
 own subfolder for the same reason WAV exports get their own (see below):
 a tidier SD root, and it keeps `ListSlots()`/`NextFreeSlot()`'s directory
 scan scoped to just that folder. The on-disk layout has a
@@ -3347,7 +3347,7 @@ called from `main()` right after `Ui::Init()`) — if no `PREFS.DAT`
 exists yet (fresh SD card, or nothing's been saved), this silently
 no-ops and the firmware's own hardcoded defaults stand; not an error
 worth surfacing anywhere. It's *not* applied when starting a New
-performance from Global:File — "New" there keeps every current setting
+performance from Global:Perf — "New" there keeps every current setting
 exactly as-is (see Save/load below), the startup default only ever
 matters at power-on.
 
@@ -3495,7 +3495,7 @@ A few things that are intentional, not bugs:
   firmware has no way to know a card was physically pulled and
   reinserted while the Pod stays on — `PerformanceStore::Remount()`
   (triggered automatically on Home→Global, and manually via the "Retry"
-  button when Global:File/Export show "No SD card") re-runs `f_mount()`,
+  button when Global:Perf/Export show "No SD card") re-runs `f_mount()`,
   which recovers a merely-stale mount, but not a card that was actually
   swapped live: the low-level SDMMC peripheral can be left in a state a
   plain re-`Init()` doesn't cleanly recover from (a proper fix needs a
