@@ -187,7 +187,7 @@ Full control map:
 | Dexed: Mix | Output level (or Gain, 0 to +12 dB into the limiter) | Pan | Target Level+Pan | Target Gain |
 | Dexed: DX-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Dexed: DX-FOLD | Fold Amount (0% = exact unity bypass) | Output trim (100% = unchanged) | — | — |
-| Dexed: MIDI | MIDI channel (Omni, 1-16) | MAX VOICES (1-16) | — | — |
+| Dexed: MIDI | MIDI channel (Omni, 1-16) | MAX VOICES (1-16, power-on default 12) | — | — |
 | Dexed: Advanced | — | — | — | — (push encoder to enter Screen::DexedOperator) |
 | Dexed: Import | — | Scroll `DEXED IMPORT/` .syx files | — | Hold 800ms = import |
 | Dexed: Preset | Groups (Roms/Dexed/Imports), then folders | Presets in an open folder | Back | Open / tap loads (stays) |
@@ -1816,7 +1816,9 @@ array size; not yet implemented.
 *Since then: `kMaxVoices` is 16 (16 held notes measured ~27% on the CPU
 meter with Dexed alone), and the runtime limit is in the player's hands
 rather than automatic: the Dexed MIDI page's K2 sets MAX VOICES (1-16,
-`DexedSynth::SetMaxVoices()`). Only the first `max_voices_` slots are
+`DexedSynth::SetMaxVoices()`), 12 at power-on (about 20% CPU) so the
+full 16 is a choice rather than the default (snapshots saved before
+MAX VOICES existed load at 16, since that's how they were made). Only the first `max_voices_` slots are
 handed out to new notes; lowering it keys up any held notes above the
 limit so they finish on their own release, and `RenderQuantum()` still
 walks every slot so nothing is cut off. It's saved in Dexed User presets

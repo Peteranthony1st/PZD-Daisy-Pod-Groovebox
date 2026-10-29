@@ -442,7 +442,9 @@ class DexedSynth
     static constexpr int   kStealFadeSamples = 240;
     static constexpr float kStealFadeInv     = 1.f / (float)kStealFadeSamples;
     Voice       voices_[kMaxVoices];
-    int         max_voices_ = kMaxVoices; // see SetMaxVoices()
+    // Power-on default: 12 held notes keeps Dexed around 20% CPU; the
+    // player can take it up to kMaxVoices. See SetMaxVoices().
+    int         max_voices_ = 12;
     // Monotonic, so "oldest" is always a plain min() over this -- same
     // idiom the removed FmSynth used for its own oldest-note-steal.
     uint32_t    trigger_seq_ = 0;

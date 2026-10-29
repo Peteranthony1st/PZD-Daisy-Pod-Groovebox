@@ -5435,6 +5435,11 @@ void Ui::TriggerLoadSnapshot(int slot)
     {
         dexed_->AllNotesOff();
         dexed_->ApplyPreset(snap.dexed);
+        // Snapshots saved before MAX VOICES existed were made with all 16
+        // voices playing, so they come back that way rather than at the
+        // power-on default of 12.
+        if(snap.dexed.max_voices < 1)
+            dexed_->SetMaxVoices(DexedSynth::kMaxVoices);
         ApplyPresetMidiChannel(snap.dexed.midi_channel, &dexed_midi_channel_);
         dexed_loaded_preset_slot_ = in.dexed_slot;
         dexed_browse_name_slot_   = -2;

@@ -52,8 +52,8 @@ clickable encoder.
 - **Dexed** — a real 6-operator DX7 clone built on Google's own
   **msfa** emulation core. 3129 factory presets across 54 folders, SysEx
   import for your own banks, a real algorithm diagram, and a full
-  per-operator advanced editor. *Polyphony: 16 voices (set lower on the
-  MIDI page to save CPU).*
+  per-operator advanced editor. *Polyphony: 12 voices by default
+  (about 20% CPU), adjustable from 1 to 16 on the MIDI page.*
 
   <img height="160" alt="Dexed algorithm page" src="images/dexed-algo.jpg" />
 
@@ -427,7 +427,7 @@ capture in progress.
 | Mix | Output level / Gain (0 to +12 dB into the limiter) | Pan | Knobs → Level+Pan | Knobs → Gain |
 | DX-FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
 | DX-FOLD | Fold Amount (0% = bypass) | Output trim | — | — |
-| MIDI | MIDI channel (Omni, 1-16) | Voices (1-16, lower it to save CPU) | — | — |
+| MIDI | MIDI channel (Omni, 1-16) | Voices (1-16, default 12; lower it to save CPU) | — | — |
 | Advanced | — | — | — | — (push encoder to enter the operator editor) |
 | Import | — | Scroll `.syx` files in `DEXED IMPORT/` | — | Hold 800ms = Import (becomes a folder under Preset → Imports) |
 | Preset | Scroll Roms/Dexed/Imports, then folders | Scroll presets in a folder | Back | Open / Load (tap, stays in folder) |
