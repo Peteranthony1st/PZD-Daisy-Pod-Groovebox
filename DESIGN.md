@@ -164,24 +164,27 @@ Full control map:
 | Global: RevTone | PreDelay (or DecayDiffusion) | PreFilter (or Damping) | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
 | Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
 | Global: Dly-Rev | Delay → Reverb amount | — | — | — |
-| Global: Delay | Time (free ms, or a synced note value) | Feedback | Toggle Sync | — |
+| Global: Delay | Time (Off, 20 ms-3 s, or a synced note value) | Feedback | Sync Off (free time) | Sync On (1/16 … 1/2 at the current BPM) |
 | Global: DlyTone | Ping-Pong | Tone | — | — |
 | Global: Bypass | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
+| Global: Snap | ChoosingSave: Overwrite/Save New | Browsing: scroll snapshots | Idle: Save; else Back | Idle: Open; list: tap loads (stays); ChoosingSave: hold 800ms = confirm |
 | Global: Perf | ChoosingSave: Overwrite/Save New | BrowsingLoad: scroll New + PERF list | Idle: Save; else Back | Idle: Load; list: tap loads (stays); ChoosingSave: hold 800ms = confirm |
 | Global: SD Mgmt | Box grid / folder lists (Sampler-or-Grains, banks) | Item list | Back; hold = Duplicate (item list) | Open; hold `kSdMgmtDeleteHoldMs` (1500ms) = Delete (item list) |
 | Global: Export | — | — | Tap = render to native 48kHz WAV ("Studio") | Tap = render to 44.1kHz WAV for MicroDexed ("CD") |
 | Global: Dexed | — | — | Toggle Dexed on/off | — |
 | Global: Ensemble | — | — | Toggle Ensemble on/off | — |
 | Global: Granular | — | — | Toggle Grains on/off | — |
-| Global: Looper | — | — | Toggle the whole 4-layer loop system on/off (also resets `TempoClock`'s phase) | — |
-| Global: Mixer | Master Vol (same value as Home's K1 and the Mixer's Master channel) | Bypass Vol (same as the Mixer's Bypass channel) | — | — (entry point + overview grid; bottom row = CPU avg/peak, see *Screen::Mixer* below) |
+| Global: SMPVO | — | — | Toggle SMPVO on/off (disables SMPDR) | — |
+| Global: SMPDR | — | — | Toggle SMPDR on/off (disables SMPVO) | — |
+| Global: Looper | — | — | Toggle the whole 4-layer loop system on/off (also resets `TempoClock`'s phase) | Toggle Default On/Off (looper enabled at power-on; saved immediately) |
+| Global: Mixer | Master Vol (same value as Home's K1 and the Mixer's Master channel) | Bypass Vol (same as the Mixer's Bypass channel) | Toggle the CPU profile view | — (entry point + overview grid; bottom row = CPU avg/peak, see *Screen::Mixer* below) |
 | Dexed: Algo | — (view-only diagram; ALGORITHM is set in Advanced) | — | — | — |
 | Dexed: Feedback | Feedback amount (0-7) | — | — | — |
 | Dexed: Vibrato | LFO speed | LFO pitch-mod depth | — | — |
 | Dexed: Brightness | Modulator level scale (0x..2x, center = as saved) | — | — | — |
 | Dexed: EnvSpeed | All-operator envelope rate scale (0x..2x, center = as saved) | — | — | — |
 | Dexed: Filter | Cutoff | Resonance | Cycle filter mode | — |
-| Dexed: Mix | Reverb send | Output level | — | — |
+| Dexed: Mix | Output level (or Gain, 0 to +12 dB into the limiter) | Pan | Target Level+Pan | Target Gain |
 | Dexed: DX-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Dexed: DX-FOLD | Fold Amount (0% = exact unity bypass) | Output trim (100% = unchanged) | — | — |
 | Dexed: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
@@ -221,14 +224,26 @@ Full control map:
 | Granular: Tune | Tune (grain pitch, ±24 semitones) | — | Toggle Map-to-Note | — |
 | Granular: ADSR | Attack (or Sustain) | Decay (or Release) | Knobs → Attack+Decay | Knobs → Sustain+Release |
 | Granular: Filter | Cutoff | Resonance | Cycle filter mode | — |
-| Granular: Mix | Grain volume (or Reverb send) | Scan volume | Knobs → Grain+Scan volume | Knobs → Reverb send |
+| Granular: Mix | Grain volume (or Pan) | Scan volume (or Gain, 0 to +12 dB into the limiter) | Knobs → Grain+Scan | Knobs → Pan+Gain |
 | Granular: GR-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Granular: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
 | Granular: Capture | — (Import mode: browse .wav files) | — | Cycle source: Direct Record → Layer 1..N → Import | Hold = record (Direct) or capture/import (Layer/Import) |
 | Granular: Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save capture to `GRAINS/CAPTUREDn/` |
 | Granular: Preset | Folders (Starter, Captured n) | Sounds in an open folder | Back | Open / tap loads (stays; live progress bar — audio-inclusive) |
 | Granular: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
-| Mixer: Layer/Grains/Dexed/Ensemble/Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
+| SampleSynth: Filter | Cutoff | Resonance | Cycle filter mode | — |
+| SampleSynth: Env | Attack (or Sustain) | Decay (or Release) | Target AD | Target SR |
+| SampleSynth: Mix | Output level (or Gain, 0 to +12 dB into the limiter) | Pan | Target Level+Pan | Target Gain |
+| SampleSynth: FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
+| SampleSynth: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
+| SampleSynth: Import | Destination (SMPDR: first Kits/Breaks) | — | Back (SMPDR: to Kits/Breaks) | SMPDR: Open (tap); hold 800ms = Import |
+| SampleSynth: Preset | Types, then folders (SMPVO: Sounds/Captured/Multi; SMPDR: Kits/Breaks) | Items in an open folder | Back | Open / tap loads (stays) |
+| SampleSynth: User | ChoosingSave: Overwrite/Save New | Scroll user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
+| SMPVO: Capture | — | — | Cycle source (Direct/Layer/Import) | Hold = record or capture |
+| SMPVO: Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save as Sound |
+| SMPVO: Tune | Cap Tune (±24 semitones) | Imp Tune (±24 semitones) | Mono/Poly-Cap | Mono/Poly-Imp |
+| SMPDR: Setup | Tune (±24 semitones, live) | Slices (0-16, pending) | Toggle Mono/Choke (per-kit) | Hold 800ms = apply Slices |
+| Mixer: Layer/Grains/Dexed/Ensemble/SampleSynth/Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
 | Mixer: Master | Volume | Reverb size | — | — |
 
 BPM/Bars are locked once any layer holds a recording, and the knobs stop
