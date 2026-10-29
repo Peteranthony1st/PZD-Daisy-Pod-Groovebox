@@ -2521,6 +2521,12 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             // (17 buckets - 0.01, matching that same epsilon convention)
             // starting at -1 instead of 1.
             k1_pickup_raw_[i] = Clampf(((float)(dexed_midi_channel_ + 1) + 0.5f) / 16.99f, 0.f, 1.f);
+            // MAX VOICES 1..kMaxVoices, same bucket-midpoint idiom.
+            if(dexed_)
+                k2_pickup_raw_[i]
+                    = Clampf(((float)(dexed_->GetMaxVoices() - 1) + 0.5f)
+                                 / ((float)DexedSynth::kMaxVoices - 0.01f),
+                             0.f, 1.f);
             break;
         case KnobContext::DexedAdvanced: break; // entry point only -- see Screen::DexedOperator instead
         case KnobContext::DexedPreset: break; // browses a list directly, no pickup used
@@ -3526,6 +3532,9 @@ void Ui::ApplyKnobs()
                 case DexedParamPage::MIDI:
                     if(PickUpK1(k1))
                         dexed_midi_channel_ = -1 + (int)(k1 * 16.99f);
+                    if(PickUpK2(k2))
+                        dexed_->SetMaxVoices(
+                            1 + (int)(k2 * ((float)DexedSynth::kMaxVoices - 0.01f)));
                     break;
                 case DexedParamPage::Advanced: break; // no knobs, encoder click drills in
                 case DexedParamPage::Preset:
@@ -7255,10 +7264,13 @@ void Ui::DrawDexedScreen()
                 snprintf(chan_val, sizeof(chan_val), "Omni");
             else
                 snprintf(chan_val, sizeof(chan_val), "%d", dexed_midi_channel_ + 1);
+            char voices_val[8];
+            snprintf(voices_val, sizeof(voices_val), "%d", dexed_->GetMaxVoices());
             // No body text of its own needed (title already says "MIDI")
             // -- same idiom as Feedback/Mix above.
             DrawOscilloscope(12, kFooterDividerY - 2, dexed_scope_buf_, dexed_scope_capacity_);
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Channel", chan_val, "", "");
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Channel", chan_val, voices_val,
+                             "Voices");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
             break;
         }

@@ -962,7 +962,7 @@ class Ui
         DexedFxReverb,
         DexedFxDelay,
         DexedFold, // Wavefolder's own Amount + Trim pair -- no sub-mode toggle
-        DexedMidi, // K1 only -- which MIDI channel this engine listens on
+        DexedMidi, // K1 = which MIDI channel this engine listens on, K2 = MAX VOICES
         DexedAdvanced, // entry point only -- see Screen::DexedOperator instead
         DexedPreset, // browses a list directly, no pickup used
         DexedUser,   // ditto -- the User page's own list / save choice

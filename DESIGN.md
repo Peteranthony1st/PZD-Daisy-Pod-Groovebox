@@ -187,7 +187,7 @@ Full control map:
 | Dexed: Mix | Output level (or Gain, 0 to +12 dB into the limiter) | Pan | Target Level+Pan | Target Gain |
 | Dexed: DX-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
 | Dexed: DX-FOLD | Fold Amount (0% = exact unity bypass) | Output trim (100% = unchanged) | — | — |
-| Dexed: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
+| Dexed: MIDI | MIDI channel (Omni, 1-16) | MAX VOICES (1-16) | — | — |
 | Dexed: Advanced | — | — | — | — (push encoder to enter Screen::DexedOperator) |
 | Dexed: Import | — | Scroll `DEXED IMPORT/` .syx files | — | Hold 800ms = import |
 | Dexed: Preset | Groups (Roms/Dexed/Imports), then folders | Presets in an open folder | Back | Open / tap loads (stays) |
@@ -1104,7 +1104,7 @@ still no case where two of the three need to be kept from overlapping.
 
 ## Dexed (Screen::Dexed)
 
-A MIDI-played, real 6-operator, 10-voice DX7 clone (`dexed_synth.h/.cpp`)
+A MIDI-played, real 6-operator, 16-voice DX7 clone (`dexed_synth.h/.cpp`)
 built around a vendored copy of Google's own **msfa** (`src/msfa/`,
 Apache-2.0 — the same DX7 emulation core Google's official open-source
 `dexed`-lineage synths trace back to), replacing both Pad Synth and Fm
@@ -1130,7 +1130,7 @@ everything UI/preset/SysEx-adjacent in this project (`dexed_sysex.h/
 below) is this project's own, written directly from the public 1993
 Yamaha MIDI SysEx spec.
 
-**Voice architecture**: `kMaxVoices = 10`, oldest-note-steal (matching
+**Voice architecture**: `kMaxVoices = 16` (was 10), oldest-note-steal (matching
 every other engine's own voice-stealing convention), each backed by
 msfa's own `Dx7Note`. `patch_[156]` (msfa's unpacked patch layout) is
 shared by every voice — there's no per-voice patch copy — so switching
@@ -1812,6 +1812,26 @@ chord+Grains combination specifically would need a runtime-conditional
 polyphony limit — full 10 voices while Grains is idle, capped lower
 only while Grains is actually producing output — rather than a fixed
 array size; not yet implemented.
+
+*Since then: `kMaxVoices` is 16 (16 held notes measured ~27% on the CPU
+meter with Dexed alone), and the runtime limit is in the player's hands
+rather than automatic: the Dexed MIDI page's K2 sets MAX VOICES (1-16,
+`DexedSynth::SetMaxVoices()`). Only the first `max_voices_` slots are
+handed out to new notes; lowering it keys up any held notes above the
+limit so they finish on their own release, and `RenderQuantum()` still
+walks every slot so nothing is cut off. It's saved in Dexed User presets
+(file v7, `max_voices`; -1 = not stored, so factory/SysEx patches and
+older saves leave the current limit alone) and therefore in snapshots
+too.*
+
+*Steal fade:* restarting a slot that is still sounding (a voice steal, a
+releasing tail being reused, or the same key struck again) used to cut
+the old sound to zero in one sample, a quiet click on every note at
+Voices = 1. `NoteOn()` now copies the old voice into an idle slot (the
+slots above `max_voices_` are always free for this) and `RenderQuantum()`
+fades that copy out over `kStealFadeSamples` (240, ~5 ms) before marking
+it unplayed. Only when all 16 slots are sounding is there nowhere to put
+it, and the cut happens as before.
 
 ### Preset directory listing: one real scan instead of hundreds of f_stat() calls
 

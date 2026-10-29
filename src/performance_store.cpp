@@ -1368,7 +1368,8 @@ struct DexedPresetFileHeader
     char     magic[4]; // "DEXP"
     uint32_t version;
 };
-constexpr uint32_t kDexedPresetFileVersion   = 6; // + op_switch
+constexpr uint32_t kDexedPresetFileVersion   = 7; // + max_voices
+constexpr uint32_t kDexedPresetFileVersionV6 = 6; // + op_switch, still loadable
 constexpr uint32_t kDexedPresetFileVersionV5 = 5; // + mod_wheel_target/midi_channel, still loadable
 constexpr uint32_t kDexedPresetFileVersionV4 = 4; // + gain01, still loadable
 constexpr uint32_t kDexedPresetFileVersionV3 = 3; // + fold_amount01/fold_trim01, still loadable
@@ -1389,6 +1390,9 @@ constexpr size_t kDexedPresetDataV4Size
 // ...and the end of v5's (just before op_switch).
 constexpr size_t kDexedPresetDataV5Size
     = offsetof(DexedSynth::DexedPresetData, op_switch);
+// ...and the end of v6's (just before max_voices).
+constexpr size_t kDexedPresetDataV6Size
+    = offsetof(DexedSynth::DexedPresetData, max_voices);
 
 // Same shape as DexedPresetFileHeader above, own magic/version -- a
 // single, non-incremental version check is enough here (no backward-
@@ -1997,6 +2001,7 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
     if(ok
        && (memcmp(hdr.magic, "DEXP", 4) != 0
            || (hdr.version != kDexedPresetFileVersion
+               && hdr.version != kDexedPresetFileVersionV6
                && hdr.version != kDexedPresetFileVersionV5
                && hdr.version != kDexedPresetFileVersionV4
                && hdr.version != kDexedPresetFileVersionV3
@@ -2013,7 +2018,8 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
     static DexedSynth::DexedPresetData data;
     // fold_amount01=0/fold_trim01=1 if a v2 file, gain01=0 if v2 or v3,
     // mod_wheel_target/midi_channel "not stored" if older than v5,
-    // op_switch "not stored" (all operators on) if older than v6.
+    // op_switch "not stored" (all operators on) if older than v6,
+    // max_voices "not stored" (limit unchanged) if older than v7.
     data = DexedSynth::DexedPresetData{};
     if(ok)
     {
@@ -2027,11 +2033,12 @@ bool LoadDexedPreset(int slot, DexedSynth::DexedPresetData* out_preset)
     {
         // v3 and newer -- the 2 trailing fold fields, plus gain01 for v4,
         // plus mod_wheel_target/midi_channel for v5, plus op_switch for
-        // v6. Older files leave data's own default-member-initializer
+        // v6, plus max_voices for v7. Older files leave data's own default-member-initializer
         // values in place.
         size_t end = hdr.version == kDexedPresetFileVersionV3   ? kDexedPresetDataV3Size
                      : hdr.version == kDexedPresetFileVersionV4 ? kDexedPresetDataV4Size
                      : hdr.version == kDexedPresetFileVersionV5 ? kDexedPresetDataV5Size
+                     : hdr.version == kDexedPresetFileVersionV6 ? kDexedPresetDataV6Size
                                                                 : sizeof(data);
         UINT want = (UINT)(end - kDexedPresetDataV2Size);
         UINT fold_br;

@@ -300,6 +300,10 @@ class DexedSynth
         // -1 = not stored (factory/SysEx patches and older files):
         // loading turns all six operators on, same as a real DX7.
         int32_t op_switch = -1;
+        // Added in preset file v7 -- the MIDI page's MAX VOICES
+        // (1..kMaxVoices). -1 = not stored (factory/SysEx patches and
+        // older files): loading leaves the current limit alone.
+        int32_t max_voices = -1;
     };
     void ApplyPreset(const DexedPresetData& p)
     {
@@ -315,6 +319,8 @@ class DexedSynth
         SetGain01(p.gain01);
         if(p.mod_wheel_target >= 0)
             SetModWheelTarget((ModWheelTarget)p.mod_wheel_target);
+        if(p.max_voices >= 1)
+            SetMaxVoices(p.max_voices);
     }
     DexedPresetData CapturePreset() const;
 
@@ -323,6 +329,13 @@ class DexedSynth
     // Dx7Note::compute()), so turning it back on mid-note is seamless.
     void    SetOpSwitch(uint8_t mask) { ctrls_.opSwitch = mask & 0x3f; }
     uint8_t GetOpSwitch() const { return ctrls_.opSwitch; }
+
+    // How many of the kMaxVoices slots new notes may use (1..kMaxVoices),
+    // set from the MIDI page to trade polyphony for CPU when other
+    // engines are busy. Lowering it releases any held notes above the
+    // new limit, so they fade out on their own release.
+    void SetMaxVoices(int n);
+    int  GetMaxVoices() const { return max_voices_; }
 
     // The DX7's own INIT VOICE: algorithm 1, OP1 alone at level 99, a
     // plain sine with an organ envelope -- the standard blank starting
@@ -364,18 +377,13 @@ class DexedSynth
     // expression safely.
     static const char* GetPresetDataName(const DexedPresetData& p);
 
-    // The real, committed voice count -- chosen from Phase 2's own
-    // hardware CPU measurement (see the class doc comment above), not a
-    // guess or a value carried over from any other engine.
-    //
-    // Briefly dropped to 4 as a static, always-on cap to recover CPU
-    // headroom for a full chord + Grains both active together hitting
-    // 100% -- reverted: a flat cap also limits Dexed-alone polyphony
-    // even with Grains off and CPU to spare, which wasn't the intent.
-    // A real fix for the chord+Grains case specifically would need a
-    // runtime-conditional limit (lower only while Grains is actually
-    // active), not a fixed array size -- not yet implemented.
-    static constexpr int kMaxVoices = 10;
+    // The voice slots allocated. 16 held notes measured ~27% on the CPU
+    // meter with Dexed alone; was 10. Briefly dropped to 4 as a static,
+    // always-on cap for a full chord + Grains hitting 100% -- reverted,
+    // since a flat cap also limits Dexed-alone polyphony. The runtime
+    // answer is max_voices_ (MIDI page K2), which the player lowers
+    // when other engines need the CPU.
+    static constexpr int kMaxVoices = 16;
 
   private:
     void RenderQuantum(); // fills stage_f_ with one fresh 64-sample msfa quantum
@@ -423,8 +431,18 @@ class DexedSynth
         // forever -- so VoiceIsIdle() counts an unplayed voice as idle,
         // or every voice would be rendered (as silence) until first used.
         bool     played       = false;
+        // Samples left in a steal fade (0 = not fading). A voice that is
+        // still sounding when a new note needs its slot is copied here
+        // first and faded out over kStealFadeSamples, so the restart
+        // doesn't cut it off in a single sample (a click). See NoteOn().
+        int      fade_left    = 0;
     };
+    // ~5 ms at 48 kHz: long enough to hide the cut, short enough that
+    // the copy never really adds a voice's worth of CPU.
+    static constexpr int   kStealFadeSamples = 240;
+    static constexpr float kStealFadeInv     = 1.f / (float)kStealFadeSamples;
     Voice       voices_[kMaxVoices];
+    int         max_voices_ = kMaxVoices; // see SetMaxVoices()
     // Monotonic, so "oldest" is always a plain min() over this -- same
     // idiom the removed FmSynth used for its own oldest-note-steal.
     uint32_t    trigger_seq_ = 0;

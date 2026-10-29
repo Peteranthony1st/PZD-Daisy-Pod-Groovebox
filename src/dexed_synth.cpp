@@ -270,13 +270,16 @@ bool DexedSynth::VoiceIsIdle(int voice_index)
 
 int DexedSynth::FindVoiceForNote(uint8_t note)
 {
-    for(int i = 0; i < kMaxVoices; i++)
+    // Only the first max_voices_ slots are handed out; the rest just
+    // finish any release tail they already had (RenderQuantum() still
+    // walks every slot).
+    for(int i = 0; i < max_voices_; i++)
         if(voices_[i].held_note == (int)note)
             return i;
 
     int  best_free    = -1;
     bool best_is_idle = false;
-    for(int i = 0; i < kMaxVoices; i++)
+    for(int i = 0; i < max_voices_; i++)
     {
         if(voices_[i].held_note != -1)
             continue;
@@ -291,7 +294,7 @@ int DexedSynth::FindVoiceForNote(uint8_t note)
         return best_free;
 
     int oldest = 0;
-    for(int i = 1; i < kMaxVoices; i++)
+    for(int i = 1; i < max_voices_; i++)
         if(voices_[i].triggered_at < voices_[oldest].triggered_at)
             oldest = i;
     return oldest;
@@ -301,6 +304,18 @@ void DexedSynth::NoteOn(uint8_t note, uint8_t velocity)
 {
     int    vi = FindVoiceForNote(note);
     Voice& v  = voices_[vi];
+
+    // Stealing a slot that is still sounding (a voice steal, a releasing
+    // tail, or the same key struck again) would restart it from zero in
+    // one sample -- an audible click, on every note at Voices = 1. Move
+    // the old sound to any idle slot (slots above max_voices_ are always
+    // free for this) and let RenderQuantum() fade it out instead. With
+    // every slot busy there's nowhere to put it, so it's cut as before.
+    int fade_to = -1;
+    if(!VoiceIsIdle(vi))
+        for(int i = kMaxVoices - 1; i >= 0 && fade_to < 0; i--)
+            if(i != vi && voices_[i].held_note == -1 && VoiceIsIdle(i))
+                fade_to = i;
 
     // srcnote == note, porta = -1: no portamento transition (see
     // Dx7Note::init()'s own porta handling -- a real portamento path is
@@ -331,6 +346,13 @@ void DexedSynth::NoteOn(uint8_t note, uint8_t velocity)
     // KEY SYNC both happen on every key, same as Dexed's own keydown.
     int played = TransposedNote(note);
     __disable_irq();
+    if(fade_to >= 0)
+    {
+        voices_[fade_to]           = v;
+        voices_[fade_to].held_note = -1;
+        voices_[fade_to].fade_left = kStealFadeSamples;
+    }
+    v.fade_left = 0;
     lfo_.keydown();
     v.note.init(patch_, played, velocity, played, -1, &ctrls_);
     if(patch_[136])
@@ -363,6 +385,22 @@ void DexedSynth::NoteOff(uint8_t note)
     }
 }
 
+void DexedSynth::SetMaxVoices(int n)
+{
+    max_voices_ = n < 1 ? 1 : (n > kMaxVoices ? kMaxVoices : n);
+    // Same keyup-and-free as NoteOff() for every held slot now above the
+    // limit -- same IRQ guard, see NoteOn()'s comment.
+    for(int i = max_voices_; i < kMaxVoices; i++)
+    {
+        if(voices_[i].held_note == -1)
+            continue;
+        __disable_irq();
+        voices_[i].note.keyup();
+        voices_[i].held_note = -1;
+        __enable_irq();
+    }
+}
+
 void DexedSynth::AllNotesOff()
 {
     for(int i = 0; i < kMaxVoices; i++)
@@ -392,8 +430,8 @@ void DexedSynth::RenderQuantum()
     // the full per-operator pitch/amp-mod/envelope math (see
     // Dx7Note::compute()) regardless of whether a voice is sounding --
     // there's no early-exit in there at all. A played note typically
-    // uses only a few of the kMaxVoices=10 slots at once, so computing
-    // all 10 unconditionally meant paying for several silent voices'
+    // uses only a few of the kMaxVoices slots at once, so computing
+    // all of them unconditionally meant paying for several silent voices'
     // full FM synthesis on every single block for nothing. VoiceIsIdle()
     // (see its own comment -- already trusted elsewhere in this file for
     // voice-stealing allocation) checks the real per-operator envelope
@@ -421,6 +459,8 @@ void DexedSynth::RenderQuantum()
         std::memset(voice_scratch_, 0, sizeof(voice_scratch_));
         voices_[i].note.compute(voice_scratch_, lfo_val, lfo_delay, &ctrls_);
 
+        const bool fading = voices_[i].fade_left > 0;
+        int        fade   = voices_[i].fade_left;
         for(int j = 0; j < kMsfaBlock; j++)
         {
             int32_t raw = voice_scratch_[j];
@@ -428,7 +468,22 @@ void DexedSynth::RenderQuantum()
                 raw = kVoiceClampQ24;
             else if(raw < -kVoiceClampQ24)
                 raw = -kVoiceClampQ24;
-            stage_f_[j] += (float)raw * kQ24Scale;
+            float s = (float)raw * kQ24Scale;
+            if(fading)
+            {
+                s *= (float)fade * kStealFadeInv;
+                if(fade > 0)
+                    fade--;
+            }
+            stage_f_[j] += s;
+        }
+        if(fading)
+        {
+            // Faded out: mark the slot unplayed so VoiceIsIdle() skips
+            // it from now on (its envelope may still be mid-note).
+            voices_[i].fade_left = fade;
+            if(fade == 0)
+                voices_[i].played = false;
         }
     }
 
@@ -769,6 +824,7 @@ DexedSynth::DexedPresetData DexedSynth::CapturePreset() const
     p.gain01          = gain01_;
     p.mod_wheel_target = (int32_t)mod_wheel_target_;
     p.op_switch        = ctrls_.opSwitch;
+    p.max_voices       = max_voices_;
     return p;
 }
 
