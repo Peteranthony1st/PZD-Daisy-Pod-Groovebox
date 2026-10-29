@@ -148,6 +148,34 @@ Every engine has the same pair of pages:
   hold B2 to confirm); B2 = Load from a list that starts with **New**
   (K2 scrolls, a tap loads and stays).
 
+A User save keeps everything on that engine's pages: the sound, its Mix
+settings (Level, Pan, Gain, sends), the mod wheel target and the
+engine's **MIDI channel**. So one preset can bring back "Dexed on
+channel 1" and another "SMPDR kit on channel 10". Loading a factory
+sound, or a User preset saved by older firmware, leaves the channel and
+wheel target as they are, and older Grains presets keep the current
+Level/Pan/Gain/Delay. Performances don't store MIDI channels; startup
+defaults (hold B2 on `Global:Tempo`) still do, so channels are set at
+power-on.
+
+**Snapshots** (`Global:Snap`) save every synth engine at once: each
+engine's sound and settings, Mix, MIDI channel and mod wheel target,
+which engines are on, and whether the Sampler is SMPVO or SMPDR. Grains'
+audio goes into the snapshot itself; the Sampler's Sound or Kit is
+referenced by name, as in its User presets. Saving works like a User
+page: B1, then K1 picks Overwrite (the snapshot last loaded or saved) or
+Save New, and holding B2 confirms. B2 opens the list, K2 scrolls and B2
+loads. A grid shows each engine (a
+filled dot = on), its sound and its MIDI channel: what's live now, or
+while browsing, what the highlighted snapshot holds. Snapshots live in
+`SNAPSHOTS/` on the card (created on first save if it's missing);
+duplicate or delete them in `Global:SdMgmt` → GLOBAL → Snapshots.
+
+Dexed User saves are named after the patch. If another User save already
+has that name, the new one is numbered ("E.PIANO 1 2", "E.PIANO 1 3", cut
+to fit DX7's 10 characters), so copies stay apart in the User list and
+`Global:SdMgmt`.
+
 `Global:Perf` works like a User page. A small `*` after the page title
 means the sound has changed since it was last loaded or saved. Export the current performance
 as a WAV — full-quality native 48kHz, or 44.1kHz straight into a
@@ -168,17 +196,17 @@ page with a live scope and, on the right, that engine's output meter
 (clip cap at the top). Every engine has a **Gain** (0 to +12 dB) before
 its limiter, for lifting quiet patches and samples: turn it up until the
 meter sits high without the clip cap lighting, then set how loud it sits
-in the mix with Level. Gain is saved in Dexed presets and SMPVO/SMPDR
-User presets (older presets load at 0 dB); Grains' Gain, like its Level
-and Pan, is for the session only. `Global:Bypass` shows the same scope
+in the mix with Level. Gain is saved in every engine's User presets
+(older presets load at 0 dB). `Global:Bypass` shows the same scope
 and meter for the monitored input, and the shared FX pages (Filter,
 Reverb, RevTone, RevDiff, Dly-Rev, Delay, DlyTone) show the final mix
 scope.
 
 **SD card management** (`Global:SdMgmt`) — a grid of all 8 save
-categories (Performances, Grains/Dexed/Ensemble user presets, Captures,
+categories (Global, Grains/Dexed/Ensemble user presets, Captures,
 Sampler imports, and the SMPVO/SMPDR user presets) — duplicate or delete
-any file directly on the device, no computer needed. Captures opens to a
+any file directly on the device, no computer needed. **GLOBAL** opens to
+a choice of Performances or Snapshots; Captures opens to a
 choice of Sampler or Grains captures; **SMPIMP** (Sampler imports) to
 Voice → Sounds/Multi or Drum → Kits/Breaks. Same browse controls as the Preset pages: K1
 scrolls the grid and folders, B2 opens; in a file list K2 scrolls, B1
@@ -373,6 +401,7 @@ capture in progress.
 | Global: Delay | Time (Off, 20 ms–3 s, or a note value when synced) | Feedback | Sync Off (free time) | Sync On (1/16 … 1/2 at the current BPM) |
 | Global: DlyTone | Ping-Pong (0% = echoes follow the sound's pan, 100% = always bounce L/R) | Tone (darker repeats) | — | — |
 | Global: Bypass | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
+| Global: Snap | Saving: Overwrite/Save New | Open: scroll snapshots | Save / Back | Open / Load (tap loads, stays in list) / Hold 800ms = confirm Save |
 | Global: Perf | Saving: Overwrite/Save New | Loading: scroll New + PERF list | Save / Back | Load (tap loads, stays in list) / Hold 800ms = confirm Save |
 | Global: SD Mgmt | Scroll (category grid, folder lists) | Scroll (file list) | Back, Hold = Duplicate | Open, Hold 1500ms = Delete (file list) |
 | Global: Export | — | — | Tap = Export, native 48kHz ("Studio") | Tap = Export, 44.1kHz for MicroDexed ("CD") |
@@ -381,14 +410,14 @@ capture in progress.
 | Global: Granular | — | — | Toggle Grains on/off | — (push encoder to enter Screen::Granular) |
 | Global: SMPVO | — | — | Toggle SMPVO on/off (disables SMPDR) | — (push encoder to enter Screen::SampleSynth) |
 | Global: SMPDR | — | — | Toggle SMPDR on/off (disables SMPVO) | — (push encoder to enter Screen::SampleSynth) |
-| Global: Looper | — | — | Toggle the whole 4-layer looper on/off | — |
+| Global: Looper | — | — | Toggle the whole 4-layer looper on/off | Toggle Default On/Off (whether the looper starts enabled at power-on; saved immediately) |
 | Global: Mixer | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer screen; bottom row shows CPU avg/peak) |
 
 **Dexed (`Screen::Dexed`, rotate to cycle pages)**
 
 | Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
 |---|---|---|---|---|
-| Algo | Cycle algorithm (all 32, quantized) | — | Cycle back | Cycle forward |
+| Algo | — (diagram only; set ALGORITHM in Advanced) | — | — | — |
 | Feedback | Feedback amount (0-7) | — | — | — |
 | Vibrato | LFO speed | LFO pitch-mod depth | — | — |
 | Brightness | Modulator level scale (center = as saved) | — | — | — |
@@ -412,16 +441,51 @@ Mixer below.
 **Dexed advanced editor (`Screen::DexedOperator`, entered from the
 Advanced page above, rotate to cycle pages)**
 
-| Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
-|---|---|---|---|---|
-| Algo | — (read-only; edit from Global:Dexed's own Algo page) | — | Cycle operator (1-6) | — |
-| Ratio | Coarse ratio (0-31) | Output level | Cycle operator (1-6) | — |
-| Detune | Detune (0-14, 7=centered) | — | Cycle operator (1-6) | — |
-| EG Rate | Attack | Decay (or Sustain/Release) | Cycle operator (1-6) | Toggle AD/SR |
-| EG Level | Attack Level | Decay Level (or Sustain/Release Level) | Cycle operator (1-6) | Toggle AD/SR |
-| AmpModSens | Mod wheel Amp/EG Bias sensitivity (0-3) | — | Cycle operator (1-6) | — |
-| VelocitySens | Key velocity sensitivity (0-7) | — | Cycle operator (1-6) | — |
-| KeybRateScale | Keyboard rate scaling (0-7) | — | Cycle operator (1-6) | — |
+The full DX7 voice, using the DX7's own parameter names. The first ten
+pages edit one operator: Button 1 picks OP1-OP6, and the title shows
+`OP3` (or `OP3 OFF` when that operator is switched off). The last six
+are voice pages that apply to the whole patch (title `VOICE`, Button 1
+unused). Unless a cell says otherwise, Button 1 = select operator on
+operator pages.
+
+| Page | Knob 1 | Knob 2 | Button 2 |
+|---|---|---|---|
+| ALGORITHM | ALGORITHM (1-32), with the routing diagram | — | — |
+| OSC FREQUENCY | F COARSE (0-31) | F FINE (0-99) | OSC MODE: RATIO / FIXED |
+| OSC DETUNE | DETUNE (-7 to +7) | — | — |
+| OUTPUT LEVEL | OUTPUT LEVEL (0-99) | — | OP ON/OFF |
+| EG RATE | R1 (or R3) | R2 (or R4) | Switch R1/R2 ↔ R3/R4 |
+| EG LEVEL | L1 (or L3) | L2 (or L4) | Switch L1/L2 ↔ L3/L4 |
+| KEYBOARD LEVEL SCALING CURVE | L CURVE (or BREAK POINT) | R CURVE | Switch Knob 1 between L CURVE and BREAK POINT |
+| KEYBOARD LEVEL SCALING DEPTH | L DEPTH (0-99) | R DEPTH (0-99) | — |
+| KEYBOARD RATE SCALING | RATE SCALING (0-7) | — | — |
+| SENSITIVITY | KEY VELOCITY (0-7) | A MOD SENS (0-3) | — |
+| PITCH EG RATE (voice) | R1 (or R3) | R2 (or R4) | Switch R1/R2 ↔ R3/R4 |
+| PITCH EG LEVEL (voice) | L1 (or L3) | L2 (or L4) | Switch L1/L2 ↔ L3/L4 |
+| LFO (voice) | LFO SPEED | LFO DELAY | LFO WAVE: TRIANGL, SAW DWN, SAW UP, SQUARE, SINE, S/HOLD |
+| LFO DEPTH (voice) | LFO PM DEPTH | LFO AM DEPTH | LFO KEY SYNC ON/OFF |
+| P MOD SENS / OSC KEY SYNC (voice) | P MOD SENS (0-7) | — | OSC KEY SYNC ON/OFF |
+| KEY TRANSPOSE (voice) | TRANSPOSE (shown as MIDDLE C = C3) | — | — |
+
+- **Envelope graph (EG and PITCH EG pages).** Drawn like the DX7's own
+  picture. L1-L4 are numbered squares and R1-R4 the numbered slopes
+  joining them (a higher rate is steeper). The line starts at L4, L3
+  holds until the dotted `OFF` (key release) line, and R4 falls back to
+  L4. What the knobs are changing is highlighted: reversed slope numbers
+  on the RATE pages, filled squares on the LEVEL pages. Button 2 shows
+  `1/2*  3/4` with the asterisk on the pair being edited. PITCH EG has a dotted
+  centre line at 50 (no pitch change).
+- **Level scaling graph.** Shows the level change across the keyboard,
+  with BREAK POINT marked by note name (A-1 to C8, middle C = C3).
+- **OP ON/OFF** is saved in Dexed User presets and snapshots. Factory
+  patches, `.syx` imports and older saves load with all six on. A
+  switched-off operator shows as a dotted box in the algorithm diagram.
+- Algorithms 4 and 6 feed back through 2-3 operators like a real DX7
+  (OP4 or OP5 back into OP6), so they no longer sound the same as 3 and
+  5. The diagram shows the loop as a line beside those operators.
+- ALGORITHM is only set here. The Dexed Algo page just shows the diagram.
+- The Dexed Vibrato page is a shortcut to the same LFO SPEED, LFO PM
+  DEPTH and P MOD SENS as the voice pages.
 
 A short encoder click here returns to Screen::Dexed's own Advanced page;
 long-press goes all the way to Home.

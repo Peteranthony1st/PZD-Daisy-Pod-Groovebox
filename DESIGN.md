@@ -175,7 +175,7 @@ Full control map:
 | Global: Granular | — | — | Toggle Grains on/off | — |
 | Global: Looper | — | — | Toggle the whole 4-layer loop system on/off (also resets `TempoClock`'s phase) | — |
 | Global: Mixer | Master Vol (same value as Home's K1 and the Mixer's Master channel) | Bypass Vol (same as the Mixer's Bypass channel) | — | — (entry point + overview grid; bottom row = CPU avg/peak, see *Screen::Mixer* below) |
-| Dexed: Algo | Cycle algorithm (quantized bucket selection, all 32) | — | Cycle algorithm back | Cycle algorithm forward |
+| Dexed: Algo | — (view-only diagram; ALGORITHM is set in Advanced) | — | — | — |
 | Dexed: Feedback | Feedback amount (0-7) | — | — | — |
 | Dexed: Vibrato | LFO speed | LFO pitch-mod depth | — | — |
 | Dexed: Brightness | Modulator level scale (0x..2x, center = as saved) | — | — | — |
@@ -189,14 +189,22 @@ Full control map:
 | Dexed: Import | — | Scroll `DEXED IMPORT/` .syx files | — | Hold 800ms = import |
 | Dexed: Preset | Groups (Roms/Dexed/Imports), then folders | Presets in an open folder | Back | Open / tap loads (stays) |
 | Dexed: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
-| DexedOperator: Algo | — (read-only; edit from Dexed:Algo instead) | — | Cycle operator (1-6) | — |
-| DexedOperator: RatioLevel | Coarse ratio (0-31) | Output level | Cycle operator (1-6) | — |
-| DexedOperator: Detune | Detune (0-14, 7=centered) | — | Cycle operator (1-6) | — |
-| DexedOperator: EgRate | Attack (or Sustain) | Decay (or Release) | Cycle operator (1-6) | Toggle AD/SR |
-| DexedOperator: EgLevel | Attack Level (or Sustain Level) | Decay Level (or Release Level) | Cycle operator (1-6) | Toggle AD/SR |
-| DexedOperator: AmpModSens | Amp/EG mod wheel sensitivity (0-3) | — | Cycle operator (1-6) | — |
-| DexedOperator: VelocitySens | Key velocity sensitivity (0-7) | — | Cycle operator (1-6) | — |
-| DexedOperator: KeybRateScale | Keyboard rate scaling (0-7) | — | Cycle operator (1-6) | — |
+| DexedOperator: ALGORITHM | ALGORITHM (1-32) | — | Cycle operator (1-6) | — |
+| DexedOperator: OSC FREQUENCY | F COARSE (0-31) | F FINE (0-99) | Cycle operator | OSC MODE RATIO/FIXED |
+| DexedOperator: OSC DETUNE | DETUNE (-7..+7) | — | Cycle operator | — |
+| DexedOperator: OUTPUT LEVEL | OUTPUT LEVEL (0-99) | — | Cycle operator | OP ON/OFF |
+| DexedOperator: EG RATE | R1 (or R3) | R2 (or R4) | Cycle operator | Toggle 1/2 ↔ 3/4 |
+| DexedOperator: EG LEVEL | L1 (or L3) | L2 (or L4) | Cycle operator | Toggle 1/2 ↔ 3/4 |
+| DexedOperator: LEVEL SCALING CURVE | L CURVE (or BREAK POINT) | R CURVE | Cycle operator | K1 ↔ BREAK POINT |
+| DexedOperator: LEVEL SCALING DEPTH | L DEPTH | R DEPTH | Cycle operator | — |
+| DexedOperator: RATE SCALING | RATE SCALING (0-7) | — | Cycle operator | — |
+| DexedOperator: SENSITIVITY | KEY VELOCITY (0-7) | A MOD SENS (0-3) | Cycle operator | — |
+| DexedOperator: PITCH EG RATE | R1 (or R3) | R2 (or R4) | — | Toggle 1/2 ↔ 3/4 |
+| DexedOperator: PITCH EG LEVEL | L1 (or L3) | L2 (or L4) | — | Toggle 1/2 ↔ 3/4 |
+| DexedOperator: LFO | LFO SPEED | LFO DELAY | — | Cycle LFO WAVE |
+| DexedOperator: LFO DEPTH | LFO PM DEPTH | LFO AM DEPTH | — | LFO KEY SYNC |
+| DexedOperator: P MOD SENS | P MOD SENS (0-7) | — | — | OSC KEY SYNC |
+| DexedOperator: KEY TRANSPOSE | TRANSPOSE (MIDDLE C = A-1..C7 range, C3 = none) | — | — | — |
 | Ensemble: Registration | Select drawbar (0-6, browsed directly, no pickup) | Level of the selected drawbar | — | — |
 | Ensemble: Env | Attack (or Sustain) | Decay (or Release) | — | Toggle AD/SR |
 | Ensemble: Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
@@ -1863,6 +1871,10 @@ measured by the CPU meter (which only ever covers `AudioCallback()`'s
 own time) and neither is a realistic contributor to any of this.
 
 ## Dexed advanced editor (Screen::DexedOperator)
+
+*Much of the page detail below is history: the editor was rebuilt as the
+full DX7 voice -- see "Dexed Advanced: the full DX7 voice" at the end.
+The navigation and pickup-reset notes still apply.*
 
 The per-operator FM editor referenced in *Dexed*'s own Presets section
 above as a later phase -- built once the simple-page macros (Brightness/
@@ -4609,9 +4621,8 @@ codec beyond full scale: each engine's limiter bounds its own output and
   v3, older versions load at 0 dB), not on `SampleSynthPresetData`,
   because that struct is written into `KIT.DAT` and kits are load-only.
   Loading a kit or sound on its own leaves Gain where it is.
-- **Grains:** not saved, like its Level and Pan. Its preset files carry
-  the audio after the settings block, so a format change there costs
-  more than it's worth.
+- **Grains:** not saved at first, like its Level and Pan; see the next
+  section for how that changed.
 
 Gain is part of the Dexed and Sampler unsaved-change snapshots, so the
 title's `*` appears when it moves.
@@ -4625,4 +4636,260 @@ scope (`master_scope_buf_`, the same one as Mixer:Master), with Filter's
 mode and Delay's sync state as Tom Thumb status lines. `Global:Delay`'s
 Sync is now a pair like the other paged toggles: B1 = Off, B2 = On, and
 the status line always says which.
+
+## User presets keep the whole engine
+
+A User preset now brings back everything on that engine's pages. Three
+things were missing: the MIDI channel (it lived in the Performance file),
+the mod wheel target on Dexed and Ensemble (saved nowhere, so it reset
+at every power-on), and Grains' Level, Pan, Gain and Delay send (treated
+as session values, unlike every other engine).
+
+**MIDI channel.** A channel describes how you play a sound, not the
+looper, so it moved out of performances and into each engine's User
+presets: `midi_channel` on `DexedPresetData`, `EnsemblePresetData`,
+`GranularPresetData`, and the SMPVO/SMPDR user preset structs (the
+Sampler's one channel is shared by both faces, so either face's preset
+can set it). The engine's `CapturePreset()` never fills it in; the Ui
+does, on a User save only. `-2` means "not stored", and
+`Ui::ApplyPresetMidiChannel()` leaves the current channel alone for it,
+which covers factory sounds, Dexed `.syx` imports, Grains library
+captures and every file saved before this change. Without that, loading
+an old preset would quietly put its engine back on Omni. Loading happens
+on a B2 tap, never while scrolling a list, so the channel can't change
+under you mid-browse.
+
+The Performance header keeps its four channel fields (v13-v15) so the
+format doesn't change; `Save()` writes them as Omni and `Load()` no
+longer reads them. Startup defaults (`SavePrefs()`) still store all four
+channels, so power-on lands on your usual routing.
+
+**Mod wheel target.** `mod_wheel_target` on the Dexed and Ensemble
+preset data, `-1` = not stored (factory and older files), handled in the
+engine's own `ApplyPreset()` through a new `SetModWheelTarget()`.
+
+**Grains mix.** `output_level01`, `pan01`, `gain01` and `delay_send01`
+joined `GranularPresetData`, negative = not stored. Grains preset files
+used to reject every older version; v11 is the first to accept the one
+before it, because the audio follows the settings block directly, so a
+v10 file is just a shorter block (`kGranularPresetDataV10Size`). The
+starter presets on the card are v10 and keep the current mix when
+loaded.
+
+**File versions.** Dexed v5 (v2-v4 load; now v6, see *Dexed Advanced* below), Ensemble v3 (v1-v2), Grains
+v11 (v10), SMPVO user v3 (v1-v2), SMPDR user v4 (v2-v3). Every new field
+is appended, so each older version is an `offsetof()` prefix of the new
+struct. The channel and wheel target are in the unsaved-change
+snapshots, so changing either shows the title's `*`.
+
+## Global:Snap: every synth engine in one file
+
+`Global:Snap` (before `Global:Perf`) saves and recalls all four synth
+engines together, in `SNAPSHOTS/SNAPnnn.DAT`. It builds on the User
+preset work above: a snapshot is essentially each engine's own preset
+data (with its MIDI channel filled in) plus:
+
+- each engine's on/off state and which Sampler face is showing;
+- each engine's loaded-slot tracking, so its User page carries on from
+  the same preset afterwards;
+- the names the grid shows, frozen at save time, so browsing needs no
+  lookups;
+- the Grains audio, appended after the settings like a Grains preset.
+  That makes an unsaved Grains capture recoverable. The Sampler instead
+  references its Sound or Kit, like its own User presets, because kits
+  are folders of samples. A Voice capture never saved as a Sound has no
+  file, so only its settings come back.
+
+**File layout.** A header (`"SNAP"`, version, section count, audio
+length), then six sections, each a `uint32` byte size followed by that
+struct's raw bytes (`SynthSnapshot::Info`, then the Grains, Dexed,
+Ensemble, SMPVO and SMPDR preset structs), then the audio. All of those
+structs only ever grow by appending, so the loader reads
+`min(saved size, sizeof)` into a default-constructed struct and skips
+the rest. An engine gaining a field later doesn't need a snapshot
+version bump, and a newer file still loads on older firmware.
+
+**Loading** reuses each engine's own load path: `ApplyPreset()`,
+`ApplyPresetMidiChannel()`, `MarkXxxClean()`. The SMPVO/SMPDR User
+preset load steps moved into `ApplySampleSynthVoiceUserPreset()` and
+`ApplySampleSynthDrumUserPreset()` so both callers share them. Every
+engine gets `AllNotesOff()` first. If a referenced Kit is missing, the
+other engines still load and the status line says so.
+
+**Browsing** reads only the settings sections (`LoadSynthSnapshot()`
+with no audio buffer), once per highlighted slot, into a static, and
+the grid draws from that instead of the live state. The grid is one
+Tom Thumb row per engine at baselines 22-43: an on/off dot, the engine,
+the sound (19 characters), and the channel right-aligned.
+
+Saving matches `Global:Perf`: B1 reveals Overwrite / Save New on K1,
+and an 800 ms B2 hold confirms. Overwrite targets `snap_loaded_slot_`,
+the snapshot last loaded or saved. A B2 release after that hold is
+ignored, so it doesn't fall through and open the list.
+
+**In SD Mgmt.** The grid was already full at eight boxes, so the PERF box
+became **GLOBAL**: opening it offers Performances or Snapshots first
+(`sd_mgmt_global_kind_`, the same choose-then-list shape as the SMPDR
+box's Kits/Breaks), then the usual list with hold-B1 Duplicate and
+hold-B2 Delete. `DeleteSynthSnapshot()` closes the gap like every other
+slot folder and keeps `snap_loaded_slot_` pointing at the right file;
+`DuplicateSynthSnapshot()` uses the chunked copy, since a snapshot can
+carry Grains audio. Status lines name items by `SdMgmtItemPrefix()`
+(PERF3/SNAP3) rather than the box label.
+
+## Dexed: numbered names for repeat saves
+
+A Dexed User save takes its name from the patch (bytes 145-154), so
+saving the same voice twice gave two identical entries in the User list
+and SD Mgmt. `Ui::NumberDexedSaveName()` runs inside the save's audio
+suspend: it reads every other User save's name (not factory or imported
+voices, which have their own groups, and not the slot being
+overwritten), and on a clash renames the save "NAME 2", "NAME 3"... with
+NAME cut short to fit 10 characters. Saving again from a numbered copy
+("BASS 2" when "BASS" also exists) counts on from the base name rather
+than making "BASS 2 2". The new name is also written into the live
+patch, so the snapshot taken after the save matches. The status line
+shows "Saved as NAME 2" when this happens.
+
+## Global:Looper: Default On/Off
+
+B1 on `Global:Looper` turns the looper on or off live; B2 now sets
+whether it starts enabled at power-on, shown as "Default On" / "Default
+Off" under the live state. Someone who only uses the synths can leave it
+off for the CPU without switching it off after every boot.
+
+It lives in its own `LOOPER.DAT` (magic, version, one flag), written the
+moment B2 is pressed, rather than in `PREFS.DAT`: that file reuses the
+performance `FileHeader`, so a new field would change the performance
+format too, and it's only written by the Tempo page's hold-to-save,
+which would make this a two-step setting. `ApplyStartupDefaults()` reads
+it before `LoadPrefs()` (which returns early on a card without
+PREFS.DAT). Starting disabled needs none of B1's tempo/play-position
+resets, since nothing has played yet. No file means the old behaviour:
+on.
+
+## Dexed Advanced: the full DX7 voice
+
+The Advanced screen had drifted from the DX7: F FINE and OSC MODE
+couldn't be reached, keyboard level scaling was missing, the envelope
+stages were relabelled Attack/Decay/Sustain/Release, and none of the
+voice-wide settings beyond the Vibrato page were editable. It now covers
+every parameter in the 156-byte patch, named with the DX7's own words,
+while the main Dexed screen stays the quick, simple set of controls.
+
+**Pages.** `DexedOpParamPage` has ten operator pages (Button 1 picks the
+operator) and six voice pages from `PitchEgRate` on
+(`IsDexedVoicePage()`; Button 1 does nothing there). The page order and
+knob mapping are in the README table. Each page is one or two plain
+patch bytes, so instead of a hand-written case per page in three places
+(pickup seeding, `ApplyKnobs()`, and before that the draw),
+`Ui::DexedEditBytesFor(ctx)` returns `{offset, max}` for each knob and
+both the pickup seed (`value / max`) and the knob write (`round(k *
+max)`) use it. Button 2 toggles live in `OnDexedOperatorButton2()`.
+Toggles that switch which pair the knobs edit (R1/R2 ↔ R3/R4, L CURVE ↔
+BREAK POINT) are separate `KnobContext`s, so pickup re-arms on its own;
+toggles that change a value (OSC MODE, LFO WAVE, the key syncs, OP
+ON/OFF) don't need to.
+
+**Engine gaps fixed along the way.** Three patch settings were stored
+but never played:
+
+- TRANSPOSE (byte 144): `NoteOn()` now plays `TransposedNote(note)`
+  while `held_note` keeps the key pressed, so `NoteOff()` still matches.
+  Held voices are updated with the transposed note too. This changes
+  the pitch of any factory or imported patch whose transpose isn't C3,
+  which is now correct DX7 behaviour.
+- OSC KEY SYNC (byte 136): `oscSync()` on every key when set, as Dexed
+  does.
+- LFO KEY SYNC and LFO DELAY: `lfo_.keydown()` on every key, so the LFO
+  phase resets (when synced) and the delay restarts per note. Before,
+  the delay only ever ran once after boot.
+
+`SetPatchByte()` now re-runs `lfo_.reset()` for any of bytes 137-142,
+not just SPEED, so DELAY, WAVE and KEY SYNC changes take effect live.
+
+**OP ON/OFF.** The engine already had `Controllers::opSwitch`, honoured
+by `Dx7Note::compute()` (a muted operator's envelope keeps running, so
+turning it back on mid-note is seamless). `DexedSynth::SetOpSwitch()`/
+`GetOpSwitch()` expose it, and `DexedPresetData::op_switch` saves it.
+The DX7 doesn't store this switch in a patch, but here it is part of a
+User preset by request; `-1` = not stored, which loads all six on, so
+factory patches, `.syx` imports and older saves behave like a DX7.
+Dexed preset files are v6 (v2-v5 still load; v5 is an `offsetof()`
+prefix ending before `op_switch`). Snapshots include it automatically
+through the Dexed section, and older snapshots load all on. It's in the
+unsaved-change snapshot, so toggling it shows the `*`.
+
+**Envelope graph.** `DrawDx7EnvelopeShape()` was redrawn to match the
+DX7's own diagram. A rate is a speed, not a time, so each segment's
+width is the level distance it travels times `2^((50 - rate) / 16)`
+(a full move at rate 50 is about 28 px). The line starts at L4, joins
+the level points with straight slopes, holds L3 until a dotted `OFF`
+line at a fixed 72% of the width, then R4 falls to L4. If slow rates
+would run past the `OFF` line, segments 1-3 (and R4 with them) are
+scaled down together so their proportions stay true. Highlights come in
+as bitmasks: the rates being edited get their slope number reversed
+out of a small filled box (every line stays 1 px -- a thick line was
+invisible on short or flat slopes), the levels being edited get filled
+squares. Button 2's label draws `1/2` and `3/4` at fixed spots with a
+reserved asterisk slot after each, so only the `*` moves. Every level is a 7x7 square with its Tom Thumb number
+(L4 at both ends) and every slope carries its number, placed above the
+slope on the side away from the line (left of a rising slope, right of a
+falling one, below when there's no room above). Each slope is at least
+13 px wide so squares never overlap; only the width above that is scaled
+to fit. PITCH EG adds a dotted line at 50.
+
+**Level scaling graph.** `DrawLevelScalingGraph()` calls msfa's own
+`ScaleLevel()` for each pixel's key (A-1 to C8), so the curve is exactly
+what the engine applies, around a dotted no-change line with BREAK POINT
+marked by note name (Yamaha naming, middle C = C3).
+
+**Feedback through 2-3 operators (algorithms 4 and 6).** On a DX7,
+algorithm 4's feedback runs OP6 -> OP5 -> OP4 and back into OP6, and
+algorithm 6's OP6 -> OP5 and back. The tables mark this (FB_IN+FB_OUT on
+OP6, FB_OUT alone on the loop's last operator), but upstream msfa (and
+desktop Dexed) only ever fed OP6 back onto itself, so 4 sounded exactly
+like 3 and 6 like 5. A loop can't be rendered one operator per 64-sample
+block, since every sample of OP6 needs the previous sample of the last
+operator, so `EngineMsfa::render()` now spots the loop and renders the
+whole chain in `compute_fb_chain()`, one sample at a time through all
+2-3 operators, like the DX7 itself. The feedback term is the same
+two-sample average `compute_fb()` uses, scaled by FEEDBACK, and each
+operator modulates the next exactly as `compute()` does. Gain ramps,
+phase advance and the level threshold match the normal path, so OP
+ON/OFF still mutes a loop operator. Patches on algorithm 4 or 6 now
+sound different from before -- closer to a real DX7.
+
+**ALGORITHM moved here.** Advanced's first page sets ALGORITHM on K1
+(1-32, `DexedEditBytesFor()` byte 134); the main Dexed Algo page is now
+view-only (no knob, no Button 1/2 cycling), so the sound-design control
+lives in one place and the main page stays a quick look at the routing.
+
+**Algorithm diagram changes.** Columns are still assigned in
+processing order (OP6 first), but `cx` is mirrored, so OP1's chain is on
+the left like the DX7's own diagrams. Feedback over more than one
+operator is now drawn: `FmOperatorRouting::fb_out` marks an operator
+with FB_OUT but not FB_IN, and the diagram draws a vertical line beside
+the loop, from the receiving operator (FB_IN) down to the last sender,
+with "FB" centred on it (algorithm 4 spans OP6-OP4, algorithm 6 spans
+OP6-OP5). Single-operator feedback keeps its plain "FB" tag. Rows now
+count up from the bottom: every carrier sits on one row just above the
+OUT line, and each modulator one row above the highest operator it
+feeds, so carriers always line up. Button 1 on
+the operator pages now steps OP1 -> OP6 (`dexed_op_index_` starts at 5
+and counts down); the old OP6-first order only came from the array
+layout.
+
+**New = INIT VOICE.** The User page's New used to load factory preset 0
+(Brass 1, the boot sound). It now loads `DexedSynth::GetInitVoice()`,
+the DX7's INIT VOICE: algorithm 1, OP1 alone at level 99, all rates 99,
+L1-L3 99 and L4 0, ratio 1.00, BREAK POINT C3, PITCH EG flat at 50, LFO
+SPEED 35 with KEY SYNC on, P MOD SENS 3, OSC KEY SYNC on, TRANSPOSE C3.
+The Pod's own extras go neutral (filter open, fold off, Brightness and
+Env Speed centred, wheel on Pitch, all operators on); Level, Pan, Gain,
+the sends and the MIDI channel stay as they were, since they're about
+where the sound sits rather than the sound. Nothing stored is loaded,
+so `dexed_loaded_preset_slot_` is 0 and `DexedSlotName(0)` shows the
+live patch name (INIT VOICE) instead of "(custom)". Boot still loads
+Brass 1, and Ensemble and Grains New are unchanged.
 
