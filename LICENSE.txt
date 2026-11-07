@@ -1,0 +1,25 @@
+PZD Daisy Pod Groovebox firmware
+Copyright (c) 2026 PZD. All rights reserved.
+
+You may download the firmware (main.bin) and the SD card template from
+this repository's Releases and use them, free of charge, on your own
+Daisy Pod, for any music you make with it, including commercially.
+
+You may not:
+  - redistribute the firmware or the SD card template, in whole or in
+    part (please share a link to this page instead);
+  - modify, decompile, disassemble or reverse engineer the firmware,
+    except as far as applicable law expressly permits;
+  - sell, rent or bundle the firmware, or a device with it installed,
+    without written permission from PZD.
+
+The firmware is built on open-source libraries, each under its own
+licence; see THIRD-PARTY-NOTICES.txt. Nothing here limits your rights
+under those licences to the libraries themselves.
+
+THE FIRMWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL PZD BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE FIRMWARE OR
+ITS USE.
