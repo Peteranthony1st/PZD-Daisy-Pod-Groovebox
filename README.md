@@ -96,8 +96,9 @@ clickable encoder.
   <img alt="Global:SMPVO page" src="images/global-smpvo.png" />
 
 
-SMPDR and SMPVO share one underlying sample-playback engine and are
-mutually exclusive — enabling one disables the other.
+SMPDR and SMPVO are two separate engines, so a Kit and a Sound play at
+the same time, each on its own MIDI channel (SMPDR starts on channel 10,
+the usual drum channel). Each holds about 33 s of loaded audio.
 
 Each engine has its own voices — polyphony isn't shared, so a big Dexed
 chord never takes notes away from Ensemble or the Sampler, however many
@@ -153,7 +154,10 @@ Ping-Pong, Tone that darkens each repeat, and a Dly-Rev send that puts
 the echoes into the reverb), Bypass (live monitoring) with its own
 reverb and delay sends, and project-wide vari-speed with Scrub/Freeze
 transport modes. Delay settings are saved in performances and startup
-defaults.
+defaults. `Global:Tempo` shows the BPM large, beside a metronome whose arm
+swings on each beat while the click is on (ON/OFF underneath), with a pad
+per beat and a pad per bar of the loop (the current one filled, bars you
+could still add dotted). It shows LOCKED while layers hold audio.
 
 **Save/load** — Performances (`Global:Perf`: all 4 layers' audio plus
 every looper/global setting) and every engine's own presets save to SD.
@@ -176,19 +180,20 @@ sound, or a User preset saved by older firmware, leaves the channel and
 wheel target as they are, and older Grains presets keep the current
 Level/Pan/Gain/Delay. Performances don't store MIDI channels; startup
 defaults (hold B2 on `Global:Tempo`) still do — Grains, DXD-A, Ensemble,
-Organ and the Sampler — so channels are set at power-on. Without saved
-defaults every engine starts on Omni.
+Organ, SMPVO and SMPDR — so channels are set at power-on. Without saved
+defaults every engine starts on Omni, except SMPDR on channel 10.
 
-**MIDI** (`Global:MIDI`) lists every engine's MIDI channel in one place:
-Grains, DXD-A, DXD-B, Ensemble, Organ and the Sampler, each with its on/off dot.
-K1 picks an engine (its row is highlighted) and K2 sets its channel
+**MIDI** (`Global:MIDI`) lists every engine's MIDI channel in one place,
+one column each: Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO and SMPDR
+(GR, DXA, DXB, ENS, ORG, SMV, SMD), each with its on/off dot and channel.
+K1 picks an engine (its column is highlighted) and K2 sets its channel
 (Omni, 1–16); these are the same settings as each engine's own MIDI
-page. While DXD-B is locked to DXD-A it shows "Locked to A"; giving it a
+page. While DXD-B is locked to DXD-A it shows "=A"; giving it a
 different channel here unlocks it.
 
 **Sustain pedal** — a pedal sending CC 64 (the sustain jack on most
 controllers) holds notes on every keyboard engine: Grains, DXD-A, DXD-B,
-Ensemble, Organ and SMPVO. Each engine follows the pedal on its own MIDI
+Ensemble, Organ, SMPVO and SMPDR. Each engine follows the pedal on its own MIDI
 channel. Releasing the pedal lets go of every held note except keys
 still pressed; playing a held note again restarts it. If your pedal works
 backwards (some controllers detect pedal polarity at power-on), set B2
@@ -200,18 +205,22 @@ triple-click (or CC 123) clears them too.
 
 **Snapshots** (`Global:Snap`) save every synth engine at once: each
 engine's sound and settings, Mix, MIDI channel and mod wheel target,
-which engines are on, and whether the Sampler is SMPVO or SMPDR. For
+which engines are on, and both Sampler engines (SMPVO and SMPDR). For
 Dexed that's both DXD-A and DXD-B, plus how the pair is set up: their
 Level and Pan on the Mix page, the MIDI Lock, and the Split page.
 Snapshots saved before DXD-B existed load as the single Dexed they were
-(B off, Layer), and ones from before the Organ load with it off. Grains' audio goes into the snapshot itself; the
-Sampler's Sound or Kit is referenced by name, as in its User presets.
+(B off, Layer), ones from before the Organ load with it off, and ones
+from before the Sampler split bring back only the Sampler face they
+saved. Grains' audio goes into the snapshot itself; the
+Sampler's Sound and Kit are referenced by name, as in their User presets.
 Saving works like a User page: B1, then K1 picks Overwrite (the snapshot
 last loaded or saved) or Save New, and holding B2 confirms. B2 opens the
 list, K2 scrolls and B2 loads; the snapshot number shows next to K2. A
-grid shows each engine — Grains, DXD-A, DXD-B, Ensemble, Organ and the Sampler
-(a filled dot = on) — with its sound and its MIDI channel: what's live
-now, or while browsing, what the highlighted snapshot holds. Snapshots live in
+grid shows each engine in its own column — Grains, DXD-A, DXD-B, Ensemble,
+Organ, SMPVO and SMPDR (a filled dot = on) — with its sound's name written
+down the column; a long name scrolls after a second to show the rest. It
+shows what's live now, or while browsing, what the highlighted snapshot
+holds (MIDI channels are on `Global:MIDI`). Snapshots live in
 `SNAPSHOTS/` on the card (created on first save if it's missing);
 duplicate or delete them in `Global:SdMgmt` → GLOBAL → Snapshots.
 
@@ -230,7 +239,9 @@ slot with no copying needed.
 **Mixer** (`Global:Mixer`) — one screen with Volume/Pan/Reverb-send for
 all 4 layers plus every engine and Bypass, a live oscilloscope of the
 final mix, per-channel peak meters in dB (−48 dB to 0 dBFS, with clip
-indicators), and a live CPU meter. `Global:Mixer` itself puts **Master
+indicators), and a live CPU meter. `Global:Mixer` — the first Global
+page — shows all 12 channels in two rows of six, each name over its own
+level meter, and puts **Master
 Vol** and **Bypass Vol** on K1/K2, so you can pull a live mic down
 without touching the mix (Bypass starts at 60% at power-on). Every
 channel pans with an equal-power law (−3 dB in the centre), and a soft
@@ -331,8 +342,8 @@ habits keep headroom on your side:
   several other engines are playing. Ensemble and Organ have the same
   Voices setting; the Organ is the cheaper of the two (about 8% at 10
   voices against the Ensemble's 15%).
-- SMPVO/SMPDR share one engine and are mutually exclusive, so only one
-  of them ever costs CPU at a time.
+- SMPVO and SMPDR are separate engines; each costs CPU only while it's
+  on and playing.
 - Record your synth parts into loop layers first, then switch those
   engines off once you've got the take you want.
 - Dial in reverb/delay last, once you know what's actually being kept —
@@ -340,9 +351,9 @@ habits keep headroom on your side:
   combination.
 - `Global:Mixer`'s bottom row shows a live CPU meter (average and
   peak) if you want to check headroom directly. Press Button 1 there
-  for a per-part breakdown — Grains, Dexed, Ensemble (with the Organ), Sampler, Looper,
-  Delay, Reverb and everything else — each as average/peak % of the
-  time available per audio block.
+  for a per-part breakdown — Grains, Dexed, Ensemble, Organ, SMPVO, SMPDR,
+  Looper, Delay, Reverb and everything else — each as average/peak % of
+  the time available per audio block.
 - On looper layers, AutoWah is the heaviest effect, then Chorus and
   Flanger; Bitcrush and Drive are the lightest.
 
@@ -452,6 +463,7 @@ capture in progress.
 | Layer: Filter | Cutoff | Resonance | Cycle filter mode | — |
 | Layer: Effect | Effect param A | Effect param B (Drive: output trim, center = unchanged) | Cycle effect | — |
 | Layer: LYR-FX | Send | — | — | — |
+| Global: Mixer | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer screen; bottom row shows CPU avg/peak) |
 | Global: Tempo | BPM (50–240) | Bars (1–16, lower-capped at slower BPM) | Toggle metronome | Hold 800ms = Save as startup default |
 | Global: Speed | Vari-speed | — | Cycle Normal/Scrub/Freeze | Reset to 1.0x |
 | Global: Filter | Cutoff | Resonance | Cycle filter mode | — |
@@ -466,16 +478,15 @@ capture in progress.
 | Global: Perf | Saving: Overwrite/Save New | Loading: scroll New + PERF list | Save / Back | Load (tap loads, stays in list) / Hold 800ms = confirm Save |
 | Global: SD Mgmt | Scroll (category grid, folder lists) | Scroll (file list) | Back, Hold = Duplicate | Open, Hold 1500ms = Delete (file list) |
 | Global: Export | — | — | Tap = Export, native 48kHz ("Studio") | Tap = Export, 44.1kHz for MicroDexed ("CD") |
-| Global: MIDI | Pick an engine (Grains, DXD-A, DXD-B, Ensemble, Organ, Sampler) | That engine's MIDI channel (Omni, 1-16) | Sus-Pedal: Norm | Sus-Pedal: Rev (saved immediately) |
+| Global: MIDI | Pick an engine (Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR) | That engine's MIDI channel (Omni, 1-16) | Sus-Pedal: Norm | Sus-Pedal: Rev (saved immediately) |
 | Global: DXD-A | — | — | Toggle DXD-A on/off (off by default) | — (push encoder to enter Screen::Dexed, editing DXD-A) |
 | Global: DXD-B | — | — | Toggle DXD-B on/off (off by default) | — (push encoder to enter Screen::Dexed, editing DXD-B) |
 | Global: Ensemble | — | — | Toggle Ensemble on/off (off by default) | — (push encoder to enter Screen::Ensemble) |
 | Global: Organ | — | — | Toggle Organ on/off (off by default) | — (push encoder to enter the same pages, editing the Organ) |
 | Global: Granular | — | — | Toggle Grains on/off | — (push encoder to enter Screen::Granular) |
-| Global: SMPVO | — | — | Toggle SMPVO on/off (disables SMPDR) | — (push encoder to enter Screen::SampleSynth) |
-| Global: SMPDR | — | — | Toggle SMPDR on/off (disables SMPVO) | — (push encoder to enter Screen::SampleSynth) |
+| Global: SMPVO | — | — | Toggle SMPVO on/off | — (push encoder to enter Screen::SampleSynth) |
+| Global: SMPDR | — | — | Toggle SMPDR on/off | — (push encoder to enter Screen::SampleSynth) |
 | Global: Looper | — | — | Toggle the whole 4-layer looper on/off | Toggle Default On/Off (whether the looper starts enabled at power-on; saved immediately, shown top right) — push encoder to open Home |
-| Global: Mixer | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer screen; bottom row shows CPU avg/peak) |
 
 **Dexed (`Screen::Dexed`, rotate to cycle pages; titles read `DXD-A:` or `DXD-B:`)**
 
@@ -702,14 +713,15 @@ Sounds get onto the card.
 
 **Mixer (`Screen::Mixer`, rotate to step through channels)**
 
-Each of the 11 channels (Layer 1–4, Grains, Dexed — DXD-A and DXD-B
-together, after their shared bus — Ensemble, Organ, SampleSynth, Bypass, Master)
+Each of the 12 channels (Layer 1–4, Grains, Dexed — DXD-A and DXD-B
+together, after their shared bus — Ensemble, Organ, SMPVO (VOI), SMPDR
+(DRM), Bypass, Master)
 gets its own stop; rotating past the last one shows a
 live oscilloscope of the final output mix, then wraps back to Layer 1.
 
 | Channel | Knob 1 | Knob 2 | Button 1 | Button 2 |
 |---|---|---|---|---|
-| Layer 1–4 / Grains / Dexed / Ensemble / Organ / SampleSynth / Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
+| Layer 1–4 / Grains / Dexed / Ensemble / Organ / VOI / DRM / Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
 | Master | Volume | Reverb size | — | — |
 
 ## Flashing
