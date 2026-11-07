@@ -178,10 +178,10 @@ engine's **MIDI channel**. So one preset can bring back "Dexed on
 channel 1" and another "SMPDR kit on channel 10". Loading a factory
 sound, or a User preset saved by older firmware, leaves the channel and
 wheel target as they are, and older Grains presets keep the current
-Level/Pan/Gain/Delay. Performances don't store MIDI channels; startup
-defaults (hold B2 on `Global:Tempo`) still do — Grains, DXD-A, Ensemble,
-Organ, SMPVO and SMPDR — so channels are set at power-on. Without saved
-defaults every engine starts on Omni, except SMPDR on channel 10.
+Level/Pan/Gain/Delay. Performances don't store MIDI channels; each
+engine's power-on channel is saved on `Global:MIDI` (below). Without
+saved channels every engine starts on channel 1, except SMPDR on
+channel 10.
 
 **MIDI** (`Global:MIDI`) lists every engine's MIDI channel in one place,
 one column each: Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO and SMPDR
@@ -189,15 +189,17 @@ one column each: Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO and SMPDR
 K1 picks an engine (its column is highlighted) and K2 sets its channel
 (Omni, 1–16); these are the same settings as each engine's own MIDI
 page. While DXD-B is locked to DXD-A it shows "=A"; giving it a
-different channel here unlocks it.
+different channel here unlocks it. Hold B2 (800 ms) to save every
+engine's channel as its power-on default (`MIDICH.DAT`) — separate from
+`Global:Tempo`'s Hold=Default, which doesn't touch MIDI channels.
 
 **Sustain pedal** — a pedal sending CC 64 (the sustain jack on most
 controllers) holds notes on every keyboard engine: Grains, DXD-A, DXD-B,
 Ensemble, Organ, SMPVO and SMPDR. Each engine follows the pedal on its own MIDI
 channel. Releasing the pedal lets go of every held note except keys
 still pressed; playing a held note again restarts it. If your pedal works
-backwards (some controllers detect pedal polarity at power-on), set B2
-**Sus-Pedal:Rev** on `Global:MIDI`; B1 **Sus-Pedal:Norm** sets it back.
+backwards (some controllers detect pedal polarity at power-on), tap B1
+on `Global:MIDI` to switch between **Sus-Pedal:Norm** and **Sus-Pedal:Rev**.
 The setting is saved to the card straight away (`PEDAL.DAT`). A **SUS**
 box in the page title shows the pedal live — filled while it's down.
 Sustained notes still count towards an engine's Voices, and a
@@ -478,7 +480,7 @@ capture in progress.
 | Global: Perf | Saving: Overwrite/Save New | Loading: scroll New + PERF list | Save / Back | Load (tap loads, stays in list) / Hold 800ms = confirm Save |
 | Global: SD Mgmt | Scroll (category grid, folder lists) | Scroll (file list) | Back, Hold = Duplicate | Open, Hold 1500ms = Delete (file list) |
 | Global: Export | — | — | Tap = Export, native 48kHz ("Studio") | Tap = Export, 44.1kHz for MicroDexed ("CD") |
-| Global: MIDI | Pick an engine (Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR) | That engine's MIDI channel (Omni, 1-16) | Sus-Pedal: Norm | Sus-Pedal: Rev (saved immediately) |
+| Global: MIDI | Pick an engine (Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR) | That engine's MIDI channel (Omni, 1-16) | Sus-Pedal: Norm/Rev toggle (saved immediately) | Hold 800ms = Save every channel as power-on default |
 | Global: DXD-A | — | — | Toggle DXD-A on/off (off by default) | — (push encoder to enter Screen::Dexed, editing DXD-A) |
 | Global: DXD-B | — | — | Toggle DXD-B on/off (off by default) | — (push encoder to enter Screen::Dexed, editing DXD-B) |
 | Global: Ensemble | — | — | Toggle Ensemble on/off (off by default) | — (push encoder to enter Screen::Ensemble) |
