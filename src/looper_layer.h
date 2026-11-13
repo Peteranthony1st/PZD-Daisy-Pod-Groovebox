@@ -1,0 +1,464 @@
+#pragma once
+#include "daisy_seed.h"
+#include "layer_fx.h"
+#include "svf_setup.h"
+#include "daisysp.h"
+#include "tempo_clock.h"
+
+using namespace daisy;
+
+// One stereo loop track: recording/playback state machine, per-layer
+// filter, and one selectable "character" effect.
+//
+// Design notes (read this before changing the state machine):
+//
+//  - LooperLayer no longer reads any hardware directly (no Switch*,
+//    no DaisySeed* for ADC reads). All button/knob handling lives in the
+//    UI layer (ui.h/.cpp) and main.cpp, which call the small, explicit
+//    API below. This keeps the DSP testable on a desktop compiler and
+//    keeps "what does this button do right now" entirely a UI concern,
+//    which matters a lot now that both buttons and both knobs change
+//    meaning depending on the on-screen menu.
+//
+//  - All 5 layers share ONE master loop length (TempoClock::
+//    GetLoopLengthSamples()), captured at the moment a layer starts
+//    recording. That's what keeps every layer's downbeat lined up.
+//    TempoClock::Lock() should be called by main.cpp the first time any
+//    layer finishes recording, so BPM/Bars can't drift out from under
+//    already-recorded layers; Unlock() once every layer is cleared.
+//
+//  - Effects are applied on the PLAYBACK path only, never baked into
+//    the recorded buffer. That means dialing in a filter sweep or
+//    switching effect type never destroys your take, and it means
+//    overdubbing captures clean dry material every time (effects would
+//    otherwise stack irreversibly take after take).
+//
+//  - Signal chain per layer, applied to the looped-back sample before
+//    it's mixed to the bus: Filter -> character effect ->
+//    volume/pan -> this layer's Send amount (SetReverbSend01()) into
+//    ONE shared reverb bus, owned and Process()'d by main.cpp -- not a
+//    per-layer ReverbSc any more. That used to mean up to 4 independent
+//    ReverbSc instances running simultaneously in the worst case (by
+//    far the heaviest thing in this chain), which could push the audio
+//    callback's CPU budget hard enough to cause real glitches/dropouts;
+//    one shared instance cuts that worst case ~4x. The tradeoff: Size/
+//    decay is now one Global:Reverb setting shared by every layer's
+//    send, not independently tunable per layer any more.
+
+enum class LayerState
+{
+    Empty,
+    ArmedCountIn, // waiting out the metronome's count-in before recording
+    Recording,
+    Playing,
+    Paused,
+    Overdubbing,
+    // Waiting out the same 1-bar count-in as ArmedCountIn, but from
+    // Playing/Paused instead of Empty -- so, unlike ArmedCountIn, this
+    // layer keeps outputting its already-recorded audio the whole time
+    // (see Process()'s own "audible" check). Added so overdub starts
+    // precisely on a downbeat instead of whenever the button happened to
+    // be pressed -- see OnRecordButtonLongPress()'s own comment.
+    ArmedOverdubCountIn
+};
+
+enum class FilterMode
+{
+    Off,
+    LowPass,
+    HighPass,
+    BandPass,
+    kNumModes
+};
+
+// Shared filter-cutoff curve (log-ish taper) -- used by both the
+// per-layer filters below and main.cpp's master-bus filter, so both
+// feel consistent. Public (not in looper_layer.cpp's anonymous
+// namespace) specifically so main.cpp can reuse the exact same curve.
+constexpr float kFilterMinHz = 20.f;
+constexpr float kFilterMaxHz = 9000.f;
+
+// Dead-zone-centered speed curve (0.3x..2.0x, exactly 1.0x at
+// knob-center) for Ui's project-wide vari-speed knob (Global:Speed).
+// Public for the same reason kFilterMinHz/kFilterMaxHz are.
+inline float SpeedCurve01(float v01)
+{
+    const float center    = 0.5f;
+    const float dead_zone = 0.09f;
+    if(v01 < center - dead_zone)
+    {
+        float tt = v01 / (center - dead_zone);
+        return 0.3f + tt * (1.f - 0.3f);
+    }
+    if(v01 > center + dead_zone)
+    {
+        float tt = (v01 - (center + dead_zone)) / (1.f - (center + dead_zone));
+        return 1.f + tt * (2.f - 1.f);
+    }
+    return 1.f;
+}
+
+
+struct LooperLayer
+{
+    // --- Setup -----------------------------------------------------
+    // Reverb is NOT a per-layer effect
+    // (see SetReverbSend01()'s comment) -- there's a single shared
+    // ReverbSc, owned and Process()'d by main.cpp, that every layer
+    // sends into.
+    // undo_backup_l/r: the shared Undo-overdub backup buffers (main.cpp's
+    // g_undo_backup_l/r) -- same instance handed to every layer, since
+    // only one can ever be mid-overdub at a time. See
+    // ConsumeOverdubSnapshotRequest()'s own doc comment for why this
+    // class needs direct write access to them now (an earlier version
+    // of this design tried to keep LooperLayer blind to them and defer
+    // the whole copy to the main loop -- that was wrong: real overdub
+    // audio could already be landing in buffer_l_/buffer_r_ by the time
+    // a main-loop-deferred copy actually ran, so the "pre-overdub"
+    // snapshot silently included the first several, sometimes many,
+    // milliseconds of the new take).
+    void Init(float*           buf_l,
+              float*           buf_r,
+              size_t           buffer_size,
+              float            sample_rate,
+              float*           undo_backup_l,
+              float*           undo_backup_r);
+    void Reset(); // hard reset to Empty, clears controls to defaults
+
+    // --- Transport (call from the UI layer on button edges) --------
+    // Short press: Empty->(nothing, use long press) / Playing<->Paused /
+    //              Overdubbing is ended by releasing, not by a short press.
+    void OnRecordButtonPressed(TempoClock& tempo);
+    // Long press (~400ms held): Empty -> arm to record (via tempo's
+    // count-in, or immediately if the metronome is off); Playing or
+    // Paused -> start Overdubbing.
+    void OnRecordButtonLongPress(TempoClock& tempo);
+    // Release after a long-press-triggered overdub ends it.
+    void OnRecordButtonReleased();
+    // Wipes this layer back to Empty. UI is responsible for requiring a
+    // deliberate hold-to-confirm gesture before calling this.
+    void Clear();
+
+    LayerState GetState() const { return state_; }
+    bool       HasContent() const { return record_len_ > 0; }
+    size_t     GetRecordedLength() const { return record_len_; } // samples, for save
+
+    // --- Undo last overdub ----------------------------------------------
+    // The backup copy happens LAZILY, one sample at a time, inside the
+    // Overdubbing write loop in Process() (the real-time audio ISR) --
+    // see undo_backup_l_'s own comment for why, and for the two earlier
+    // designs that were tried and rejected first:
+    //
+    // 1. Defer the WHOLE copy to the main loop, keeping Process() blind
+    //    to the shared buffers entirely -- wrong: real overdub audio
+    //    could already be landing in buffer_l_/buffer_r_ by the time a
+    //    main-loop-deferred copy actually ran (the main loop also does
+    //    blocking OLED I2C writes, with no bound on how long that takes),
+    //    so the "pre-overdub" snapshot silently included the first
+    //    several, sometimes many, milliseconds of the new take -- audible
+    //    as "the start of the overdub survives Undo."
+    // 2. A bulk copy inside the ISR, spread in fixed-size chunks across
+    //    the count-in that precedes every overdub -- correct, but a real,
+    //    measured, audible glitch on hardware: a dedicated multi-thousand
+    //    -sample SDRAM-to-SDRAM sweep has real cost regardless of chunk
+    //    size (cold/first-touch, source and dest in different regions of
+    //    the same physical SDRAM chip), and no chunk size tried eliminated
+    //    it -- confirmed by disabling the copy entirely as a diagnostic,
+    //    which did.
+    //
+    // Ownership (g_undo_owner_layer in main.cpp) can be claimed the
+    // instant the pass STARTS, not once some separate copy step finishes
+    // -- the lazy backup is always exactly as complete as the pass itself
+    // is, by construction, so there's nothing to wait for.
+    //
+    // volatile for the same reason every other flag shared between the
+    // audio ISR and the main loop is. Consuming this (read-and-clear) is
+    // a destructive, one-shot read -- call it at most once per intended
+    // snapshot.
+    // Global:Export's Live mode borrows the shared undo buffer to record
+    // into (see live_export.h): while blocked, overdubs still work but
+    // copy nothing there, so nothing can be undone until it's released.
+    static void BlockUndoBackup(bool blocked) { undo_backup_blocked_ = blocked; }
+    static bool IsUndoBackupBlocked() { return undo_backup_blocked_; }
+
+    bool ConsumeOverdubSnapshotRequest()
+    {
+        if(!overdub_snapshot_pending_)
+            return false;
+        overdub_snapshot_pending_ = false;
+        return true;
+    }
+
+    // Restores whichever wrapped arc of buffer_l_/buffer_r_ this overdub
+    // pass has actually reached so far (see overdub_start_idx_'s own
+    // comment) from the shared backup (main.cpp's g_undo_backup_l/r), and
+    // recomputes waveform_peaks_ over the whole buffer so the display
+    // matches what's actually there. Called from the main loop (Ui's
+    // Button2 short-tap handling on Layer:Status), never from the audio
+    // ISR -- this can still touch up to kMaxLoopSeconds worth of audio in
+    // the worst case, not something to do synchronously inside
+    // AudioCallback(). Safe to call regardless of this layer's current
+    // state, including mid-overdub (the pass hasn't auto-stopped back to
+    // Playing yet) -- correct either way, since only the already-
+    // overwritten arc is ever touched.
+    void RestoreFromBackup(const float* backup_l, const float* backup_r, size_t len);
+
+    // --- Continuous controls (0..1 unless noted), set every control
+    // tick from whichever knob is currently mapped to them -------------
+    void SetVolume01(float v);
+    // A scene's setting for this layer -- play or pause, and its volume --
+    // applied where the loop next starts (TempoTick::loop_start), or now.
+    // Only a Playing/Paused layer changes state; the volume always applies
+    // (unless it's negative: keep the layer's own).
+    void QueueScene(bool play, float volume01)
+    {
+        scene_vol01_ = volume01;
+        scene_play_  = play ? 1 : 2;
+    }
+    void ApplySceneNow(bool play, float volume01);
+    void CancelScene() { scene_play_ = 0; }
+    float GetVolume01() const { return volume01_; } // raw 0..1, for save/restore
+    void SetPan01(float v);
+    float GetPan01() const { return pan_; } // already raw 0..1
+
+    // Input gain applied to both channels at record/overdub time (not
+    // just at playback like Volume) -- 1x..4x (0..+12dB), for sources
+    // that come in quiet with no analog preamp available (see
+    // DESIGN.md's input front-end notes: the Pod's jacks are plain
+    // line-level with no mic/Hi-Z gain stage).
+    void  SetInputGain01(float v);
+    float GetInputGain() const { return input_gain_; } // the actual multiplier, for display
+    float GetInputGain01() const { return input_gain01_; } // raw 0..1, for save/restore
+
+    void SetFilterMode(FilterMode m) { filter_mode_ = m; }
+    FilterMode GetFilterMode() const { return filter_mode_; }
+    void SetFilterCutoff01(float v);   // -> ~80Hz..9kHz (log-ish taper)
+    float GetFilterCutoff01() const { return filter_cutoff01_; }
+    void SetFilterResonance01(float v); // -> 0..0.9 (kept shy of self-osc)
+    float GetFilterResonance01() const { return filter_res01_; }
+
+    // Two playback effects after the filter, each off at 0: Drive
+    // (soft saturation, blended in over the first few percent so turning
+    // it up from 0 doesn't click; Trim sets its output, 0.5 = unchanged)
+    // then Tremolo (a sine LFO on the level, Depth and Rate 0.5-10 Hz).
+    void  SetDrive01(float v);
+    float GetDrive01() const { return drive01_; }
+    void  SetDriveTrim01(float v);
+    float GetDriveTrim01() const { return drive_trim01_; }
+    void  SetTremoloDepth01(float v);
+    float GetTremoloDepth01() const { return trem_depth01_; }
+    void  SetTremoloRate01(float v);
+    float GetTremoloRate01() const { return trem_rate01_; }
+    static float TremoloHz(float rate01) { return 0.5f + rate01 * 9.5f; }
+
+    // How much of this layer's (post-filter/effect, post-pan) signal
+    // feeds the ONE shared reverb bus main.cpp owns -- there is no
+    // per-layer Size/decay control any more (that used to mean 4
+    // independent ReverbSc instances running simultaneously in the
+    // worst case, by far the heaviest thing in the signal chain, and it
+    // could push the audio callback's CPU budget hard enough to cause
+    // real glitches/dropouts). Size is now a single Global:Reverb
+    // setting shared by every layer's send -- see Ui::GetReverbSize01().
+    void  SetReverbSend01(float v);
+    float GetReverbSend01() const { return reverb_send_; }
+    // Own independent send into the shared cross-feedback delay bus
+    // main.cpp owns (fx_delay_l/r) -- same relationship to it Reverb
+    // Send above has to the shared ReverbSc, added once the Layer:FX
+    // page (was Layer:Reverb) grew a second knob for it.
+    void  SetDelaySend01(float v);
+    float GetDelaySend01() const { return delay_send_; }
+
+    // Cheap 0..1 read-back for VU-style meters on the OLED.
+    float GetLevel() const { return meter_; }
+
+    // True for kClipHoldSeconds after the last sample that hit/crossed
+    // kClipThreshold -- a latch, not an instant flag, so a one-sample
+    // peak between two ~30Hz UI redraws still has a real chance of being
+    // seen rather than disappearing before anything ever draws it (same
+    // "peak hold LED" idiom real mixing consoles use). Checked against
+    // the same raw, pre-fader signal GetLevel()/meter_ already tracks.
+    bool IsClipping() const { return clip_hold_ > 0.f; }
+
+    // Downsampled waveform for the Status page display: max abs(left
+    // channel) seen in each of kWaveformCols buckets spanning the
+    // recorded length, updated incrementally per-sample during
+    // Recording/Overdubbing (see Process()) rather than rescanned from
+    // the buffer on every redraw -- buffers can hold up to ~33s of
+    // audio, so a full rescan every ~30Hz UI redraw would be wasteful.
+    // Left channel only, same convention meter_ already uses.
+    static constexpr int kWaveformCols = 63; // 1px bar + 1px gap fits 125 of the display's 126 usable px
+    const float* GetWaveformPeaks() const { return waveform_peaks_; }
+    // Normalized 0..1 playhead position, for a moving cursor over the
+    // waveform. Same lockless cross-thread read as GetLevel()/GetState()
+    // above -- see the real-time-rule comment in ui.h for why that's
+    // fine for this kind of "slow" data.
+    float GetPlayPos01() const
+    {
+        return record_len_ > 0 ? play_pos_ / (float)record_len_ : 0.f;
+    }
+
+    // Raw play_pos_ in samples (not normalized). Export-only: lets
+    // PerformanceStore::ExportWav() snapshot the real position, force it
+    // to 0 (the true loop downbeat) for a clean render, then restore it
+    // afterward -- not intended for general use.
+    float GetPlayPosRaw() const { return play_pos_; }
+    void  SetPlayPosRaw(float p) { play_pos_ = p; }
+
+    // --- Freeze (Global:Speed's own Freeze transport mode) --------------
+    // Holds playback on a small, continuously-looping window around
+    // wherever play_pos_ currently sits, instead of advancing through the
+    // rest of the loop -- a "freeze drone," not silence: the window is
+    // Hann-windowed on each pass (same technique GranularEngine's own
+    // grains use), so it fades to zero at its own loop point instead of
+    // clicking, and genuinely sustains a texture rather than holding one
+    // static (silent) sample. See NudgeFreeze() for moving the frozen
+    // window while active (Global:Speed's own encoder-scrub, repurposed).
+    void SetFreezeActive(bool active);
+    bool IsFreezeActive() const { return freeze_active_; }
+    // Moves the frozen window by delta_samples (wrapped into the loop's
+    // own length, same as ScrubBy()'s own wrap) and restarts its loop
+    // phase fresh, so a fast series of encoder ticks always plays the
+    // window currently under the "playhead," never a stale one.
+    void NudgeFreeze(float delta_samples);
+
+    // --- Save/load (see performance_store.h) ------------------------
+    // Raw buffer access + a way to declare a buffer "recorded" without
+    // going through the normal record transport -- used only when
+    // loading a saved performance's audio back from the SD card.
+    // Non-const because PerformanceStore::Load() reads sample data
+    // directly off the SD card into these buffers with f_read(), which
+    // needs a plain float* (no layer-side copy/staging buffer -- the
+    // loop buffers are already exactly the right size and location).
+    float* GetBufferL() { return buffer_l_; }
+    float* GetBufferR() { return buffer_r_; }
+    size_t GetBufferSize() const { return buffer_size_; }
+    // Sets record_len_ and switches to Playing (or Empty if len==0),
+    // for after PerformanceStore::Load() has filled the buffers itself.
+    void RestoreRecordedLength(size_t len);
+
+    // --- Audio ------------------------------------------------------
+    // ticks[i] must be the SAME TempoClock tick array shared by every
+    // layer this block (computed once per block in main.cpp, not once
+    // per layer -- see tempo_clock.h). reverb_send_out is a per-block
+    // accumulation buffer (like out, but not the same one) -- this
+    // layer ADDS its Send-scaled signal into it; main.cpp runs the one
+    // shared ReverbSc over the sum of every layer's contribution once
+    // per sample, after this loop, and mixes the wet result into out[]
+    // itself (see AudioCallback()).
+    // project_speed is the block-rate tape-style multiplier from
+    // Ui::GetProjectSpeed() (see main.cpp's AudioCallback()) -- the
+    // playback rate (layers have no speed of their own), and used to keep
+    // fresh recording/overdub writes in the same native-tempo coordinate
+    // space as everything else (see Process()'s .cpp comments).
+    void Process(AudioHandle::InputBuffer  in,
+                 AudioHandle::OutputBuffer out,
+                 AudioHandle::OutputBuffer reverb_send_out,
+                 AudioHandle::OutputBuffer delay_send_out,
+                 size_t                    size,
+                 const TempoClock::TempoTick* ticks,
+                 TempoClock&                  tempo,
+                 float                        project_speed);
+
+  private:
+    void ApplyEffectParams(); // once per block, see looper_layer.cpp
+    void ProcessEffectsChain(float dry_l, float dry_r, float& out_l, float& out_r);
+
+    float* buffer_l_ = nullptr;
+    float* buffer_r_ = nullptr;
+    size_t buffer_size_ = 0;
+    float  sample_rate_ = 48000.f;
+
+    // Shared Undo-overdub backup (main.cpp's g_undo_backup_l/r) -- see
+    // Init()'s own comment. Captured LAZILY, one sample at a time, right
+    // inside the Overdubbing write loop in Process() -- NOT copied in
+    // bulk ahead of time. A real block-sized bulk copy (first spread
+    // across the count-in, then shrunk, then even fully disabled as a
+    // diagnostic) was tried first and confirmed as the actual cause of a
+    // real, audible glitch on hardware every time: a dedicated
+    // multi-thousand-sample SDRAM-to-SDRAM sweep has real cost, no matter
+    // how small the chunk, because it's cold (first-touch, no cache
+    // reuse) and source/dest are different regions of the same physical
+    // SDRAM chip (every access risks a row-close/row-open round trip).
+    // The lazy approach sidesteps this entirely: the overdub write loop
+    // already reads buffer_l_[wrapped]/buffer_r_[wrapped] immediately
+    // before overwriting it (to mix the new audio in), so capturing that
+    // same, already-hot address into the backup first is one extra
+    // read+write on a cache line Process() was touching anyway -- not a
+    // separate sweep, so no new cost class is introduced at all.
+    float* undo_backup_l_ = nullptr;
+    float* undo_backup_r_ = nullptr;
+    static volatile bool undo_backup_blocked_;
+    volatile uint8_t scene_play_  = 0; // QueueScene(): 0 none, 1 play, 2 pause
+    float            scene_vol01_ = 1.f;
+    // Buffer index play_pos_ was at when this (the current or most
+    // recent) overdub pass began -- together with overdub_remaining_,
+    // defines exactly which wrapped arc of the backup is valid: samples
+    // not yet reached by this pass were never touched this time around,
+    // so buffer_l_/r_ there is STILL the correct pre-overdub state with
+    // or without a backup -- see RestoreFromBackup()'s own comment for
+    // why that's exactly the range it restores, not the whole buffer.
+    size_t overdub_start_idx_ = 0;
+
+    LayerState state_ = LayerState::Empty;
+
+    size_t write_idx_   = 0;
+    size_t record_len_  = 0; // fixed once recording finishes
+    size_t target_len_  = 0; // this recording's target length (from tempo)
+    // Native-space samples left in the current overdub pass -- seeded to
+    // record_len_ the instant ArmedOverdubCountIn's count-in finishes,
+    // counted down by effective_speed each sample while Overdubbing.
+    // Reaching 0 auto-stops back to Playing, same "runs a fixed duration
+    // automatically" shape Recording's own write_idx_/target_len_ pair
+    // already has -- added so overdub no longer needs the button held
+    // down for its whole duration, see OnRecordButtonLongPress()'s
+    // comment.
+    float  overdub_remaining_ = 0.f;
+    // See ConsumeOverdubSnapshotRequest()'s own doc comment -- set inside
+    // Process() (the audio ISR), cleared by whoever consumes it from the
+    // main loop.
+    volatile bool overdub_snapshot_pending_ = false;
+    float  play_pos_    = 0.f;
+    // See SetFreezeActive()/NudgeFreeze()'s own doc comments.
+    bool   freeze_active_ = false;
+    float  freeze_anchor_ = 0.f; // frozen window's own start, native samples
+    float  freeze_phase_  = 0.f; // 0..1 through the window's own repeating loop
+    static constexpr float kFreezeWindowMs = 60.f;
+    float  input_gain_  = 1.f; // multiplier applied at record/overdub time
+    float  input_gain01_ = 0.f; // raw 0..1 last passed to SetInputGain01(), for save/restore
+
+    // Vari-speed-aware record/overdub write path state -- see Process()'s
+    // Recording/Overdubbing branches. record_write_phase_ is the
+    // fractional native-space write cursor while Recording (meaningless
+    // otherwise); prev_input_sample_l_/r_ is the last real input sample
+    // captured, shared by Recording and Overdubbing since they never run
+    // simultaneously, used to linearly interpolate whenever project_speed
+    // isn't exactly 1.0.
+    float record_write_phase_  = 0.f;
+    float prev_input_sample_l_ = 0.f;
+    float prev_input_sample_r_ = 0.f;
+    float volume_   = 1.f;
+    float volume01_ = 1.f;  // raw 0..1 last passed to SetVolume01(), for save/restore
+    float pan_      = 0.5f;
+
+    FilterMode filter_mode_      = FilterMode::Off;
+    float      filter_cutoff_hz_ = 1200.f;
+    float      filter_cutoff01_  = 0.5f; // raw 0..1, for save/restore
+    float      filter_res_       = 0.2f;
+    float      filter_res01_     = 0.22f; // raw 0..1, for save/restore
+    TptSvf filter_l_, filter_r_;
+
+    // Drive and Tremolo, one per channel (see SetDrive01()).
+    float              drive01_      = 0.f;
+    float              drive_trim01_ = 0.5f;
+    float              trem_depth01_ = 0.f;
+    float              trem_rate01_  = 0.4f;
+    daisysp::Overdrive fx_drive_[2];
+    LayerTremolo       fx_tremolo_[2]; // layer_fx.h -- DaisySP's, minus sinf()
+
+    float reverb_send_ = 0.f; // 0 = nothing sent to the shared reverb bus
+    float delay_send_  = 0.f; // 0 = nothing sent to the shared delay bus
+
+    float meter_     = 0.f;
+    float clip_hold_ = 0.f; // seconds remaining on the clip-indicator latch, see IsClipping()
+    float waveform_peaks_[kWaveformCols] = {};
+};

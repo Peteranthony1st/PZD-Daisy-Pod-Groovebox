@@ -1,0 +1,2160 @@
+#include <cstring>
+#include "pan_law.h"
+#include "profiler.h"
+#include "fast_math.h"
+#include "svf_setup.h"
+#include "daisy_pod.h"
+#include "daisysp.h"
+#include "dev/oled_ssd130x.h"
+#include "tempo_clock.h"
+#include "looper_layer.h"
+#include "ui.h"
+#include "performance_store.h"
+#include "audio_engine.h"
+#include "shared_delay.h"
+#include "itcm.h"
+#include "granular_engine.h"
+#include "dexed_synth.h"
+#include "ensemble_synth.h"
+#include "sample_synth.h"
+#include "sequencer.h"
+#include "arpeggiator.h"
+#include "live_export.h"
+#include "pod_oled.h"
+#include "dattorro_reverb.h"
+
+using namespace daisy;
+
+// Same sizing as the original Ouroboros firmware: ~33 seconds per layer
+// at 48kHz, stereo. 4 layers (dropped from the original 5) to keep the
+// per-layer SDRAM budget (Phaser per layer, plus one shared ReverbSc bus
+// -- see fx_reverb_shared below) comfortable. Most per-layer effect
+// objects are a few hundred bytes and live in ordinary SRAM via the
+// LooperLayer array below -- Phaser and ReverbSc are the exceptions
+// (~75KB/~386KB per instance), and are placed in SDRAM alongside these
+// loop buffers.
+//
+// 921,600 (~19.2s @ 48kHz) -- was 1,600,000 (~33.3s). TempoClock's own
+// BPM/Bars ceiling (see tempo_clock.h's kMaxLoopSeconds) now guarantees no
+// new recording can ever exceed 19.2s, so sizing these for the old ~33.3s
+// max was pure headroom nobody could reach any more -- shrinking them
+// frees ~20.7MB of SDRAM project-wide, more than enough to cover the new
+// shared Undo backup buffer below (~7.03MB) with plenty to spare.
+#define kBuffSize 921600
+#define kNumLayers 4
+
+DaisyPod hw;
+
+// True hardware PWM for 3 of the Pod's 6 RGB LED sub-pixels (LED1's Green/
+// Blue, LED2's Red) -- the STM32H750's own TIM3 peripheral toggles these
+// GPIOs in hardware every cycle, with zero CPU involvement per cycle (only
+// a register write when the duty cycle actually changes), genuinely
+// jitter-free unlike libDaisy's own software Led::Update() (a fixed-rate
+// GPIO toggle from ControlTimerCallback(), itself at a lower NVIC priority
+// than the audio DMA ISR and so not perfectly immune to its own timing
+// jitter -- see that callback's own comment, since removed, for the full
+// history). Only 3 of the 6 sub-pixels: per libDaisy's own per/pwm.h
+// documented pin table, LED1-Green(D19)/LED1-Blue(D18)/LED2-Red(D17) all
+// land on TIM3's own channels 1/2/4, but LED2-Green(D24) would need TIM5
+// -- already claimed by ControlTimerCallback's own TimerHandle below, and
+// per/pwm.h's own doc comment warns PWM and a TimerHandle can't share a
+// timer -- and LED1-Red(D20)/LED2-Blue(D23) aren't wired to any TIM3/4/5
+// channel libDaisy exposes at all. Those 3 unused sub-pixels are simply
+// never driven again after DaisyPod::InitLeds()'s own ClearLeds() leaves
+// them off, which is exactly the state this scheme wants for them anyway.
+daisy::PWMHandle led_pwm_tim3;
+
+using MyDisplay = daisy::OledDisplay<PodOledDriver>; // pod_oled.h: + screen saver commands
+MyDisplay display;
+
+float DSY_SDRAM_BSS buffer_l[kNumLayers][kBuffSize];
+float DSY_SDRAM_BSS buffer_r[kNumLayers][kBuffSize];
+
+// Shared "undo last overdub" backup -- ONE instance, not one per layer
+// (only one layer can be overdubbing at a time), restorable from
+// Layer:Status's Button2 short tap (see Ui::HandleButton2()). Sized to
+// exactly the same kMaxLoopSeconds ceiling as the main buffers above, so
+// every loop this project can now produce always fits -- no partial/
+// best-effort case to handle for anything recorded going forward. The
+// actual copy happens incrementally, inside LooperLayer::Process()
+// itself (the audio ISR), spread across the overdub's own count-in --
+// see ConsumeOverdubSnapshotRequest()'s own comment for why it can't be
+// deferred to this main loop. A loop from an old save made before this
+// ceiling existed that happens to be longer than this is grandfathered
+// (still plays fine) but simply won't offer Undo -- checked at the
+// moment the snapshot would be taken, not assumed.
+float DSY_SDRAM_BSS g_undo_backup_l[kBuffSize];
+float DSY_SDRAM_BSS g_undo_backup_r[kBuffSize];
+// -1 = no pending undo. Set by the main loop once a layer's incremental
+// snapshot (see above) finishes; cleared either by a successful Undo or
+// by a different layer's overdub taking the shared backup over first.
+int    g_undo_owner_layer = -1;
+size_t g_undo_backup_len  = 0;
+
+// Grains' own dedicated capture buffer -- separate from the loop layers'
+// buffers above (~10s @ 48kHz, chosen to fit comfortably in the SDRAM
+// left over after the 4 loop layers -- raised from an original ~5s once
+// that turned out too short for a real imported WAV file, e.g. a
+// multi-bar commercial loop). Two sources write into it: Ui's
+// TriggerGranularCaptureFromLayer() (an instant main-loop-side copy from
+// whichever loop layer is selected) or live input recorded sample-by-
+// sample in AudioCallback() while g_granular_capturing is true (see
+// below). Either way, granular.SetSource() is pointed at it once the
+// capture finishes, same as every other GranularEngine source.
+constexpr size_t kGranularCaptureSamples = 480000; // ~10s @ 48kHz
+float DSY_SDRAM_BSS g_granular_capture_l[kGranularCaptureSamples];
+float DSY_SDRAM_BSS g_granular_capture_r[kGranularCaptureSamples];
+// GranularEngine's own interleaved 16-bit copy of whatever it's playing
+// (see GranularEngine::SetSourceShadow()) -- rebuilt on every SetSource().
+int16_t DSY_SDRAM_BSS g_granular_shadow[kGranularCaptureSamples * 2];
+
+// Shared between Ui (which starts/stops recording on Button2 press/
+// release -- see Ui::HandleButton2()) and AudioCallback() (which actually
+// writes live input samples in while true). volatile for the same
+// ISR/main-loop-shared reason as every other cross-context flag in this
+// file (g_encoder_pos etc.) -- Ui also clears write_pos to 0 right before
+// setting this true, arming a fresh recording.
+volatile bool   g_granular_capturing        = false;
+volatile size_t g_granular_capture_write_pos = 0;
+
+// The sampler engines' SDRAM arenas -- one Kit/Sound's worth of sample
+// audio each (Ui::TriggerLoadSampleSynthKit() owns the bump-allocator
+// loop that fills them from WAV files on load). 1,600,000 samples per
+// channel (~33s @ 48kHz) each: real one-shot kits (EP-133 exports) run
+// past 20s, and the factory Upright Piano multisample is ~29s. Stored
+// 16-bit, so both engines' arenas together take the same 12.8MB the one
+// float arena used to. Rows: Voice L, Voice R, Drum L, Drum R. The pack
+// importer borrows the whole block as two float scratch buffers (rows
+// 0-1 and rows 2-3), see Ui::TriggerSampleSynthPackImport().
+constexpr size_t kSampleSynthArenaSamples = 1600000;
+alignas(4) int16_t DSY_SDRAM_BSS g_sample_synth_arena[4][kSampleSynthArenaSamples];
+
+// SampleSynth's own dedicated capture buffer -- same "Direct Record/
+// Import/From Layer" pattern as Grains' own g_granular_capture_l/r
+// above, sized shorter (6s, not 10s) since this plays one-shots, not
+// sustained/scanned texture.
+constexpr size_t kSampleSynthCaptureSamples = 288000; // 6s @ 48kHz
+float DSY_SDRAM_BSS g_sample_synth_capture_l[kSampleSynthCaptureSamples];
+float DSY_SDRAM_BSS g_sample_synth_capture_r[kSampleSynthCaptureSamples];
+volatile bool   g_sample_synth_capturing        = false;
+volatile size_t g_sample_synth_capture_write_pos = 0;
+
+TempoClock  tempo;
+LooperLayer layers[kNumLayers];
+Ui          ui;
+
+// One Phaser per layer, in SDRAM because it's not small enough to live
+// directly as a LooperLayer member in ordinary SRAM. Each layer's
+// instance is fully independent (not shared) -- LooperLayer::Init()
+// takes a pointer to it and owns calling Init() on it.
+
+// ONE shared reverb bus for every layer, not one per layer -- up to 4
+// simultaneous ReverbSc instances (by far the heaviest thing in this
+// signal chain, ~386KB each) was enough real-time DSP cost in the worst
+// case to starve the main loop/TIM5 badly enough to cause actual audio
+// glitches and OLED corruption, not just UI lag. Every layer's
+// Reverb-Send-scaled signal is summed (see LooperLayer::Process()'s
+// reverb_send_out parameter) and run through this single instance once
+// per sample in AudioCallback() -- see fx_reverb_size01 below for how
+// its shared Size control works. The 13 big delay buffers this needs
+// (~166KB) live in fx_reverb_storage below -- moved from SDRAM into
+// plain SRAM to test a real hypothesis: this is a memory-bound hot
+// loop (13 delay-line/allpass/lowpass stages reading/writing those
+// arrays every sample), so if SDRAM's own per-access latency was the
+// dominant cost, SRAM's lower latency should cut real CPU, with zero
+// audio-quality change (same algorithm, same constants, bit-identical
+// output). Room for this was freed by moving ExportWav()/ImportWav()'s
+// own scratch buffers (~196KB, performance_store.cpp) the other way
+// into SDRAM -- those only ever run with the audio engine suspended,
+// so SDRAM's extra latency costs nothing there. fx_reverb_shared
+// itself only holds small, constantly-touched bookkeeping state
+// (DelayBuffer structs, the "amount" coefficients), so it stays a
+// plain object -- see DattorroReverbStorage's own doc comment for why
+// this split exists.
+DattorroReverb        fx_reverb_shared;
+DattorroReverbStorage fx_reverb_storage;
+
+// ONE shared cross-feedback ("ping-pong") delay, same "one shared
+// instance, fed by per-engine sends" architecture as fx_reverb_shared
+// above -- every engine/layer/Bypass has its own Delay Send into the
+// SAME delay, set from Global:Delay/DlyTone. Cheap: two delay-line
+// reads/writes, a one-pole filter and a few multiplies per sample (see
+// SharedDelay::Bus). 3s per channel, ~1.15MB of SDRAM for both.
+SharedDelay::Bus DSY_SDRAM_BSS fx_delay;
+
+// Master-bus filter -- applied once to the final mix (layers + their
+// reverb, summed) rather than per-layer, so it's a plain Svf pair
+// living in ordinary SRAM (tiny, no big internal buffer like the
+// per-layer effects above) instead of needing SDRAM placement.
+TptSvf fx_master_filter_l, fx_master_filter_r;
+
+// The MIDI-played granular voice (see granular_engine.h -- monophonic,
+// two overlapping-grain layers). Small enough (Grain/Adsr/Svf state, no
+// big internal buffer of its own) to live in ordinary SRAM -- it doesn't
+// own the captured audio, just points at whichever buffer holds one (see
+// g_granular_source_l/r below).
+GranularEngine DSY_DTCM_BSS granular;
+
+// The MIDI-played 6-operator/10-voice DX7 clone (see dexed_synth.h --
+// real msfa engine underneath, own oldest-note-steal voice pool). Small
+// enough (Dx7Note is ~700 bytes/voice per Synth_Dexed's own build) to
+// live in ordinary SRAM.
+DexedSynth DSY_DTCM_BSS dexed;
+// DXD-B: a second, identical engine (Global:DXD-B), and the bus both
+// render into -- one filter, fold, limiter and set of sends for the
+// pair (see DexedBus). `dexed` above is DXD-A.
+DexedSynth DSY_DTCM_BSS dexed_b;
+DexedBus DSY_DTCM_BSS   dexed_bus;
+
+// Dexed Split page routing (see Ui::DexedSplitOn()). g_dexed_sent holds,
+// per engine and incoming key, the note actually sent to that engine
+// (after its octave shift), or -1 -- so the NoteOff always releases what
+// the NoteOn started, even if the split point or an octave changed while
+// the key was held.
+static int8_t g_dexed_sent[2][128];
+
+// Every note an engine plays -- the keyboard's, a track's, an arp's -- with
+// the engine's octave shift. The split isn't here: it picks which engine a
+// key from the keyboard goes to (see LiveKeyOn()); a track or an arp names
+// its engine already, and an arp may range across the split.
+static void DexedRoutedNoteOn(int engine, uint8_t note, uint8_t velocity)
+{
+    DexedSynth& d = engine == 1 ? dexed_b : dexed;
+    int n = (int)note + 12 * ui.DexedOctave(engine);
+    if(n < 0 || n > 127)
+        return;
+    int8_t& sent = g_dexed_sent[engine][note];
+    if(sent >= 0 && sent != n)
+        d.NoteOff((uint8_t)sent); // key struck again after an octave change
+    sent = (int8_t)n;
+    d.NoteOn((uint8_t)n, velocity);
+}
+
+static void DexedRoutedNoteOff(int engine, uint8_t note)
+{
+    int8_t& sent = g_dexed_sent[engine][note];
+    if(sent < 0)
+        return;
+    (engine == 1 ? dexed_b : dexed).NoteOff((uint8_t)sent);
+    sent = -1;
+}
+
+static void DexedRoutedAllNotesOff(int engine)
+{
+    (engine == 1 ? dexed_b : dexed).AllNotesOff();
+    for(int i = 0; i < 128; i++)
+        g_dexed_sent[engine][i] = -1;
+}
+
+// A divide-down string-machine/ensemble-organ instrument (see
+// ensemble_synth.h -- daisysp::OscillatorBank per voice, Dexed's own
+// voice-stealing pattern). Measured on real hardware at ~22-23% peak CPU
+// for 8 voices + the shared Chorus, well within budget alongside
+// Dexed/Grains/the looper.
+EnsembleSynth DSY_DTCM_BSS ensemble;
+// The Organ: a second EnsembleSynth set up with SetOrgan(true) -- nine
+// sine drawbars instead of the divide-down bank. Ordinary SRAM: DTCM has
+// no room for another chorus delay line, and the organ is cheap anyway.
+EnsembleSynth organ;
+
+// A 10-voice polyphonic sample player (see sample_synth.h -- combines
+// DexedSynth's own voice-stealing pattern with GranularEngine's
+// pitch-tracking/clamp-at-ends buffer read). Ported from the `optimise`
+// branch, where it was originally built alongside Dexed/Grains.
+SampleSynth DSY_DTCM_BSS sample_synth;
+// The Drum sampler (SMPDR): a second SampleSynth, so a Kit and a Voice
+// Sound can play at the same time, each on its own MIDI channel.
+SampleSynth DSY_DTCM_BSS sample_drum;
+
+// The engines above (and Dexed's FM lookup tables, see msfa/synth.h's
+// TABLE_MEM) live in DTCMRAM -- see DSY_DTCM_BSS in itcm.h. Startup only
+// zeroes ordinary .bss, so clear that section here, as the very first
+// constructor (priority 101 runs before every default-priority global
+// constructor), so every object there starts exactly as it would in .bss.
+extern "C" uint32_t _sdtcmram_bss, _edtcmram_bss;
+__attribute__((constructor(101))) static void ZeroDtcmBss()
+{
+    memset(&_sdtcmram_bss, 0,
+           (size_t)((char*)&_edtcmram_bss - (char*)&_sdtcmram_bss));
+}
+
+// The same for DSY_D2_BSS (itcm.h). libDaisy only sets the D2 SRAM
+// enable bits when DATA_IN_D2_SRAM is defined; access works without them
+// (they mark the RAM as the CPU's, keeping D2 awake in low-power modes),
+// but set all three here as the reference manual intends.
+extern "C" uint32_t _sd2_bss, _ed2_bss;
+__attribute__((constructor(101))) static void ZeroD2Bss()
+{
+    RCC->AHB2ENR |= RCC_AHB2ENR_D2SRAM1EN | RCC_AHB2ENR_D2SRAM2EN | RCC_AHB2ENR_D2SRAM3EN;
+    (void)RCC->AHB2ENR; // read back so the enable lands before the memset
+    memset(&_sd2_bss, 0, (size_t)((char*)&_ed2_bss - (char*)&_sd2_bss));
+}
+
+// See audio_engine.h.
+volatile bool g_audio_suspended = false;
+volatile bool g_seq_hold        = false;
+volatile uint32_t g_loop_starts = 0;
+
+// See audio_engine.h.
+float g_grains_level  = 0.f;
+float g_dexed_level   = 0.f;
+float g_bypass_level  = 0.f;
+float g_master_level  = 0.f;
+float g_grains_clip_hold = 0.f;
+float g_dexed_clip_hold  = 0.f;
+float g_bypass_clip_hold = 0.f;
+float g_master_clip_hold = 0.f;
+
+// See audio_engine.h. daisy::CpuLoadMeter itself (libDaisy, pulled in
+// transitively via daisy_pod.h) does the real measurement -- two
+// separate instances rather than one, since GetAvgCpuLoad()'s own
+// smoothing should run forever uninterrupted, but the peak reading
+// needs its own periodic Reset() (see kCpuPeakResetSeconds below) and
+// Reset() clears a CpuLoadMeter's avg_ right along with its min_/max_,
+// so sharing one instance between both readings would reset the
+// average too.
+daisy::CpuLoadMeter g_cpu_meter_avg;
+daisy::CpuLoadMeter g_cpu_meter_peak;
+float               g_cpu_avg_load  = 0.f;
+float               g_cpu_peak_load = 0.f;
+
+// Same threshold/hold convention as LooperLayer's own clip_hold_ (see
+// its doc comment) -- kept here rather than shared with it, since each
+// one is reading a different signal.
+constexpr float kMeterClipThreshold   = 1.f;
+constexpr float kMeterClipHoldSeconds = 0.5f;
+// How long the level bar takes to fall from a peak back toward silence
+// -- real "peak meter" shape (instant attack, slow release), not a
+// symmetric one-pole follower. A symmetric filter decays to ~1% within
+// ~13 samples (~0.27ms @ 48kHz) either way, which is invisible on a
+// ~30Hz OLED redraw for anything that isn't a continuous tone --
+// exactly what made Grains' own bursty, gappy output (discrete grains
+// separated by silence, depending on Fill/Gap) look like it barely
+// moved even at a loud Mixer level: the bar had already decayed back to
+// nothing between grain onsets, long before the next redraw ever read
+// it. 300ms release is the same ballpark a real console VU meter uses.
+constexpr float kMeterReleaseSeconds = 0.3f;
+
+// Peak-hold level follower + clip-hold latch, shared shape for all 4 of
+// the meters above -- factored out since it's the same lines x 4
+// channels otherwise. Inlined in practice (DSY_ITCM_TEXT callers, tiny
+// body), so this costs nothing over writing it out longhand each time.
+// Last stage before the codec: untouched below 0.8 (-2 dB), then a
+// tanh knee that rounds everything above smoothly into +-1.0, so turning
+// the mix up can't hard-clip at the output. Costs a tanhf() only on the
+// rare samples above the knee.
+static inline float MasterSoftLimit(float x)
+{
+    constexpr float kKnee = 0.8f;
+    float           a     = fabsf(x);
+    if(a <= kKnee)
+        return x;
+    float y = kKnee + (1.f - kKnee) * FastTanh((a - kKnee) * (1.f / (1.f - kKnee)));
+    return x < 0.f ? -y : y;
+}
+
+static inline void UpdateLevelMeter(float& level, float& clip_hold, float sample,
+                                      float sample_rate)
+{
+    float mag = fabsf(sample);
+    if(mag > level)
+        level = mag; // instant attack -- always show the true peak right away
+    else
+        level -= level * (1.f / (kMeterReleaseSeconds * sample_rate)); // slow release
+    if(mag >= kMeterClipThreshold)
+        clip_hold = kMeterClipHoldSeconds;
+    else if(clip_hold > 0.f)
+        clip_hold -= 1.f / sample_rate;
+}
+
+// How often the peak CPU reading rolls over -- short enough that
+// turning a knob/toggling a feature shows its own new peak within a
+// few seconds, rather than that number staying stuck at whatever the
+// worst moment was several minutes ago. GetAvgCpuLoad() is NOT reset on
+// this timer (see g_cpu_meter_avg/g_cpu_meter_peak's own comment for
+// why they're two separate instances) -- only the peak reading rolls.
+constexpr float kCpuPeakResetSeconds    = 3.f; // back down soon after a burst ends
+float           g_cpu_peak_reset_countdown = kCpuPeakResetSeconds;
+
+// Call once at the very end of every AudioCallback() invocation --
+// both the normal path and the g_audio_suspended early-return path (see
+// their own call sites) -- so the reading stays live (correctly low)
+// even across a Load/Save rather than freezing at whatever it was right
+// before one started.
+namespace Prof
+{
+float g_avg[kNumStages];
+float g_peak[kNumStages];
+
+void EndBlock(uint32_t cycles[kNumStages], uint32_t total, size_t size, float sample_rate)
+{
+    uint32_t staged = 0;
+    for(int s = 0; s < kOther; s++)
+        staged += cycles[s];
+    cycles[kOther] = total > staged ? total - staged : 0;
+    // Budget = the cycles one block may take: core clock x block length.
+    float inv_budget = sample_rate / ((float)SystemCoreClock * (float)size);
+    for(int s = 0; s < kNumStages; s++)
+    {
+        float load = (float)cycles[s] * inv_budget;
+        g_avg[s] += (load - g_avg[s]) * 0.01f; // ~1.3 s smoothing at 64-sample blocks
+        if(load > g_peak[s])
+            g_peak[s] = load;
+    }
+}
+
+void ResetPeaks()
+{
+    for(int s = 0; s < kNumStages; s++)
+        g_peak[s] = 0.f;
+}
+} // namespace Prof
+
+static inline void FinishCpuMeterBlock(size_t size, float sample_rate)
+{
+    g_cpu_meter_avg.OnBlockEnd();
+    g_cpu_meter_peak.OnBlockEnd();
+    g_cpu_avg_load  = g_cpu_meter_avg.GetAvgCpuLoad();
+    g_cpu_peak_load = g_cpu_meter_peak.GetMaxCpuLoad();
+
+    g_cpu_peak_reset_countdown -= (float)size / sample_rate;
+    if(g_cpu_peak_reset_countdown <= 0.f)
+    {
+        g_cpu_meter_peak.Reset();
+        Prof::ResetPeaks();
+        g_cpu_peak_reset_countdown = kCpuPeakResetSeconds;
+    }
+}
+
+// Written only by ControlTimerCallback (a 1kHz TIM5 ISR, see below), read
+// only by the main loop, which diffs each against its own "last seen"
+// value to build a UiControlEvents delta every iteration (see ui.h's
+// UiControlEvents comment for why encoder/button edges need this
+// treatment).
+volatile int32_t  g_encoder_pos         = 0; // cumulative encoder position
+volatile uint32_t g_encoder_click_falls = 0;
+volatile uint32_t g_btn1_releases       = 0;
+volatile uint32_t g_btn2_releases       = 0;
+
+// Each button's held duration as of the most recent tick it was still
+// pressed -- see ui.h's UiControlEvents::btn1_held_ms/btn2_held_ms
+// comment for why this can't just be Switch::TimeHeldMs() read from the
+// main loop. Naturally "freezes" at the correct value the instant a
+// button releases (the write below only happens while Pressed() is
+// still true), and stays there until the next press starts updating it
+// again.
+volatile float    g_btn1_held_ms        = 0.f;
+volatile float    g_btn2_held_ms        = 0.f;
+
+// Same convention, for GranularParamPage::Filter's own live oscilloscope.
+constexpr size_t kGranularScopeSamples = 1024;
+static float DSY_SDRAM_BSS g_granular_scope_l[kGranularScopeSamples];
+static size_t      g_granular_scope_write_pos = 0;
+
+// Same convention, for Screen::Dexed's own live oscilloscope pages
+// (Feedback/Brightness/EnvSpeed/Filter/Mix/FX) -- captures Dexed's own
+// dry output (dexed_l), same "instrument's own signal, not the final
+// mix" treatment as the Granular scope above, so each page's own knobs
+// (Feedback amount, Brightness, etc.) visibly change Dexed's actual
+// output shape without other layers/instruments cluttering the trace.
+constexpr size_t kDexedScopeSamples = 1024;
+static float DSY_SDRAM_BSS g_dexed_scope_l[kDexedScopeSamples];
+static size_t      g_dexed_scope_write_pos = 0;
+
+// Same convention, for Screen::Ensemble's own live oscilloscope pages.
+constexpr size_t kEnsembleScopeSamples = 1024;
+static float DSY_SDRAM_BSS g_ensemble_scope_l[kEnsembleScopeSamples];
+static size_t      g_ensemble_scope_write_pos = 0;
+
+// Same convention, for Screen::SampleSynth's own live oscilloscope pages.
+constexpr size_t kSampleSynthScopeSamples = 1024;
+static float DSY_SDRAM_BSS g_sample_synth_scope_l[kSampleSynthScopeSamples];
+static size_t      g_sample_synth_scope_write_pos = 0;
+
+// Same convention, for Global:Bypass's own scope -- the monitored input
+// as heard (after Gain/Volume), silence while Bypass is off.
+constexpr size_t kBypassScopeSamples = 1024;
+static float DSY_SDRAM_BSS g_bypass_scope_l[kBypassScopeSamples];
+static size_t      g_bypass_scope_write_pos = 0;
+
+// Same convention, for Screen::Mixer's own oscilloscope page -- captures
+// the actual final post-fader mix (after reverb/bypass/master filter/
+// click/master volume), not any one instrument's own signal.
+constexpr size_t kMasterScopeSamples = 1024;
+static float DSY_SDRAM_BSS g_master_scope_l[kMasterScopeSamples];
+static size_t      g_master_scope_write_pos = 0;
+
+TimerHandle control_timer;
+
+// Runs Debounce() on the encoder/buttons (and the knob ADC smoothing) at
+// a guaranteed 1kHz, independent of whatever the main loop is doing --
+// see ui.h's UiControlEvents comment. Cheap (a few GPIO/ADC reads), so
+// safe to run from this low-priority timer ISR (see per/tim.cpp: TIM5
+// is installed at NVIC priority 0x0f, i.e. below the audio DMA ISR).
+// Sustain pedal (CC 64), handled here once for every keyboard engine
+// rather than inside each: while an engine's pedal is down a key's
+// NoteOff is held back (g_sus_held), and pedal up releases every held
+// note whose key isn't still physically down. A key struck again while
+// sustained just retriggers, and waits for the pedal again.
+enum SustainEngine
+{
+    kSusGrains,
+    kSusDexedA,
+    kSusDexedB,
+    kSusEnsemble,
+    kSusOrgan,
+    kSusSmpvo,
+    kSusSmpdr,
+    kSusEngines
+};
+static bool g_sus_pedal[kSusEngines];
+static bool g_sus_key_down[kSusEngines][128];
+static bool g_sus_held[kSusEngines][128];
+
+static void EngineNoteOn(int e, uint8_t note, uint8_t velocity)
+{
+    switch(e)
+    {
+        case kSusGrains: granular.NoteOn(note, velocity); break;
+        case kSusDexedA: DexedRoutedNoteOn(0, note, velocity); break;
+        case kSusDexedB: DexedRoutedNoteOn(1, note, velocity); break;
+        case kSusEnsemble: ensemble.NoteOn(note, velocity); break;
+        case kSusOrgan: organ.NoteOn(note, velocity); break;
+        case kSusSmpvo: sample_synth.NoteOn(note, velocity); break;
+        case kSusSmpdr: sample_drum.NoteOn(note, velocity); break;
+    }
+}
+
+static void EngineNoteOff(int e, uint8_t note)
+{
+    switch(e)
+    {
+        case kSusGrains: granular.NoteOff(note); break;
+        case kSusDexedA: DexedRoutedNoteOff(0, note); break;
+        case kSusDexedB: DexedRoutedNoteOff(1, note); break;
+        case kSusEnsemble: ensemble.NoteOff(note); break;
+        case kSusOrgan: organ.NoteOff(note); break;
+        case kSusSmpvo: sample_synth.NoteOff(note); break;
+        case kSusSmpdr: sample_drum.NoteOff(note); break;
+    }
+}
+
+// Also forgets anything the pedal was holding, so a panic or CC 123
+// can't leave a note waiting for a pedal-up that releases it later.
+static void EngineAllNotesOff(int e)
+{
+    switch(e)
+    {
+        case kSusGrains: granular.AllNotesOff(); break;
+        case kSusDexedA: DexedRoutedAllNotesOff(0); break;
+        case kSusDexedB: DexedRoutedAllNotesOff(1); break;
+        case kSusEnsemble: ensemble.AllNotesOff(); break;
+        case kSusOrgan: organ.AllNotesOff(); break;
+        case kSusSmpvo: sample_synth.AllNotesOff(); break;
+        case kSusSmpdr: sample_drum.AllNotesOff(); break;
+    }
+    for(int n = 0; n < 128; n++)
+    {
+        g_sus_key_down[e][n] = false;
+        g_sus_held[e][n]     = false;
+    }
+}
+
+static void SustainNoteOn(int e, uint8_t note, uint8_t velocity)
+{
+    g_sus_key_down[e][note] = true;
+    g_sus_held[e][note]     = false;
+    EngineNoteOn(e, note, velocity);
+}
+
+static void SustainNoteOff(int e, uint8_t note)
+{
+    g_sus_key_down[e][note] = false;
+    if(g_sus_pedal[e])
+        g_sus_held[e][note] = true;
+    else
+        EngineNoteOff(e, note);
+}
+
+static void SustainPedal(int e, bool down)
+{
+    if(down == g_sus_pedal[e])
+        return;
+    g_sus_pedal[e] = down;
+    if(down)
+        return;
+    for(int n = 0; n < 128; n++)
+    {
+        if(!g_sus_held[e][n])
+            continue;
+        g_sus_held[e][n] = false;
+        if(!g_sus_key_down[e][n])
+            EngineNoteOff(e, (uint8_t)n);
+    }
+}
+
+// The MIDI sequencer (Home's M1..M8) -- its 64KB of note events live in
+// the D2 SRAM (see DSY_D2_BSS). Played from ControlTimerCallback(), below,
+// against the loop position the audio callback publishes each block.
+MidiSequencer DSY_D2_BSS sequencer;
+// Its patterns that aren't playing (8 per track, 512KB) -- see
+// MidiSequencer::Init().
+static MidiSequencer::Event DSY_SDRAM_BSS
+    g_seq_patterns[MidiSequencer::kTracks * MidiSequencer::kPatterns * MidiSequencer::kMaxEvents];
+
+// Global:Export's Live mode (see live_export.h) -- it records into the
+// undo buffers below, 16-bit stereo, ~19.2s in each.
+LiveExport g_live_export;
+volatile uint32_t g_seq_tick       = 0;
+volatile uint32_t g_seq_loop_ticks = 0;
+volatile bool     g_seq_running    = false;
+volatile uint32_t g_seq_record_starts = 0; // count-ins finished, see Tick()
+// Which engine a live key went to while a sequencer track had the
+// keyboard (-1 = channel routing), so its NoteOff follows it even if the
+// selection changed in between.
+static int8_t g_seq_live_engine[128];
+static int8_t g_seq_live_track[128];
+
+// The arpeggiators (see arpeggiator.h): one per engine for playing live,
+// one per MIDI track. A key (or a track's note) headed for an arp that's on
+// goes to the arp instead, which plays the engine. g_arp_key remembers
+// which keys went to an arp, so a key's NoteOff follows it even if the arp
+// was switched in between; g_arp_note_engine which engine each arp note
+// went to (+1, 0 = none), so its NoteOff does even if the track's engine
+// changed.
+static Arpeggiator g_arp;
+static bool        g_arp_key[Arpeggiator::kInstances][128];
+static int8_t      g_arp_note_engine[Arpeggiator::kInstances][128];
+
+static int ArpEngine(int arp)
+{
+    return arp < Arpeggiator::kEngines ? arp : sequencer.GetEngine(arp - Arpeggiator::kEngines);
+}
+
+static void ArpNote(int arp, uint8_t note, uint8_t velocity)
+{
+    if(velocity > 0)
+    {
+        const int e = ArpEngine(arp);
+        g_arp_note_engine[arp][note] = (int8_t)(e + 1);
+        EngineNoteOn(e, note, velocity);
+    }
+    else
+    {
+        const int e = g_arp_note_engine[arp][note] > 0 ? g_arp_note_engine[arp][note] - 1 : ArpEngine(arp);
+        g_arp_note_engine[arp][note] = 0;
+        EngineNoteOff(e, note);
+    }
+}
+
+// A key for engine e, through arp `arp` if it's on (the engine's own, or a
+// track's while it's selected), else straight to the engine.
+static void KeyOn(int arp, int e, uint8_t note, uint8_t velocity)
+{
+    g_arp_key[arp][note] = g_arp.IsOn(arp);
+    if(g_arp_key[arp][note])
+        g_arp.KeyDown(arp, note, velocity);
+    else
+        SustainNoteOn(e, note, velocity);
+}
+
+static void KeyOff(int arp, int e, uint8_t note)
+{
+    if(g_arp_key[arp][note])
+    {
+        g_arp_key[arp][note] = false;
+        g_arp.KeyUp(arp, note);
+    }
+    else
+        SustainNoteOff(e, note);
+}
+
+// A key from the keyboard for engine e (its MIDI channel). With the Dexed
+// Split on, DXD-A takes the keys below the split note and DXD-B the rest --
+// before any arp, so an arp plays from its side's keys but can range across
+// the split. g_split_skipped remembers a key the split kept from an engine,
+// so its NoteOff is kept from it too, even if the split moved meanwhile.
+static bool g_split_skipped[2][128];
+static void LiveKeyOn(int e, uint8_t note, uint8_t velocity)
+{
+    if(e == kSusDexedA || e == kSusDexedB)
+    {
+        const int  d    = e == kSusDexedB ? 1 : 0;
+        const bool skip = ui.DexedSplitOn()
+                          && (d == 0 ? note >= ui.DexedSplitNote() : note < ui.DexedSplitNote());
+        g_split_skipped[d][note] = skip;
+        if(skip)
+            return; // the other engine's side of the split
+    }
+    KeyOn(e, e, note, velocity);
+}
+
+static void LiveKeyOff(int e, uint8_t note)
+{
+    if(e == kSusDexedA || e == kSusDexedB)
+    {
+        const int d = e == kSusDexedB ? 1 : 0;
+        if(g_split_skipped[d][note])
+        {
+            g_split_skipped[d][note] = false;
+            return;
+        }
+    }
+    KeyOff(e, e, note);
+}
+
+// The arps' clock: the loop position while the looper runs (so steps land
+// on its beat grid), else free-running at the tempo. The clock comes in as
+// read once for the whole interrupt -- the same reading the sequencer got
+// (see ControlTimerCallback()).
+static void ArpTick(uint32_t seq_tick, uint32_t loop_ticks, bool seq_running)
+{
+    static uint64_t tick         = 0;
+    static uint32_t prev         = 0;
+    static bool     was_running  = false;
+    static float    frac         = 0.f;
+    static uint32_t last_count   = System::GetTick();
+    // Timed by the clock, not by counting calls: TIM5 runs at 2x what its
+    // period assumes (libDaisy clocks timers at 2x PCLK1), so this is
+    // called about 2000 times a second, not 1000. The raw timer count, not
+    // System::GetUs(): that's the count divided down, so it wraps every
+    // ~18s at an odd value and a difference across the wrap is garbage.
+    const uint32_t now_count = System::GetTick();
+    const float    dt_us     = (float)(now_count - last_count) * 1e6f / (float)System::GetTickFreq();
+    last_count               = now_count;
+    if(seq_running && loop_ticks > 0)
+    {
+        const uint32_t t = seq_tick;
+        if(!was_running)
+        {
+            // Onto the loop's grid: the next loop's worth up, plus here.
+            tick = (tick / loop_ticks + 1) * loop_ticks + t;
+            prev = t;
+        }
+        uint32_t d = t >= prev ? t - prev : t + loop_ticks - prev;
+        if(d > loop_ticks / 2)
+            // A jump back (scrubbing, a load), not time passing: onto the
+            // loop's grid again from here, still counting forwards.
+            tick = (tick / loop_ticks + 1) * loop_ticks + t;
+        else
+            tick += d;
+        prev = t;
+    }
+    else
+    {
+        frac += tempo.GetBpm() * (float)Arpeggiator::kPpq / 60e6f * dt_us;
+        const uint32_t whole = (uint32_t)frac;
+        tick += whole;
+        frac -= (float)whole;
+    }
+    was_running = seq_running && loop_ticks > 0;
+    // Each track's arp follows its pattern, and falls silent when the
+    // track stops playing or the looper's turned off (a latched chord would
+    // carry on otherwise). Played live it still arps, looper on or off.
+    static bool     track_was_playing[MidiSequencer::kTracks] = {};
+    static uint32_t track_pos[MidiSequencer::kTracks]         = {};
+    static bool     seq_was_running                           = false;
+    if(seq_was_running && !seq_running)
+        for(int t = 0; t < MidiSequencer::kTracks; t++)
+            g_arp.Stop(Arpeggiator::TrackArp(t));
+    seq_was_running = seq_running;
+    for(int t = 0; t < MidiSequencer::kTracks; t++)
+    {
+        g_arp.SetPlayingPattern(t, sequencer.GetPattern(t));
+        const MidiSequencer::State st = sequencer.GetState(t);
+        const bool playing = st == MidiSequencer::State::Playing || st == MidiSequencer::State::Recording;
+        if(track_was_playing[t] && !playing)
+            g_arp.Stop(Arpeggiator::TrackArp(t));
+        track_was_playing[t] = playing;
+        // Back at the track's top: its arp's pattern starts over too.
+        const uint32_t pos = sequencer.GetPosTicks(t);
+        if(seq_running && playing && pos < track_pos[t])
+            g_arp.TrackLoopStart(t);
+        track_pos[t] = pos;
+    }
+    g_arp.Tick(tick, true, System::GetNow());
+}
+
+// The MIDI grid's preview (see Ui::PreviewSeq()): the note under the
+// cursor, sounded for kPreviewMs straight on the track's engine -- not its
+// arp, so it's the pitch itself that's heard. A new one cuts the last.
+static void GridPreview()
+{
+    static constexpr uint32_t kPreviewMs = 250;
+    static uint32_t           seen       = 0;
+    static int                engine = -1, note = 0;
+    static uint32_t           off_at = 0;
+    const uint32_t            now    = System::GetNow();
+    const uint32_t            seq    = ui.PreviewSeq();
+    if(seq != seen)
+    {
+        seen = seq;
+        if(engine >= 0)
+            EngineNoteOff(engine, (uint8_t)note);
+        int vel;
+        ui.GetPreview(&engine, &note, &vel);
+        if(engine < 0 || engine >= kSusEngines || note < 0 || note > 127)
+            engine = -1;
+        else
+        {
+            EngineNoteOn(engine, (uint8_t)note, (uint8_t)vel);
+            off_at = now + kPreviewMs;
+        }
+    }
+    else if(engine >= 0 && (int32_t)(now - off_at) >= 0)
+    {
+        EngineNoteOff(engine, (uint8_t)note);
+        engine = -1;
+    }
+}
+
+// A track's note: through the track's arp if its pattern has one on.
+static bool g_seq_arp_note[MidiSequencer::kTracks][128];
+static void SeqNote(int track, int engine, uint8_t note, uint8_t velocity)
+{
+    const int arp = Arpeggiator::TrackArp(track);
+    // The arp onto the pattern playing before its notes reach it -- a new
+    // pattern's first notes come in the same tick as the switch, before
+    // ArpTick() would catch up (and silence them).
+    g_arp.SetPlayingPattern(track, sequencer.GetPattern(track));
+    if(velocity > 0)
+    {
+        g_seq_arp_note[track][note] = g_arp.IsOn(arp);
+        if(g_seq_arp_note[track][note])
+            g_arp.KeyDown(arp, note, velocity, true); // a chord's notes land together
+        else
+            EngineNoteOn(engine, note, velocity);
+    }
+    else if(g_seq_arp_note[track][note])
+    {
+        g_seq_arp_note[track][note] = false;
+        g_arp.KeyUp(arp, note, true);
+    }
+    else
+        EngineNoteOff(engine, note);
+}
+
+// What CC 64 last said per engine (0 = nothing yet, 1 = up, 2 = down),
+// before Global:MIDI's Reversed flips it. Kept raw so flipping the
+// setting re-applies at once, and "nothing yet" stays up either way --
+// a reversed pedal at rest sends nothing until it is first pressed.
+static uint8_t g_sus_raw[kSusEngines];
+static uint8_t g_sus_raw_any; // same, any channel -- the page's readout
+static bool    g_sus_reversed;
+
+static bool SustainDown(uint8_t raw)
+{
+    return raw != 0 && ((raw == 2) != g_sus_reversed);
+}
+
+void ControlTimerCallback(void*)
+{
+    hw.ProcessAllControls();
+    g_encoder_pos += hw.encoder.Increment();
+    if(hw.encoder.FallingEdge())
+        g_encoder_click_falls++;
+    // Switch::TimeHeldMs()/Pressed()/FallingEdge() are only reliable when
+    // checked at the same rate Debounce() runs (see Switch's own doc
+    // comment) -- true here (this whole callback is that same guaranteed
+    // 1kHz tick), unlike reading them from the main loop's own irregular
+    // iteration rate. Capturing the held duration every tick it's still
+    // pressed (not just at the FallingEdge tick itself, when Pressed()
+    // has *already* gone false and TimeHeldMs() would already read 0) is
+    // what makes g_btn1_held_ms/g_btn2_held_ms trustworthy after the
+    // fact.
+    if(hw.button1.Pressed())
+        g_btn1_held_ms = hw.button1.TimeHeldMs();
+    if(hw.button1.FallingEdge())
+        g_btn1_releases++;
+    if(hw.button2.Pressed())
+        g_btn2_held_ms = hw.button2.TimeHeldMs();
+    if(hw.button2.FallingEdge())
+        g_btn2_releases++;
+
+    // MIDI polled here rather than the main loop for the same reason
+    // buttons are: this runs at a guaranteed, jitter-free 1kHz regardless
+    // of whatever the main loop's OLED redraw (blocking I2C) is doing.
+    // Polled from the main loop instead, a redraw stall could delay
+    // draining the UART long enough that a very fast tap's NoteOn AND
+    // NoteOff both end up sitting in the queue together, getting drained
+    // in the same pass with no audio block ever seeing the note as held
+    // in between -- silence instead of a short blip. Same reasoning
+    // applies to pitch bend: smoother, evenly-spaced bend_ratio_ updates
+    // read far more natural than whatever's left of them after being
+    // bunched up behind an OLED write.
+    hw.midi.Listen();
+    // Triple-click panic from the encoder (see Ui::TakePanicRequest()):
+    // the same release as a MIDI CC 123, on every engine and channel.
+    if(ui.TakePanicRequest())
+    {
+        g_arp.StopAll();
+        for(int e = 0; e < kSusEngines; e++)
+            EngineAllNotesOff(e);
+    }
+    // -1 (Omni) matches any channel; otherwise the event's own 0-indexed
+    // channel must match exactly -- see Ui::GetDexedMidiChannel()/
+    // GetGranularMidiChannel()'s own doc comment. Read once per poll
+    // (not once per event) since both can only change between UI
+    // redraws anyway, not mid-event-queue.
+    int dexed_ch        = ui.GetDexedMidiChannel();
+    int dexed_b_ch      = ui.GetDexedBMidiChannel();
+    int granular_ch     = ui.GetGranularMidiChannel();
+    int ensemble_ch     = ui.GetEnsembleMidiChannel();
+    int organ_ch        = ui.GetOrganMidiChannel();
+    const int seq_track = ui.GetSeqLiveTrack();
+    int sample_synth_ch = ui.GetSampleSynthMidiChannel();
+    int sample_drum_ch  = ui.GetSampleDrumMidiChannel();
+    // Per SustainEngine, for the note/pedal dispatch below.
+    const int sus_ch[kSusEngines] = {granular_ch, dexed_ch,        dexed_b_ch,    ensemble_ch,
+                                     organ_ch,    sample_synth_ch, sample_drum_ch};
+    if(ui.IsPedalReversed() != g_sus_reversed)
+    {
+        g_sus_reversed = ui.IsPedalReversed();
+        for(int e = 0; e < kSusEngines; e++)
+            SustainPedal(e, SustainDown(g_sus_raw[e]));
+    }
+    while(hw.midi.HasEvents())
+    {
+        MidiEvent event = hw.midi.PopEvent();
+        if(event.type == NoteOn)
+        {
+            NoteOnEvent noteon = event.AsNoteOn();
+            // A sequencer track selected on Home takes the keyboard: every
+            // channel plays its engine, and it records if armed.
+            if(seq_track >= 0 && noteon.note < 128)
+            {
+                const int e                  = sequencer.GetEngine(seq_track);
+                g_seq_live_engine[noteon.note] = (int8_t)e;
+                g_seq_live_track[noteon.note]  = (int8_t)seq_track;
+                KeyOn(Arpeggiator::TrackArp(seq_track), e, noteon.note, noteon.velocity);
+                sequencer.OnLiveNote(seq_track, noteon.note, noteon.velocity);
+            }
+            else
+                for(int e = 0; e < kSusEngines; e++)
+                    if(sus_ch[e] == -1 || noteon.channel == sus_ch[e])
+                        LiveKeyOn(e, noteon.note, noteon.velocity);
+        }
+        else if(event.type == NoteOff)
+        {
+            NoteOffEvent noteoff = event.AsNoteOff();
+            if(noteoff.note < 128 && g_seq_live_engine[noteoff.note] >= 0)
+            {
+                KeyOff(Arpeggiator::TrackArp(g_seq_live_track[noteoff.note]),
+                       g_seq_live_engine[noteoff.note], noteoff.note);
+                sequencer.OnLiveNote(g_seq_live_track[noteoff.note], noteoff.note, 0);
+                g_seq_live_engine[noteoff.note] = -1;
+            }
+            else
+                for(int e = 0; e < kSusEngines; e++)
+                    if(sus_ch[e] == -1 || noteoff.channel == sus_ch[e])
+                        LiveKeyOff(e, noteoff.note);
+        }
+        else if(event.type == PitchBend)
+        {
+            // Grains has no pitch bend input (see DESIGN.md's own MIDI
+            // section) -- Dexed and Ensemble both read this.
+            // PitchBendEvent::value is already roughly centered near 0
+            // (see MidiEvent::AsPitchBend()'s own -8192 offset), not the
+            // raw 0..16383 CC value Dx7Note::compute()/EnsembleSynth::
+            // SetPitchBend14bit() itself expect -- re-center and clamp
+            // back to that range here.
+            PitchBendEvent pb = event.AsPitchBend();
+            {
+                int32_t raw = (int32_t)pb.value + 8192;
+                raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
+                if(dexed_ch == -1 || pb.channel == dexed_ch)
+                    dexed.SetPitchBend14bit((uint16_t)raw);
+                if(dexed_b_ch == -1 || pb.channel == dexed_b_ch)
+                    dexed_b.SetPitchBend14bit((uint16_t)raw);
+            }
+            if(ensemble_ch == -1 || pb.channel == ensemble_ch)
+            {
+                int32_t raw = (int32_t)pb.value + 8192;
+                raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
+                ensemble.SetPitchBend14bit((uint16_t)raw);
+            }
+            if(organ_ch == -1 || pb.channel == organ_ch)
+            {
+                int32_t raw = (int32_t)pb.value + 8192;
+                raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
+                organ.SetPitchBend14bit((uint16_t)raw);
+            }
+            if(sample_synth_ch == -1 || pb.channel == sample_synth_ch)
+            {
+                int32_t raw = (int32_t)pb.value + 8192;
+                raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
+                sample_synth.SetPitchBend14bit((uint16_t)raw);
+            }
+            if(sample_drum_ch == -1 || pb.channel == sample_drum_ch)
+            {
+                int32_t raw = (int32_t)pb.value + 8192;
+                raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
+                sample_drum.SetPitchBend14bit((uint16_t)raw);
+            }
+        }
+        else if(event.type == ControlChange)
+        {
+            ControlChangeEvent cc = event.AsControlChange();
+            if(cc.control_number == 1) // mod wheel
+            {
+                // Grains has no mod-wheel input. Dexed's own target is
+                // always one of Pitch/Amp/EgBias (no Off); Ensemble's
+                // own defaults to Off (see EnsembleSynth::ModWheelTarget's
+                // own comment) -- both read the same raw CC1 value
+                // regardless, each engine's own target picks whether/how
+                // it does anything with it.
+                if(dexed_ch == -1 || cc.channel == dexed_ch)
+                    dexed.SetModWheel01((float)cc.value / 127.f);
+                if(dexed_b_ch == -1 || cc.channel == dexed_b_ch)
+                    dexed_b.SetModWheel01((float)cc.value / 127.f);
+                if(ensemble_ch == -1 || cc.channel == ensemble_ch)
+                    ensemble.SetModWheel01((float)cc.value / 127.f);
+                if(organ_ch == -1 || cc.channel == organ_ch)
+                    organ.SetModWheel01((float)cc.value / 127.f);
+                // SampleSynth's own mod wheel drives a fixed pitch
+                // vibrato (see SampleSynth::SetModWheel01()'s own
+                // comment) -- no target concept to gate here, same as
+                // Dexed's own always-on targets.
+                if(sample_synth_ch == -1 || cc.channel == sample_synth_ch)
+                    sample_synth.SetModWheel01((float)cc.value / 127.f);
+                if(sample_drum_ch == -1 || cc.channel == sample_drum_ch)
+                    sample_drum.SetModWheel01((float)cc.value / 127.f);
+            }
+            // CC 123 (All Notes Off) / CC 120 (All Sound Off) -- see
+            // DexedSynth::AllNotesOff()'s own doc comment for why this
+            // exists at all (confirmed on hardware: an Akai MPK Mini
+            // Plus's own arpeggiator can leave a note stuck without
+            // this, same root cause across every engine here since they
+            // all share this same plain NoteOn/NoteOff dispatch).
+            else if(cc.control_number == 123 || cc.control_number == 120)
+            {
+                for(int e = 0; e < kSusEngines; e++)
+                    if(sus_ch[e] == -1 || cc.channel == sus_ch[e])
+                    {
+                        g_arp.Stop(e);
+                        for(int t = 0; t < MidiSequencer::kTracks; t++)
+                            if(sequencer.GetEngine(t) == e) // its tracks' arps too
+                                g_arp.Stop(Arpeggiator::TrackArp(t));
+                        EngineAllNotesOff(e);
+                    }
+            }
+            // Sustain pedal: down at 64 and above, the usual MIDI split
+            // (flipped by Global:MIDI's Reversed, see SustainDown()).
+            else if(cc.control_number == 64)
+            {
+                uint8_t raw   = cc.value >= 64 ? 2 : 1;
+                g_sus_raw_any = raw;
+                for(int e = 0; e < kSusEngines; e++)
+                    if(sus_ch[e] == -1 || cc.channel == sus_ch[e])
+                    {
+                        g_sus_raw[e] = raw;
+                        SustainPedal(e, SustainDown(raw));
+                    }
+            }
+        }
+    }
+    ui.SetPedalState(g_sus_raw_any == 0 ? -1 : (SustainDown(g_sus_raw_any) ? 1 : 0));
+
+    // The sequencer, after the live notes so a note recorded this tick is
+    // already in place.
+    // The published clock, read once for both: the audio callback can
+    // preempt this interrupt, and read twice the arps could see the next
+    // tick before the sequencer -- a bar's first step played before the
+    // sequencer had sent the bar's chord, the old chord on the bar line.
+    const uint32_t seq_tick    = g_seq_tick;
+    const uint32_t seq_loop    = g_seq_loop_ticks;
+    const bool     seq_running = g_seq_running;
+    sequencer.Tick(seq_tick, seq_loop, seq_running, g_seq_record_starts);
+    ArpTick(seq_tick, seq_loop, seq_running);
+    GridPreview();
+}
+
+// The codec's DMA buffers sit in a deliberately non-cacheable RAM region
+// (libDaisy's MPU setup), so every access to them is a slow bus round
+// trip -- and the callback used to read in[] and read-add-write out[] once
+// per layer/engine/stage, every sample. Instead the input is copied once
+// into these DTCM buffers (zero-wait-state, CPU-only -- DMA never touches
+// them), everything mixes into the DTCM output, and the result is copied
+// to the codec's buffer once at the end of the block.
+float DSY_DTCM_BSS g_fast_in[2][256];
+float DSY_DTCM_BSS g_fast_out[2][256];
+
+DSY_ITCM_TEXT
+void AudioCallback(AudioHandle::InputBuffer  in_hw,
+                   AudioHandle::OutputBuffer out_hw,
+                   size_t                    size)
+{
+    const float* in_ptrs[2]  = {g_fast_in[0], g_fast_in[1]};
+    float*       out_ptrs[2] = {g_fast_out[0], g_fast_out[1]};
+    AudioHandle::InputBuffer  in  = in_ptrs;
+    AudioHandle::OutputBuffer out = out_ptrs;
+
+    static TempoClock::TempoTick ticks[256];
+    static float                 click[256];
+    // Every layer's Reverb-Send-scaled signal is summed here (see
+    // LooperLayer::Process()'s reverb_send_out parameter), then run
+    // through the ONE shared fx_reverb_shared once per sample below --
+    // not once per layer any more, see fx_reverb_shared's comment.
+    static float reverb_send_l[256];
+    static float reverb_send_r[256];
+    // Same idea, for the shared delay bus (fx_delay_l/r) further below.
+    static float delay_send_l[256];
+    static float delay_send_r[256];
+    static float gran_l[256];
+    static float gran_r[256];
+    static float dexed_l[256];
+    static float dexed_r[256];
+    static float ensemble_l[256];
+    static float ensemble_r[256];
+    static float samp_l[256];
+    static float samp_r[256];
+
+    const float sample_rate = hw.AudioSampleRate(); // needed by both paths below
+    g_cpu_meter_avg.OnBlockStart();
+    g_cpu_meter_peak.OnBlockStart();
+    const uint32_t prof_start                  = Prof::Now();
+    uint32_t       prof[Prof::kNumStages]      = {};
+    uint32_t       prof_t                      = 0;
+
+    if(g_audio_suspended)
+    {
+        if(g_seq_hold) // a performance loading: the clock's stopped
+        {
+            g_seq_tick    = 0;
+            g_seq_running = false;
+        }
+        for(size_t i = 0; i < size; i++)
+        {
+            out_hw[0][i] = 0.f;
+            out_hw[1][i] = 0.f;
+        }
+        FinishCpuMeterBlock(size, sample_rate);
+        return;
+    }
+    for(size_t i = 0; i < size; i++)
+    {
+        g_fast_in[0][i] = in_hw[0][i];
+        g_fast_in[1][i] = in_hw[1][i];
+    }
+
+    // Grains' Direct Record capture is applied further below, after
+    // dexed_l/r are computed -- see g_granular_capturing's own comment
+    // there for why.
+
+    // Block-rate: tape-style multiplier on top of every layer's own Speed
+    // and the tempo clock's own tick rate -- see Ui::GetProjectSpeed(),
+    // TempoClock::Process(), LooperLayer::Process(). Read here, before
+    // the loops below, since both need it.
+    const float project_speed = ui.GetProjectSpeed(); // sample_rate already read above
+
+    // Skipped along with the loop layers below when Global:Looper is off
+    // -- ResetPhase() (called once, right when it's switched off) already
+    // leaves bar/beat position, count-in state, and the click envelope at
+    // a clean bar-1-beat-1 rest state, and not calling Process() here is
+    // what keeps it sitting there (frozen, not just paused) instead of
+    // silently continuing to advance in the background while disabled.
+    bool looper_enabled = ui.IsLooperEnabled();
+    static uint8_t  live_wrap[256];
+    static uint32_t live_prev_tick = 0;
+    static bool     live_was_watching = false;
+    const int       live_state = g_live_export.state;
+    const bool      live_watch = live_state == LiveExport::kArmed
+                            || live_state == LiveExport::kRecording;
+    if(live_watch && !live_was_watching) // first block: nothing to compare yet
+        live_prev_tick = tempo.GetLoopTick(MidiSequencer::kPpq);
+    live_was_watching = live_watch;
+    for(size_t i = 0; i < size; i++)
+        live_wrap[i] = 0;
+    for(size_t i = 0; i < size; i++)
+    {
+        out[0][i] = 0.f;
+        out[1][i] = 0.f;
+        reverb_send_l[i] = 0.f;
+        reverb_send_r[i] = 0.f;
+        delay_send_l[i]  = 0.f;
+        delay_send_r[i]  = 0.f;
+
+        if(looper_enabled)
+        {
+            ticks[i] = tempo.Process(project_speed);
+            click[i] = tempo.RenderClick(ticks[i]);
+            if(ticks[i].record_start)
+                g_seq_record_starts = g_seq_record_starts + 1;
+            if(ticks[i].loop_start)
+                g_loop_starts = g_loop_starts + 1;
+            // A live export starts, and counts its loops, where the loop
+            // position wraps back to bar 1.
+            if(live_watch)
+            {
+                uint32_t lt  = tempo.GetLoopTick(MidiSequencer::kPpq);
+                live_wrap[i] = lt < live_prev_tick;
+                live_prev_tick = lt;
+            }
+        }
+        else
+        {
+            ticks[i] = TempoClock::TempoTick{};
+            click[i] = 0.f;
+        }
+    }
+    // The sequencer's clock, once per block (see sequencer.h).
+    g_seq_loop_ticks = (uint32_t)tempo.GetBars() * TempoClock::kBeatsPerBar * MidiSequencer::kPpq;
+    g_seq_tick       = looper_enabled ? tempo.GetLoopTick(MidiSequencer::kPpq) : 0;
+    g_seq_running    = looper_enabled;
+
+    // Skipped entirely when disabled from Global:Granular -- a real
+    // compute saving, not just muting: gran_l/r stay at zero instead of
+    // GranularEngine::Process() ever running.
+    if(ui.IsGranularEnabled())
+    {
+        prof_t = Prof::Now();
+        granular.Process(size, gran_l, gran_r, reverb_send_l, reverb_send_r, delay_send_l,
+                          delay_send_r);
+        prof[Prof::kGrains] = Prof::Now() - prof_t;
+    }
+    else
+    {
+        for(size_t i = 0; i < size; i++)
+        {
+            gran_l[i] = 0.f;
+            gran_r[i] = 0.f;
+        }
+    }
+
+    // Same for Granular's own oscilloscope (GranularParamPage::Filter),
+    // and Screen::Mixer's own Grains level/clip meter -- same signal
+    // either way, runs unconditionally so both correctly show silence
+    // while Grains is off (gran_l already zeroed above in that case).
+    for(size_t i = 0; i < size; i++)
+    {
+        g_granular_scope_l[g_granular_scope_write_pos] = gran_l[i];
+        g_granular_scope_write_pos
+            = (g_granular_scope_write_pos + 1) % kGranularScopeSamples;
+        UpdateLevelMeter(g_grains_level, g_grains_clip_hold, gran_l[i], sample_rate);
+    }
+
+    // Skipped entirely when disabled from Global:Dexed -- same real
+    // CPU-saving pattern as ui.IsGranularEnabled()/IsLooperEnabled()
+    // above (a plain "don't call Process() at all", not just a mute).
+    // Computed here, before the loop-layer block below, so dexed_l/r
+    // are already valid when mixed_in is built from them.
+    //
+    // DXD-A and DXD-B each add into dexed_l/r at their own Level and Pan,
+    // then the shared bus finishes the pair in place. The bus runs while
+    // either engine is on; each engine only renders while its own is.
+    {
+        const bool a_on = ui.IsDexedEnabled();
+        const bool b_on = ui.IsDexedBEnabled();
+        for(size_t i = 0; i < size; i++)
+        {
+            dexed_l[i] = 0.f;
+            dexed_r[i] = 0.f;
+        }
+        if(a_on || b_on)
+        {
+            prof_t      = Prof::Now();
+            bool active = false;
+            bool mono   = true;
+            if(a_on)
+            {
+                active = dexed.Render(size, dexed_l, dexed_r) || active;
+                mono   = mono && dexed.IsCentred();
+            }
+            if(b_on)
+            {
+                active = dexed_b.Render(size, dexed_l, dexed_r) || active;
+                mono   = mono && dexed_b.IsCentred();
+            }
+            dexed_bus.Process(size, dexed_l, dexed_r, mono, active, reverb_send_l, reverb_send_r,
+                              delay_send_l, delay_send_r);
+            prof[Prof::kDexed] = Prof::Now() - prof_t;
+        }
+    }
+
+    // Same for Dexed's own oscilloscope pages (see g_dexed_scope_l's own
+    // comment above) -- captured after the enabled/disabled branch above
+    // either way, so the scope just shows silence while Dexed's off.
+    // Also feeds Screen::Mixer's own Dexed level/clip meter, same signal.
+    for(size_t i = 0; i < size; i++)
+    {
+        g_dexed_scope_l[g_dexed_scope_write_pos] = dexed_l[i];
+        g_dexed_scope_write_pos = (g_dexed_scope_write_pos + 1) % kDexedScopeSamples;
+        UpdateLevelMeter(g_dexed_level, g_dexed_clip_hold, dexed_l[i], sample_rate);
+    }
+
+    // Skipped entirely when disabled from Global:Ensemble -- same real
+    // CPU-saving pattern as ui.IsDexedEnabled() above.
+    if(ui.IsEnsembleEnabled())
+    {
+        prof_t = Prof::Now();
+        ensemble.Process(size, ensemble_l, ensemble_r, reverb_send_l, reverb_send_r,
+                          delay_send_l, delay_send_r);
+        prof[Prof::kEnsemble] = Prof::Now() - prof_t;
+    }
+    else
+    {
+        for(size_t i = 0; i < size; i++)
+        {
+            ensemble_l[i] = 0.f;
+            ensemble_r[i] = 0.f;
+        }
+    }
+
+    // The Organ, the same way. Its own buffers only for the scope below;
+    // it then joins ensemble_l/r, so every mix and capture point after
+    // this carries both without listing the Organ separately. (Each
+    // engine's Mixer meter reads its own pre-limiter level instead.)
+    static float organ_l[256];
+    static float organ_r[256];
+    const bool   organ_on = ui.IsOrganEnabled();
+    if(organ_on)
+    {
+        prof_t = Prof::Now();
+        organ.Process(size, organ_l, organ_r, reverb_send_l, reverb_send_r, delay_send_l,
+                      delay_send_r);
+        prof[Prof::kOrgan] = Prof::Now() - prof_t;
+    }
+
+    // Same for Ensemble's own oscilloscope pages (see g_ensemble_scope_l's
+    // own comment above) -- whichever of Ensemble/Organ those pages are
+    // editing, captured after the enabled/disabled branches either way,
+    // so the scope just shows silence while it's off.
+    const float* scope_src = ui.EnsembleScopeIsOrgan() ? organ_l : ensemble_l;
+    const bool   scope_off = ui.EnsembleScopeIsOrgan() && !organ_on;
+    for(size_t i = 0; i < size; i++)
+    {
+        g_ensemble_scope_l[g_ensemble_scope_write_pos] = scope_off ? 0.f : scope_src[i];
+        g_ensemble_scope_write_pos = (g_ensemble_scope_write_pos + 1) % kEnsembleScopeSamples;
+    }
+    if(organ_on)
+        for(size_t i = 0; i < size; i++)
+        {
+            ensemble_l[i] += organ_l[i];
+            ensemble_r[i] += organ_r[i];
+        }
+
+    // Skipped entirely when disabled from Global:SMPVO/SMPDR -- same
+    // real CPU-saving pattern as ui.IsEnsembleEnabled() above. Voice
+    // and Drum render separately (the scope shows whichever face is
+    // open), then Drum is summed into samp_l/r.
+    static float samp_drum_l[256];
+    static float samp_drum_r[256];
+    const bool smp_voice_on = ui.IsSampleVoiceEnabled();
+    const bool smp_drum_on  = ui.IsSampleDrumEnabled();
+    if(smp_voice_on)
+    {
+        prof_t = Prof::Now();
+        sample_synth.Process(size, samp_l, samp_r, reverb_send_l, reverb_send_r, delay_send_l,
+                              delay_send_r);
+        prof[Prof::kSampler] = Prof::Now() - prof_t;
+    }
+    else
+        for(size_t i = 0; i < size; i++)
+        {
+            samp_l[i] = 0.f;
+            samp_r[i] = 0.f;
+        }
+    if(smp_drum_on)
+    {
+        prof_t = Prof::Now();
+        sample_drum.Process(size, samp_drum_l, samp_drum_r, reverb_send_l, reverb_send_r,
+                             delay_send_l, delay_send_r);
+        prof[Prof::kSmpDrum] = Prof::Now() - prof_t;
+    }
+
+    // Same for the sampler's own oscilloscope pages -- captured either
+    // way, so the scope just shows silence while that engine's off.
+    const bool   smp_scope_drum = ui.SampleScopeIsDrum();
+    const float* smp_scope_src  = smp_scope_drum ? samp_drum_l : samp_l;
+    const bool   smp_scope_on   = smp_scope_drum ? smp_drum_on : smp_voice_on;
+    for(size_t i = 0; i < size; i++)
+    {
+        g_sample_synth_scope_l[g_sample_synth_scope_write_pos] = smp_scope_on ? smp_scope_src[i] : 0.f;
+        g_sample_synth_scope_write_pos
+            = (g_sample_synth_scope_write_pos + 1) % kSampleSynthScopeSamples;
+    }
+    if(smp_drum_on)
+        for(size_t i = 0; i < size; i++)
+        {
+            samp_l[i] += samp_drum_l[i];
+            samp_r[i] += samp_drum_r[i];
+        }
+
+    // SampleSynth's own Direct Record capture -- same shape as Grains'
+    // own g_granular_capturing block below, writing live input plus
+    // every OTHER generated-audio engine (Dexed/Grains/Ensemble, not
+    // SampleSynth's own samp_l/r -- that would be a self-capture
+    // feedback loop, same reasoning as Grains' own capture excluding
+    // gran_l/r).
+    if(g_sample_synth_capturing)
+    {
+        for(size_t i = 0; i < size; i++)
+        {
+            if(g_sample_synth_capture_write_pos >= kSampleSynthCaptureSamples)
+            {
+                g_sample_synth_capturing = false;
+                break;
+            }
+            g_sample_synth_capture_l[g_sample_synth_capture_write_pos]
+                = in[0][i] + dexed_l[i] + gran_l[i] + ensemble_l[i];
+            g_sample_synth_capture_r[g_sample_synth_capture_write_pos]
+                = in[1][i] + dexed_r[i] + gran_r[i] + ensemble_r[i];
+            g_sample_synth_capture_write_pos++;
+        }
+    }
+
+    // Grains' Direct Record capture -- see g_granular_capturing's own
+    // comment above. Writes live input PLUS Dexed's own generated audio
+    // (not Grains' own gran_l/r -- that would be a self-capture feedback
+    // loop, capturing Grains' output back into the very buffer it's
+    // about to grain from) -- same "internally-generated audio should be
+    // capturable, not just a physical patch cable" reasoning as
+    // mixed_in below, just for Grains' own capture buffer instead of a
+    // loop layer.
+    if(g_granular_capturing)
+    {
+        for(size_t i = 0; i < size; i++)
+        {
+            if(g_granular_capture_write_pos >= kGranularCaptureSamples)
+            {
+                g_granular_capturing = false;
+                break;
+            }
+            g_granular_capture_l[g_granular_capture_write_pos]
+                = in[0][i] + dexed_l[i] + ensemble_l[i] + samp_l[i];
+            g_granular_capture_r[g_granular_capture_write_pos]
+                = in[1][i] + dexed_r[i] + ensemble_r[i] + samp_r[i];
+            g_granular_capture_write_pos++;
+        }
+    }
+
+    // Recording input is live input PLUS Grains/Dexed's own generated
+    // audio, summed -- so playing either instrument while a layer is
+    // actively recording captures it together with the live input, same
+    // "always summed, no toggle" decision this project already made
+    // before (Pad/Fm's own equivalent construct, since removed along
+    // with those instruments): a live+synth mix is what someone pressing
+    // record while playing a MIDI keyboard actually wants.
+    static float mixed_in_l[256];
+    static float mixed_in_r[256];
+    for(size_t i = 0; i < size; i++)
+    {
+        mixed_in_l[i] = in[0][i] + gran_l[i] + dexed_l[i] + ensemble_l[i] + samp_l[i];
+        mixed_in_r[i] = in[1][i] + gran_r[i] + dexed_r[i] + ensemble_r[i] + samp_r[i];
+    }
+    const float* const       mixed_ptr_arr[2] = {mixed_in_l, mixed_in_r};
+    AudioHandle::InputBuffer mixed_in         = mixed_ptr_arr;
+
+    // Printing a sequencer track (see Ui::StartSeqPrint()): that layer
+    // records only the engines in the mask -- no live input, no others.
+    // Ensemble/Organ and SMPVO/SMPDR were summed into one buffer each
+    // above, so the other half is taken back out; DXD-A and DXD-B share
+    // one bus, so either bit prints both.
+    const int      print_layer = ui.GetSeqPrintLayer();
+    const uint32_t print_mask  = ui.GetSeqPrintMask();
+    static float   print_in_l[256];
+    static float   print_in_r[256];
+    const float* const       print_ptr_arr[2] = {print_in_l, print_in_r};
+    AudioHandle::InputBuffer print_in         = print_ptr_arr;
+    if(print_layer >= 0)
+    {
+        auto bit = [print_mask](int e) { return (print_mask & (1u << e)) != 0; };
+        const bool dx  = bit(MidiSequencer::kDexedA) || bit(MidiSequencer::kDexedB);
+        const bool ens = bit(MidiSequencer::kEnsemble), org = bit(MidiSequencer::kOrgan) && organ_on;
+        const bool smv = bit(MidiSequencer::kSmpvo), smd = bit(MidiSequencer::kSmpdr) && smp_drum_on;
+        for(size_t i = 0; i < size; i++)
+        {
+            float l = 0.f, r = 0.f;
+            if(bit(MidiSequencer::kGrains))
+            {
+                l += gran_l[i];
+                r += gran_r[i];
+            }
+            if(dx)
+            {
+                l += dexed_l[i];
+                r += dexed_r[i];
+            }
+            if(ens) // ensemble_l holds the Organ too, when it's on
+            {
+                l += ensemble_l[i] - (organ_on ? organ_l[i] : 0.f);
+                r += ensemble_r[i] - (organ_on ? organ_r[i] : 0.f);
+            }
+            if(org)
+            {
+                l += organ_l[i];
+                r += organ_r[i];
+            }
+            if(smv) // samp_l holds SMPDR too, when it's on
+            {
+                l += samp_l[i] - (smp_drum_on ? samp_drum_l[i] : 0.f);
+                r += samp_r[i] - (smp_drum_on ? samp_drum_r[i] : 0.f);
+            }
+            if(smd)
+            {
+                l += samp_drum_l[i];
+                r += samp_drum_r[i];
+            }
+            print_in_l[i] = l;
+            print_in_r[i] = r;
+        }
+    }
+
+    // Each layer mixes its own dry signal directly into out[], and adds
+    // its Reverb Send contribution into reverb_send_l/r (see above --
+    // the actual shared ReverbSc runs once per sample further down).
+    //
+    // Skipped entirely when disabled from Global:Looper -- a real stop,
+    // not a layer's own phase-locked pause: no layer's Process()
+    // runs at all (no recording, no playback, no reverb-send
+    // contribution), same "skip the call outright" CPU-saving pattern as
+    // ui.IsGranularEnabled() above.
+    prof_t = Prof::Now();
+    if(looper_enabled)
+    {
+        float* reverb_send_ptrs[2] = {reverb_send_l, reverb_send_r};
+        float* delay_send_ptrs[2]  = {delay_send_l, delay_send_r};
+        for(int L = 0; L < kNumLayers; L++)
+        {
+            LayerState st = layers[L].GetState();
+            bool       is_recording_ish = st == LayerState::Recording
+                                           || st == LayerState::Overdubbing
+                                           || st == LayerState::ArmedCountIn
+                                           || st == LayerState::ArmedOverdubCountIn;
+            AudioHandle::InputBuffer layer_in
+                = !is_recording_ish ? in : L == print_layer ? print_in : mixed_in;
+            layers[L].Process(layer_in, out, reverb_send_ptrs, delay_send_ptrs, size, ticks,
+                               tempo, project_speed);
+        }
+    }
+    prof[Prof::kLooper] = Prof::Now() - prof_t;
+
+    // Grains' own dry signal into the master mix -- unconditional, same
+    // position (before the shared reverb Process() call and the master
+    // filter) so it applies equally alongside the loops. (Disabled above
+    // already zeroed gran_l/r, so this add is a harmless no-op rather
+    // than needing its own separate mute.)
+    for(size_t i = 0; i < size; i++)
+    {
+        out[0][i] += gran_l[i] + dexed_l[i] + ensemble_l[i] + samp_l[i];
+        out[1][i] += gran_r[i] + dexed_r[i] + ensemble_r[i] + samp_r[i];
+    }
+
+    const float mv           = ui.GetMasterVolume();
+    const bool  byp          = ui.IsBypassed();
+    const float bypass_gain  = ui.GetBypassGain();
+    const float bypass_reverb_send01 = ui.GetBypassReverbSend01();
+    const float bypass_delay_send01  = ui.GetBypassDelaySend01();
+    // Screen::Mixer's own Bypass channel -- multiplies on top of
+    // bypass_gain above (see Ui::GetBypassMixVolume01()'s own comment for
+    // why these are two separate controls), plus a genuine Pan, applied
+    // to both the dry monitor mix and its reverb send below (same "pan
+    // affects the send too" treatment LooperLayer::Process() already
+    // uses for every loop layer).
+    const float bypass_mix_volume = ui.GetBypassMixVolume();
+    const float bypass_pan01      = ui.GetBypassPan01();
+    float bypass_pan_l, bypass_pan_r;
+    EqualPowerPan(bypass_pan01, &bypass_pan_l, &bypass_pan_r); // see pan_law.h
+    const FilterMode mfilt_mode = ui.GetMasterFilterMode();
+
+    // Block-rate controls (matches LooperLayer's own per-layer filter
+    // curve -- kFilterMinHz/kFilterMaxHz in looper_layer.h -- so the
+    // master filter feels consistent with the per-layer ones).
+    float mfilt_cutoff
+        = kFilterMinHz * powf(kFilterMaxHz / kFilterMinHz, ui.GetMasterFilterCutoff01());
+    float nyquist_guard = hw.AudioSampleRate() / 3.f - 1.f;
+    mfilt_cutoff = mfilt_cutoff < kFilterMinHz ? kFilterMinHz
+                   : mfilt_cutoff > nyquist_guard ? nyquist_guard
+                                                   : mfilt_cutoff;
+    float mfilt_res = ui.GetMasterFilterResonance01() * 0.9f;
+    fx_master_filter_l.SetFreq(mfilt_cutoff);
+    fx_master_filter_l.SetRes(mfilt_res);
+    fx_master_filter_r.SetFreq(mfilt_cutoff);
+    fx_master_filter_r.SetRes(mfilt_res);
+
+    // Shared reverb's Size/decay -- one Global:Reverb setting (see
+    // Ui::GetReverbSize01()) applied to the single shared instance,
+    // replacing what used to be an independent SetFeedback() per layer.
+    // "Size" is the direct continuation of this same knob/field; it maps
+    // straight onto the Dattorro engine's own Decay parameter.
+    fx_reverb_shared.SetDecay01(ui.GetReverbSize01());
+    // The other 6 DattorroReverb parameters -- Global:Reverb Tone/
+    // Diffusion (see Ui::GetReverbPreDelay01() and friends).
+    fx_reverb_shared.SetPreDelay01(ui.GetReverbPreDelay01());
+    fx_reverb_shared.SetPreFilter01(ui.GetReverbPreFilter01());
+    fx_reverb_shared.SetInputDiffusion1_01(ui.GetReverbInputDiffusion1_01());
+    fx_reverb_shared.SetInputDiffusion2_01(ui.GetReverbInputDiffusion2_01());
+    fx_reverb_shared.SetDecayDiffusion01(ui.GetReverbDecayDiffusion01());
+    fx_reverb_shared.SetDamping01(ui.GetReverbDamping01());
+
+    // Shared delay's settings -- same "Global setting drives the single
+    // shared instance" pattern as the reverb above. See SharedDelay for
+    // the Time curve, Sync, Ping-Pong and Tone.
+    fx_delay.Configure(ui.GetDelaySettings(), tempo.GetBpm(), hw.AudioSampleRate());
+    // How much of the delay's output also feeds the reverb (Global:Dly-Rev)
+    // -- so echoes sit in the same space as the dry sound.
+    const float delay_to_reverb01 = ui.GetDelayToReverb01();
+
+    // Both busses otherwise run their full fixed per-sample cost
+    // unconditionally regardless of input level or decay/feedback
+    // settings (confirmed on hardware: Reverb Size/Decay only scales a
+    // feedback coefficient, never changes how much work Process() does)
+    // -- a real, measured chunk of CPU even with every engine disabled
+    // and nothing feeding either bus. Size/Time at their own lowest
+    // reachable knob position now skips the real algorithm entirely
+    // instead of running it on near-silent input. Known trade-off for
+    // delay specifically: dropping Time to 0 while a long Feedback tail
+    // is still ringing freezes that tail rather than fading it out --
+    // accepted deliberately, same spirit as Reverb Size already losing
+    // its own initial diffusion "splash" at Decay 0 (inaudible there
+    // since zero decay already kills the tail almost immediately).
+    // A real pot (Ui::ApplyKnobs()'s raw_k1/raw_k2) almost never settles
+    // on an exact 0.0f at its physical end-stop -- ADC noise, the pot's
+    // own tolerance, and the existing drift deadband all mean the real
+    // value can easily sit at e.g. 0.002 while still rounding to the
+    // "0%" the screen shows (that rounding is `(int)(v*100+0.5)`, which
+    // is 0 for any v < 0.005). A strict `<= 0.f` check would almost
+    // never fire in practice, bypassing nothing despite the screen
+    // reading 0% -- matching that same display-rounding threshold here
+    // instead keeps "shows 0% on screen" and "is actually bypassed"
+    // perfectly in sync.
+    const bool reverb_bypassed = ui.GetReverbSize01() < 0.005f;
+    const bool delay_bypassed  = SharedDelay::IsOff(ui.GetDelaySettings().time01);
+
+    for(size_t i = 0; i < size; i++)
+    {
+        // Bypass's own Send into the shared reverb bus -- independent of
+        // every layer's own Send, same bus though. Must happen BEFORE
+        // the Process() call right below, which is what actually
+        // consumes reverb_send_l/r for this sample. Same bypass_gain/
+        // mix-volume-scaled, L+R-summed-to-mono treatment as the dry
+        // bypass mix further down (see its own comment for why mono),
+        // now also panned the same way -- same "pan affects the send
+        // too" treatment LooperLayer::Process() uses for every layer.
+        if(byp && bypass_reverb_send01 > 0.f)
+        {
+            float byp_mono_base = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume;
+            reverb_send_l[i] += byp_mono_base * bypass_pan_l * bypass_reverb_send01;
+            reverb_send_r[i] += byp_mono_base * bypass_pan_r * bypass_reverb_send01;
+        }
+        // Same for Bypass's own Delay Send (Global:Bypass, B2) -- before
+        // the delay reads delay_send_l/r for this sample further down.
+        if(byp && bypass_delay_send01 > 0.f)
+        {
+            float byp_mono_base = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume;
+            delay_send_l[i] += byp_mono_base * bypass_pan_l * bypass_delay_send01;
+            delay_send_r[i] += byp_mono_base * bypass_pan_r * bypass_delay_send01;
+        }
+
+        // Shared delay first, so its echoes can also feed the reverb
+        // below (Global:Dly-Rev). Skipped entirely at Time 0 -- see
+        // delay_bypassed's own comment above.
+        if(!delay_bypassed)
+        {
+            float delay_wet_l, delay_wet_r;
+            uint32_t t0 = Prof::Now();
+            fx_delay.Process(delay_send_l[i], delay_send_r[i], &delay_wet_l, &delay_wet_r);
+            prof[Prof::kDelay] += Prof::Now() - t0;
+            out[0][i] += delay_wet_l;
+            out[1][i] += delay_wet_r;
+            reverb_send_l[i] += delay_wet_l * delay_to_reverb01;
+            reverb_send_r[i] += delay_wet_r * delay_to_reverb01;
+        }
+
+        // Shared reverb: process the summed sends once per sample and
+        // mix the wet result into out[] -- BEFORE bypass/master filter/
+        // click, same position this used to be added in when it ran
+        // per-layer inside LooperLayer::Process() itself. Skipped
+        // entirely at Size 0 -- see reverb_bypassed's own comment above.
+        if(!reverb_bypassed)
+        {
+            float rev_wet_l, rev_wet_r;
+            uint32_t t0 = Prof::Now();
+            fx_reverb_shared.Process(reverb_send_l[i], reverb_send_r[i], &rev_wet_l,
+                                       &rev_wet_r);
+            prof[Prof::kReverb] += Prof::Now() - t0;
+            out[0][i] += rev_wet_l;
+            out[1][i] += rev_wet_r;
+        }
+
+        if(byp)
+        {
+            // Digital "wet monitor" mix -- the original's analog bypass
+            // relay had no equivalent DSP path to hook into on the Pod,
+            // so this mixes a dry copy of the live input straight into
+            // the output bus, same idea (hear your loops AND your live
+            // input) implemented in software. See DESIGN.md. Scaled by
+            // the selected layer's input gain so a quiet source (e.g. a
+            // guitar with no preamp) is actually audible here too, not
+            // just once it's recorded.
+            //
+            // Summed to mono (both input channels added together, sent
+            // to both outputs) rather than kept as independent L/R --
+            // the Pod has one physical input jack (a stereo TRS), and a
+            // plain mono guitar cable plugged into it only excites ONE
+            // of the two ADC channels (the other gets shorted to ground
+            // by the missing ring contact), so a straight per-channel
+            // passthrough left that signal audible on only one output
+            // side. This only affects the bypass *monitor* -- recording
+            // still captures each ADC channel independently (see
+            // LooperLayer::Process()'s mic_in/guitar_in), so a genuinely
+            // stereo source still records in true stereo.
+            //
+            // Also scaled by Screen::Mixer's own Bypass Volume and panned
+            // (bypass_mix_volume/bypass_pan_l/r above) -- panning this
+            // mono signal spreads it across the stereo field same as any
+            // other mixer channel, same linear law as everything else.
+            float byp_mono = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume;
+            out[0][i] += byp_mono * bypass_pan_l;
+            out[1][i] += byp_mono * bypass_pan_r;
+            UpdateLevelMeter(g_bypass_level, g_bypass_clip_hold, byp_mono, sample_rate);
+            g_bypass_scope_l[g_bypass_scope_write_pos] = byp_mono;
+            g_bypass_scope_write_pos = (g_bypass_scope_write_pos + 1) % kBypassScopeSamples;
+        }
+        else
+        {
+            // No live bypass signal at all while off -- decay the meter
+            // toward silence instead of leaving it holding a stale
+            // reading, same release rate UpdateLevelMeter() uses (not a
+            // separate, much-faster ad hoc decay).
+            g_bypass_level -= g_bypass_level * (1.f / (kMeterReleaseSeconds * sample_rate));
+            if(g_bypass_clip_hold > 0.f)
+                g_bypass_clip_hold -= 1.f / sample_rate;
+            g_bypass_scope_l[g_bypass_scope_write_pos] = 0.f;
+            g_bypass_scope_write_pos = (g_bypass_scope_write_pos + 1) % kBypassScopeSamples;
+        }
+
+        // Master filter -- applied to the full mix (all layers, their
+        // reverb, and the bypass monitor) but deliberately AFTER this
+        // point so the metronome click below stays unfiltered and
+        // stays clearly audible regardless of the filter setting.
+        if(mfilt_mode != FilterMode::Off)
+        {
+            fx_master_filter_l.Process(out[0][i]);
+            fx_master_filter_r.Process(out[1][i]);
+            switch(mfilt_mode)
+            {
+                case FilterMode::LowPass:
+                    out[0][i] = fx_master_filter_l.Low();
+                    out[1][i] = fx_master_filter_r.Low();
+                    break;
+                case FilterMode::HighPass:
+                    out[0][i] = fx_master_filter_l.High();
+                    out[1][i] = fx_master_filter_r.High();
+                    break;
+                case FilterMode::BandPass:
+                    out[0][i] = fx_master_filter_l.Band();
+                    out[1][i] = fx_master_filter_r.Band();
+                    break;
+                default: break;
+            }
+        }
+
+        // A live export takes the mix before the metronome's click.
+        const float live_l = out[0][i] * mv, live_r = out[1][i] * mv;
+        out[0][i] = (out[0][i] + click[i]) * mv;
+        out[1][i] = (out[1][i] + click[i]) * mv;
+
+        // Screen::Mixer's own oscilloscope -- the actual final signal,
+        // captured last, same "write every block, wrap" pattern as
+        // g_pad_scope_l/g_granular_scope_l above. Also feeds the Master
+        // channel's own level/clip meter on the same page.
+        // Master meter reads BEFORE the limiter, so its clip light shows
+        // when the limiter below is working hard.
+        UpdateLevelMeter(g_master_level, g_master_clip_hold, out[0][i], sample_rate);
+        out[0][i] = MasterSoftLimit(out[0][i]);
+        out[1][i] = MasterSoftLimit(out[1][i]);
+        g_master_scope_l[g_master_scope_write_pos] = out[0][i];
+        g_master_scope_write_pos = (g_master_scope_write_pos + 1) % kMasterScopeSamples;
+
+        if(live_watch)
+        {
+            LiveExport& lx = g_live_export;
+            if(live_wrap[i])
+            {
+                if(lx.state == LiveExport::kArmed)
+                {
+                    lx.state      = LiveExport::kRecording;
+                    lx.loops_done = 0;
+                }
+                else if(lx.state == LiveExport::kRecording && !lx.song
+                        && (lx.loops_done = lx.loops_done + 1) >= lx.loops_target)
+                    lx.state = LiveExport::kDone;
+            }
+            if(lx.state == LiveExport::kRecording)
+            {
+                if(lx.frames < lx.Capacity())
+                {
+                    auto pcm = [](float v) {
+                        v = MasterSoftLimit(v);
+                        v = v > 1.f ? 1.f : (v < -1.f ? -1.f : v);
+                        return (int16_t)(v * 32767.f);
+                    };
+                    const uint32_t f = lx.frames;
+                    int16_t* dst = lx.seg[f / lx.seg_frames] + (f % lx.seg_frames) * 2;
+                    dst[0]       = pcm(live_l);
+                    dst[1]       = pcm(live_r);
+                    lx.frames    = f + 1;
+                    if(lx.song && f + 1 + LiveExport::kFlushMargin >= lx.Capacity())
+                        lx.flush_req = true;
+                }
+                else
+                {
+                    lx.full  = true; // out of memory: keep what's there
+                    lx.state = LiveExport::kDone;
+                }
+            }
+        }
+    }
+
+    const bool mute_out = g_live_export.mute; // a song export: silent while it records
+    for(size_t i = 0; i < size; i++)
+    {
+        out_hw[0][i] = mute_out ? 0.f : g_fast_out[0][i];
+        out_hw[1][i] = mute_out ? 0.f : g_fast_out[1][i];
+    }
+    Prof::EndBlock(prof, Prof::Now() - prof_start, size, sample_rate);
+    FinishCpuMeterBlock(size, sample_rate);
+}
+
+// Linker-provided symbols from STM32H750IB_qspi_custom.lds -- .itcm_text
+// has a load address (LMA) in QSPIFLASH and a run address (VMA) in
+// ITCMRAM, same relationship .data already has between QSPIFLASH and
+// SRAM. The stock startup code's own copy-down loop only knows about
+// .data's symbols, not this new section, so nothing copies these bytes
+// into ITCM without this -- ITCM has no power-on contents of its own
+// (same "not zero/not anything in particular at boot" issue this
+// project already hit with .sdram_bss, except this is executable code,
+// not data, so the CPU would execute whatever garbage was already
+// sitting there instead of just misbehaving numerically).
+extern uint8_t _sitcm_text[];
+extern uint8_t _eitcm_text[];
+extern uint8_t _siitcm_text[];
+
+int main(void)
+{
+    // Must run before anything DSY_ITCM_TEXT-tagged is ever called --
+    // in practice that's hw.StartAudio(AudioCallback) further down, but
+    // this sits right at the top of main() for the widest possible
+    // safety margin.
+    memcpy(_sitcm_text, _siitcm_text, (size_t)(_eitcm_text - _sitcm_text));
+
+    // Flush-to-zero: without this, the FPU can fall back to slow
+    // microcoded handling for denormalized floats -- and a feedback
+    // network decaying toward silence (the shared reverb's tail, the
+    // shared delay's repeats, every layer's own fade-outs) is exactly
+    // the signal shape that produces them, on every single use. No
+    // audible cost: denormals are values near 1e-38 and smaller.
+    // __set_FPSCR takes effect immediately for the foreground context;
+    // FPU->FPDSCR is the DEFAULT status word a lazily-saved FPU context
+    // gets restored to after an interrupt, so that path doesn't quietly
+    // come back without it. Same "as early as possible" placement as
+    // the ITCM copy just above -- before any floating-point code (which
+    // is effectively everything past this point) ever runs.
+    __set_FPSCR(__get_FPSCR() | FPU_FPDSCR_FZ_Msk);
+    FPU->FPDSCR |= FPU_FPDSCR_FZ_Msk;
+
+    // true = libDaisy's "boost": the core at 480 MHz instead of its
+    // default 400 MHz -- 20% more headroom for the audio callback. Every
+    // rev V Daisy Seed (anything from the last few years) is rated for
+    // it; libDaisy re-derives the bus and peripheral clocks to match.
+    hw.Init(true);
+    // The scope rings live in SDRAM, which isn't zeroed at boot -- clear
+    // them so the first screens don't show leftover noise.
+    memset(g_granular_scope_l, 0, sizeof(g_granular_scope_l));
+    memset(g_dexed_scope_l, 0, sizeof(g_dexed_scope_l));
+    memset(g_ensemble_scope_l, 0, sizeof(g_ensemble_scope_l));
+    memset(g_sample_synth_scope_l, 0, sizeof(g_sample_synth_scope_l));
+    memset(g_bypass_scope_l, 0, sizeof(g_bypass_scope_l));
+    memset(g_master_scope_l, 0, sizeof(g_master_scope_l));
+
+    // hw.Init() -> InitMidi() claims D13 as MIDI UART TX via
+    // MidiUartHandler::Config's default-constructed transport_config --
+    // the exact same physical pin as the encoder's click button (see
+    // daisy_pod.cpp's ENC_CLICK_PIN). The Pod's actual MIDI IN jack only
+    // ever wires up D14/RX per Electrosmith's own pinout diagram, so that
+    // TX claim is never usable here regardless -- re-init with TX
+    // disabled (Pin(PORTX, 0), the standard "don't claim this pin"
+    // sentinel) and re-init the encoder afterward to reclaim D13, rather
+    // than relying on TX simply never being driven.
+    {
+        MidiUartHandler::Config midi_config;
+        midi_config.transport_config.tx = Pin(PORTX, 0);
+        hw.midi.Init(midi_config);
+        hw.encoder.Init(seed::D26, seed::D25, seed::D13);
+    }
+    hw.midi.StartReceive();
+
+    // 64, not 48 -- exactly matches msfa's own fixed 64-sample
+    // rendering quantum (_N_ in msfa/synth.h), so DexedSynth::Process()'s
+    // staging buffer (stage_f_/stage_pos_) never carries an irregular
+    // leftover between calls the way 48 did (LCM(48,64)=192 -- a messy
+    // relationship). compute()'s own real cost is unchanged either way
+    // (750 calls/sec, tied to the quantum, not the outer block), traded
+    // for ~0.33ms more latency per block (1.333ms vs 1ms) -- but the
+    // real-world saving turned out bigger than that bookkeeping-cleanup
+    // framing alone predicted: a controlled same-content A/B (identical
+    // performance/sounds, only this value changed) measured 94% peak
+    // CPU at 48 vs 84% at 64, confirmed on hardware, not just fewer ISR
+    // entries on paper.
+    hw.SetAudioBlockSize(64);
+    // SetAudioBlockSize() above just called SetHidUpdateRates()
+    // internally, which reconfigures knob1/knob2's own smoothing-filter
+    // time constant from AudioCallbackRate() (sample_rate/block_size --
+    // now 750Hz). That's the WRONG rate for this project: knobs are
+    // actually always processed at a fixed, real 1kHz from
+    // ControlTimerCallback() (TIM5, see its own comment below),
+    // completely independent of the audio block size -- the two numbers
+    // only matched before by coincidence (1000Hz block-implied rate ==
+    // 1000Hz real poll rate at the old block size of 48). Left alone,
+    // this would silently make every knob read slightly less smoothed/
+    // twitchier than intended, for a reason that has nothing to do with
+    // the Dexed-alignment goal above -- re-assert the real rate
+    // explicitly instead of trusting what the library just computed.
+    hw.knob1.SetSampleRate(1000.f);
+    hw.knob2.SetSampleRate(1000.f);
+
+    tempo.Init(hw.AudioSampleRate());
+
+    // See audio_engine.h's own comment on g_cpu_avg_load/g_cpu_peak_load.
+    // Default 1Hz smoothing cutoff (CpuLoadMeter's own default) is fine
+    // for both -- the peak instance's own periodic Reset() (see
+    // kCpuPeakResetSeconds in AudioCallback()) is what actually keeps
+    // its reading current, not a faster smoothing filter.
+    // hw.AudioBlockSize() (the real, currently-configured value), not a
+    // literal -- CpuLoadMeter::Init() needs the actual block size to
+    // know how much real time counts as "100% load" per block
+    // (secPerBlock = blockSize/sampleRate internally); a stale literal
+    // here silently miscalibrates every reading by whatever ratio the
+    // real block size has since changed to (this exact bug, caught
+    // after the 48->64 block size change: both calls still said `48`,
+    // inflating every reading by 64/48 =~1.33x -- a measurement error,
+    // not an actual CPU increase).
+    g_cpu_meter_avg.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
+    Prof::Init(); // per-stage cycle counts for Global:Mixer's profile view
+    g_cpu_meter_peak.Init(hw.AudioSampleRate(), hw.AudioBlockSize());
+
+    for(int i = 0; i < kNumLayers; i++)
+        layers[i].Init(buffer_l[i], buffer_r[i], kBuffSize, hw.AudioSampleRate(),
+                       g_undo_backup_l, g_undo_backup_r);
+
+    fx_master_filter_l.Init(hw.AudioSampleRate());
+    fx_master_filter_r.Init(hw.AudioSampleRate());
+
+    granular.Init(hw.AudioSampleRate());
+    granular.SetSourceShadow(g_granular_shadow, kGranularCaptureSamples);
+    dexed_bus.Init(hw.AudioSampleRate());
+    dexed.SetBus(&dexed_bus);
+    dexed_b.SetBus(&dexed_bus);
+    dexed.Init(hw.AudioSampleRate());
+    dexed_b.Init(hw.AudioSampleRate());
+    memset(g_dexed_sent, -1, sizeof(g_dexed_sent));
+    ensemble.Init(hw.AudioSampleRate());
+    organ.SetOrgan(true); // before Init(), which builds its wave
+    organ.Init(hw.AudioSampleRate());
+    sample_synth.Init(hw.AudioSampleRate());
+    sample_drum.Init(hw.AudioSampleRate());
+    sequencer.Init(&SeqNote, g_seq_patterns);
+    g_arp.Init(&ArpNote);
+    memset(g_seq_live_engine, -1, sizeof(g_seq_live_engine));
+    memset(g_seq_live_track, -1, sizeof(g_seq_live_track));
+
+    // The Stage-1 diagnostic overrides that used to force max Fill/zero
+    // Gap/an always-on Scan sweep (needed back when there were no real
+    // knobs to test with) are gone now that the Grain page is fully
+    // built -- the class's own defaults (Fill=2/3, Gap=0.1, Scan off)
+    // apply at boot instead, same as every other engine's own hardcoded
+    // defaults. Also meaningfully cheaper at rest: max Fill was forcing
+    // the densest, most CPU-expensive grain scheduling as the permanent
+    // starting state every boot, not just as something the Fill knob
+    // could reach if asked for.
+
+    // No manual zero needed here any more -- fx_reverb_shared AND
+    // fx_reverb_storage (see its own declaration comment: moved out of
+    // SDRAM into plain SRAM to test whether SDRAM's own per-access
+    // latency was the reverb's dominant CPU cost) are both plain .bss
+    // now, already zero at boot. Contrast fx_delay's own Init()
+    // just below -- those are still real .sdram_bss objects, which
+    // (per libDaisy's own sdram.h, confirmed against the linker
+    // script/startup code) start out holding raw leftover SDRAM
+    // contents, not zero, since only ordinary .bss gets zero-filled at
+    // boot.
+    fx_reverb_shared.Init(hw.AudioSampleRate(), fx_reverb_storage);
+    // Init() itself seeds every parameter (PreDelay, PreFilter, both Input
+    // Diffusions, DecayDiffusion, Damping) to the original library's own
+    // tuned defaults -- nothing else to set here. Decay itself (the one
+    // parameter that WAS already user-facing as "Size") is applied every
+    // block in AudioCallback() from Ui::GetReverbSize01() (see there), same
+    // live-update pattern as the master filter's cutoff/res just above.
+
+    // SDRAM isn't zeroed at boot -- Bus::Init() clears all of it first.
+    fx_delay.Init();
+
+    // I2C1 defaults already target the Pod's header pins (D11=SCL,
+    // D12=SDA) and address 0x3C -- most cheap SSD1306/SSD1309 modules
+    // need no further configuration. If your module replies on 0x3D
+    // instead, uncomment the line below.
+    MyDisplay::Config disp_cfg;
+    // disp_cfg.driver_config.transport_config.i2c_address = 0x3D;
+
+    // libDaisy's SSD130x transport defaults to 1MHz I2C (Fast Mode Plus).
+    // That's aggressive for typical cheap OLED breakout pull-ups/header
+    // wiring, and this driver has no bus-recovery: SendData() blocks
+    // byte-by-byte with a 1s timeout each, so one glitched byte in a
+    // 1024-byte frame can stall the *entire* main loop -- which is also
+    // where the encoder/buttons/pot get read -- for up to ~17 minutes.
+    // 400kHz is far more forgiving and still plenty fast for this display.
+    disp_cfg.driver_config.transport_config.i2c_config.speed
+        = daisy::I2CHandle::Config::Speed::I2C_400KHZ;
+    display.Init(disp_cfg);
+    Ui::DrawSplash(&display); // up until Ui::Update() takes it down
+    ui.SetDisplayCommand(&PodOledDriver::Command);
+
+    PerformanceStore::Init(); // mounts the SD card if one is present
+
+    ui.Init(&hw, &display, &tempo, layers, kNumLayers, &granular, g_granular_scope_l,
+            kGranularScopeSamples, g_granular_capture_l, g_granular_capture_r,
+            kGranularCaptureSamples, &g_granular_capturing, &g_granular_capture_write_pos,
+            g_master_scope_l, kMasterScopeSamples, g_dexed_scope_l, kDexedScopeSamples,
+            &dexed, &dexed_b, &ensemble, &organ, g_ensemble_scope_l, kEnsembleScopeSamples,
+            &sample_synth, &sample_drum, g_sample_synth_scope_l, kSampleSynthScopeSamples,
+            g_bypass_scope_l, kBypassScopeSamples,
+            &g_sample_synth_arena[0][0], kSampleSynthArenaSamples,
+            g_sample_synth_capture_l, g_sample_synth_capture_r, kSampleSynthCaptureSamples,
+            &g_sample_synth_capturing, &g_sample_synth_capture_write_pos, g_undo_backup_l,
+            g_undo_backup_r, &g_undo_owner_layer,
+            &g_undo_backup_len);
+    ui.SetSequencer(&sequencer);
+    ui.SetArpeggiator(&g_arp);
+    // Each float of an undo buffer holds one 16-bit stereo frame.
+    g_live_export.seg[0]     = reinterpret_cast<int16_t*>(g_undo_backup_l);
+    g_live_export.seg[1]     = reinterpret_cast<int16_t*>(g_undo_backup_r);
+    g_live_export.seg_frames = kBuffSize;
+    ui.SetLiveExport(&g_live_export);
+    ui.ApplyStartupDefaults(); // no-op if nothing's been saved yet (see PerformanceStore::LoadPrefs())
+
+    // Hardware PWM setup for LED1-Green/LED1-Blue/LED2-Red -- see
+    // led_pwm_tim3's own comment above for which pins/why only these 3.
+    // Must run after hw.Init() (already happened, above) since
+    // DaisyPod::InitLeds() configures D17/D18/D19 as plain GPIO outputs;
+    // this reconfigures those same 3 pins to the timer's own alternate
+    // function, superseding that -- the corresponding daisy::Led
+    // sub-objects inside pod_->led1/led2 are simply never Update()'d
+    // again (Ui::UpdateLeds() no longer calls pod_->UpdateLeds() at all).
+    {
+        daisy::PWMHandle::Config pwm_cfg;
+        pwm_cfg.periph = daisy::PWMHandle::Config::Peripheral::TIM_3;
+        pwm_cfg.period = 0xff; // 8-bit duty resolution, plenty for a flat on/off level
+        led_pwm_tim3.Init(pwm_cfg);
+
+        // All 3 need Polarity::LOW: this Pod's RGB LEDs are wired
+        // active-low (see DaisyPod::InitLeds()'s own led1/led2.Init(...,
+        // /*invert=*/true) call) -- PWMHandle's own default is
+        // Polarity::HIGH ("pin high during the active/on fraction"),
+        // which on an active-low LED drives it ON during the fraction
+        // meant to be OFF and vice versa. Confirmed as a real bug on
+        // hardware: at the default polarity, Set(0.0) ("off") held the
+        // pin low 100% of the time, which an active-low LED reads as
+        // fully ON, permanently.
+        //
+        // Channel 1 (LED1-Green, D19/PA6) and Channel 4 (LED2-Red,
+        // D17/PB1) both default to exactly the pin we want -- only the
+        // polarity needs overriding, not the pin.
+        daisy::PWMHandle::Channel::Config ch1_cfg;
+        ch1_cfg.polarity = daisy::PWMHandle::Channel::Config::Polarity::LOW;
+        led_pwm_tim3.Channel1().Init(ch1_cfg);
+
+        daisy::PWMHandle::Channel::Config ch4_cfg;
+        ch4_cfg.polarity = daisy::PWMHandle::Channel::Config::Polarity::LOW;
+        led_pwm_tim3.Channel4().Init(ch4_cfg);
+
+        // Channel 2 defaults to PC7 (the Seed's own onboard LED) --
+        // must override the pin to PA7/D18 (LED1-Blue) too.
+        daisy::PWMHandle::Channel::Config ch2_cfg;
+        ch2_cfg.pin      = seed::D18;
+        ch2_cfg.polarity = daisy::PWMHandle::Channel::Config::Polarity::LOW;
+        led_pwm_tim3.Channel2().Init(ch2_cfg);
+
+        ui.SetLedPwmChannels(&led_pwm_tim3.Channel1(), &led_pwm_tim3.Channel2(),
+                              &led_pwm_tim3.Channel4());
+    }
+
+    hw.StartAdc();
+    hw.StartAudio(AudioCallback);
+
+    // Drive control polling from TIM5 at 1kHz -- matches Encoder/Switch's
+    // own internal 1kHz debounce rate cap, so nothing is gained by going
+    // faster. TIM2 is off-limits (used internally by System for
+    // sub-millisecond timing); TIM5 is otherwise unused here. See
+    // ControlTimerCallback() above and ui.h's UiControlEvents comment for
+    // why this can't just be a call in the while(1) loop below.
+    TimerHandle::Config tim_cfg;
+    tim_cfg.periph     = TimerHandle::Config::Peripheral::TIM_5;
+    tim_cfg.enable_irq = true;
+    tim_cfg.period     = System::GetPClk2Freq() / 1000;
+    control_timer.Init(tim_cfg);
+    control_timer.SetCallback(ControlTimerCallback);
+    control_timer.Start();
+
+    // Main loop's own "last seen" checkpoints for the ISR's monotonic
+    // counters, used to build each iteration's UiControlEvents delta.
+    int32_t  last_encoder_pos         = 0;
+    uint32_t last_encoder_click_falls = 0;
+    uint32_t last_btn1_releases       = 0;
+    uint32_t last_btn2_releases       = 0;
+
+    // The Daisy Seed's own onboard LED stays lit from boot -- leave it as a
+    // "just powered up" sign for 10 seconds, then switch it off.
+    bool seed_led_off = false;
+
+    for(;;)
+    {
+        if(!seed_led_off && System::GetNow() > 10000)
+        {
+            hw.seed.SetLed(false);
+            seed_led_off = true;
+        }
+        UiControlEvents events;
+        events.encoder_delta      = g_encoder_pos - last_encoder_pos;
+        events.encoder_click_fell = g_encoder_click_falls != last_encoder_click_falls;
+        // One button release per pass: two quick taps that both land while
+        // a pass is busy (e.g. B2 to open a folder, B2 again to load) used
+        // to merge into a single event, so the second tap did nothing. The
+        // extra release now waits for the next pass instead.
+        events.btn1_released      = g_btn1_releases != last_btn1_releases;
+        events.btn2_released      = g_btn2_releases != last_btn2_releases;
+        events.btn1_held_ms       = g_btn1_held_ms;
+        events.btn2_held_ms       = g_btn2_held_ms;
+        last_encoder_pos          = g_encoder_pos;
+        last_encoder_click_falls  = g_encoder_click_falls;
+        if(events.btn1_released)
+            last_btn1_releases++;
+        if(events.btn2_released)
+            last_btn2_releases++;
+
+        // MIDI is polled from ControlTimerCallback() (TIM5 ISR) now, not
+        // here -- see its own comment for why.
+
+        // Claim Undo-backup ownership -- the real copy already happened
+        // inside LooperLayer::Process() itself, spread across the
+        // overdub's own count-in (see ConsumeOverdubSnapshotRequest()'s
+        // own comment for why: a main-loop-deferred bulk copy, like this
+        // used to be, could race real overdub audio already landing in
+        // the buffer). This is just cheap bookkeeping -- which layer's
+        // backup is now valid -- safe to leave at the main loop's own
+        // pace since it's no longer time-critical.
+        for(int L = 0; L < kNumLayers; L++)
+        {
+            if(!layers[L].ConsumeOverdubSnapshotRequest())
+                continue;
+            if(LooperLayer::IsUndoBackupBlocked())
+                continue; // a live export has the buffer -- nothing was copied
+            g_undo_owner_layer = L;
+            g_undo_backup_len  = layers[L].GetRecordedLength();
+        }
+
+        ui.Update(events);
+
+        hw.DelayMs(1);
+    }
+}

@@ -1,0 +1,5915 @@
+# PZD-Daisy-Pod-Groovebox — design notes
+
+## Credit
+
+This project's original concept is based on
+[kooliha's Ouroboros Loop Station](https://github.com/kooliha/Ouroboros_Loop_Station)
+— a DIY 5-track stereo loop station for the Electrosmith Daisy Seed (the
+name has since diverged, grown well past a pure loop station). This
+firmware follows that project's per-layer loop-buffer struct as a direct
+structural template — the same field set (`buffer_l`/`buffer_r`/
+`record_len`/`write_idx`/`play_pos`/`speed`/`volume`/`pan`) and the same
+linear-interpolated playback loop — but removes its direct hardware
+coupling (this DSP layer takes no `Switch*`/ADC pointers at all) and adds
+everything else from scratch: per-layer filter/effect/reverb,
+tempo-locked count-in, a live waveform display, the whole OLED menu/UI
+layer, and SD card save/load, none of which exist in the original.
+
+**Dexed** (see its own section below) is built around **msfa**, Google's
+own real DX7 emulation core, released under the Apache License 2.0 —
+vendored unmodified into `src/msfa/` except two small additive
+introspection helpers. Its 3129 factory presets are real, freely-
+distributed SysEx bank dumps drawn from the broader Dexed/MicroDexed
+open-source ecosystem that msfa's own lineage traces through, not one
+single traceable upstream repo.
+
+The shared **reverb** bus (`src/dattorro_reverb.h/.cpp`, see *Dattorro
+plate reverb* below) ports Jon Dattorro's 1997 figure-8 plate reverb
+topology from [el-visio/dattorro-verb](https://github.com/el-visio/dattorro-verb),
+released under the MIT License (Copyright (c) 2022 Pauli Pölkki) — its
+real delay lengths, tap offsets, and tuned default coefficients are
+kept exactly as that implementation has them.
+
+See **Known limitations & assumptions** below for the handful of things
+that deliberately differ from the original pedal's behaviour.
+
+## Hardware
+
+- I2C OLED (SSD1306/SSD1309, 128x64 assumed) wired to the Pod's header:
+  SCL -> D11, SDA -> D12, plus 3V3 and GND. These are the *default* pins
+  libDaisy's I2C1 driver already uses, so no pin configuration is needed
+  in code — `display.Init(disp_cfg)` just works. Default I2C address is
+  0x3C; if your module is silent, it's very likely a 0x3D module — there's
+  a commented-out line in `main.cpp` to switch it.
+- Because the OLED is I2C, the header's SPI1 pins (D7/D8/D9/D10) are
+  entirely free, along with D14 and the two spare ADC pins D16/D22, if you
+  ever want to add something else.
+- Everything else — both knobs, both buttons, the encoder+click, the two
+  RGB LEDs — is the Pod's built-in hardware; nothing else needs wiring
+  for the core looper.
+
+### Input front-end
+
+The Daisy Pod's two audio inputs are plain 3.5mm **line-level** stereo
+jacks — no mic preamp, no Hi-Z guitar buffering, no input relay, unlike
+the original pedal's PCB. There is deliberately **no** Mic/Guitar/Line
+input-routing menu here (an earlier iteration had one, but on bare Pod
+hardware it never did anything beyond choosing which physical jack fed
+the recording — no actual gain difference — so it wasn't earning its
+menu slot). Both jacks are always captured in true stereo instead (see
+`LooperLayer::Process()`'s recording path).
+
+The actual fix for a quiet source (a passive guitar, a mic, anything
+without its own preamp) is the per-layer **Gain** page — 1x-4x (0 to
++12dB), applied at record/overdub time only, live on the OLED so you can
+see the level before committing a take. If you want the original
+pedal's proper multi-input hardware behaviour back (real mic preamp,
+Hi-Z buffering, an input relay), that's an outboard front-end feeding the
+Pod's line input — not wired up in this firmware since it depends on
+hardware nobody's confirmed keeping.
+
+## The menu system
+
+One consistent grammar everywhere:
+
+- **Rotate** the encoder: on Home, moves the layer cursor; on any other
+  screen, cycles through that screen's pages — with one exception,
+  `Screen::Mixer`, where rotate instead steps through channel "stops"
+  (see its own section below) since there's no page-switching job left
+  for it there.
+- **Click** the encoder: one level in or one level back, the same rule
+  everywhere. In: Home drills into the layer under the cursor; a Global
+  page hosting a screen (`Global:DXD-A`/`DXD-B`/`Ensemble`/`Granular`/
+  `SMPVO`/`SMPDR`/`Mixer`) enters it; Dexed's Advanced page enters
+  `Screen::DexedOperator`. Back: a layer's pages go to Home; an engine
+  screen or `Screen::Mixer` returns to the Global page it was entered
+  from (`global_page_` is left untouched while inside, so no bookkeeping
+  is needed); the operator editor returns to Dexed; every other Global
+  page goes to Home. For `Global:Looper` that "back" doubles as its
+  "open", since Home is the looper's screen, so its page carries the
+  same `PUSH ENC TO OPEN` hint as the engine pages. This replaced an older rule where a click on those
+  screens muted/unmuted every loop layer (`Ui::TogglePauseAll()`, since
+  removed along with `LooperLayer::SetPaused()`) — the user preferred the
+  click to navigate; pausing stays on Home's Button1, and `Global:Looper`
+  switches the whole looper off.
+- **Long-press** the encoder (~600ms): from Home, opens Global settings;
+  from anywhere else — including `Screen::Dexed`/
+  `Screen::Granular`/`Screen::Mixer` — goes back to Home.
+
+```
+Home ──(click layer)──► Layer[n] ──(rotate)──► Status / Gain / Speed /
+  │                                             Filter / Effect / LYR-FX
+  │                                                     (long-press ⤴ back to Home)
+  └──(long-press)──► Global ──(rotate)──► Tempo / Speed / Filter / Reverb /
+       │                                    RevTone / RevDiff / Dly-Rev / Delay /
+       │                                    DlyTone / Bypass /
+       │                                    Perf / SdMgmt / Export / DXD-A / DXD-B /
+       │                                    Ensemble / Granular / Looper / Mixer
+       │                                       (long-press ⤴ back to Home)
+       ├──(click on Global:DXD-A/B)─► Screen::Dexed ──(rotate)──► Algo / Feedback /
+       │                                                   Vibrato / Brightness /
+       │                                                   EnvSpeed / Filter / Mix /
+       │                                                   DX-FX / MIDI / Split /
+       │                                                   Advanced / Preset
+       │                                                        (click ⤴ mute loop layers)
+       │                                                        (long-press ⤴ back to Home)
+       │                                                   Advanced ──(click)──►
+       │                                                   Screen::DexedOperator
+       ├──(click on Global:Ensemble)──► Screen::Ensemble ──(rotate)──► Registration /
+       │                                                     Env / Ensemble (Chorus) /
+       │                                                     Filter / Mix / FX / MIDI / Preset
+       │                                                        (click ⤴ mute loop layers)
+       │                                                        (long-press ⤴ back to Home)
+       ├──(click on Global:Granular)──► Screen::Granular ──(rotate)──► Grain / Position /
+       │                                                     Scan / Rhythm / Loop / Pitch / ADSR /
+       │                                                     Filter / Mix / GR-FX / Capture /
+       │                                                     Trim / Preset
+       │                                                        (click ⤴ mute loop layers)
+       │                                                        (long-press ⤴ back to Home)
+       └──(click on Global:Mixer)──► Screen::Mixer ──(rotate)──► 9 channel stops, then
+                                                                  a Scope stop, wrapping
+                                                                     (long-press ⤴ back to Home)
+```
+
+Dexed, Ensemble, and Grains are fully independent (see *Per-engine
+on/off* below) — each has its own Global page, full screen, and Mixer
+channel, and any of the three can be switched on/off without affecting
+the others.
+
+Both knobs and both buttons are "soft" — their function depends on
+whichever page is open, and it's always shown on the OLED's footer: two
+rows, each with a label on either side of a small icon (a circle for the
+knob row, a square for the button row). Button labels are dynamic where
+it matters (e.g. Home's Button 1 reads "Rec"/"Pause/Overdub"/"Stop"
+depending on the layer's current state, not one static label covering
+several different behaviours).
+
+**Knob pickup**: a knob only starts driving its parameter once its
+physical position reaches the value already shown on screen (see
+`Ui::KnobPickUp()`) — switching pages/layers never yanks a value to
+wherever the knob physically happens to be sitting.
+
+Full control map:
+
+| Screen / Page | Knob 1 | Knob 2 | Button 1 (tap / hold) | Button 2 |
+|---|---|---|---|---|
+| Home | Master volume | Metronome volume | Rec/Pause/Overdub cycle for cursor layer (see transport state machine) | Toggle bypass |
+| Layer: Status | Volume | Pan | Same transport as Home, for this layer | Tap = Undo last overdub, hold 800ms = Clear |
+| Layer: Gain | Input gain (1x-4x) | — | — | — |
+| Layer: Speed | Speed (0.3x-2x, deadzone-centered on 1.0x) | — | Tap = reset to 1.0x | — |
+| Layer: Filter | Cutoff (~20Hz-9kHz, log taper) | Resonance | Cycle filter mode (Off/Low/High/Band) | — |
+| Layer: Effect | Effect param A | Effect param B (Drive: output trim, 50% = unchanged -- see *Per-layer signal chain* below) | Cycle effect (Off/Drive/Bitcrush/Chorus/Tremolo/Phaser/AutoWah/Flanger) | — |
+| Layer: LYR-FX | Send (into the shared reverb bus, see below) | — | — | — |
+| Global: Tempo | BPM (50-240) | Bars per loop (1-16, lower-capped at slower BPM — see *Tempo, metronome, and count-in* below) | Toggle metronome | Hold 800ms = save as startup default |
+| Global: Speed | Project vari-speed (0.3x-2x, deadzone-centered on 1.0x, same curve as Layer:Speed) | — | Cycle transport mode: Normal/Scrub/Freeze (see below) | Reset to 1.0x |
+| Global: Filter | Cutoff (master bus) | Resonance | Cycle filter mode | — |
+| Global: Reverb | Size/decay (shared bus, see below) | — | — | — |
+| Global: RevTone | PreDelay (or DecayDiffusion) | PreFilter (or Damping) | Knobs → PreDelay+PreFilter | Knobs → DecayDiffusion+Damping |
+| Global: RevDiff | Input Diffusion 1 | Input Diffusion 2 | — | — |
+| Global: Dly-Rev | Delay → Reverb amount | — | — | — |
+| Global: Delay | Time (Off, 20 ms-3 s, or a synced note value) | Feedback | Sync Off (free time) | Sync On (1/16 … 1/2 at the current BPM) |
+| Global: DlyTone | Ping-Pong | Tone | — | — |
+| Global: Bypass | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
+| Global: Snap | ChoosingSave: Overwrite/Save New | Browsing: scroll snapshots | Idle: Save; else Back | Idle: Open; list: tap loads (stays); ChoosingSave: hold 800ms = confirm |
+| Global: Perf | ChoosingSave: Overwrite/Save New | BrowsingLoad: scroll New + PERF list | Idle: Save; else Back | Idle: Load; list: tap loads (stays); ChoosingSave: hold 800ms = confirm |
+| Global: SD Mgmt | Box grid / folder lists (Sampler-or-Grains, banks) | Item list | Back; hold = Duplicate (item list) | Open; hold `kSdMgmtDeleteHoldMs` (1500ms) = Delete (item list) |
+| Global: Export | — | — | Tap = render to native 48kHz WAV ("Studio") | Tap = render to 44.1kHz WAV for MicroDexed ("CD") |
+| Global: MIDI | Engine column (`midi_row_`, read directly once moved) | That column's MIDI channel (picked up from its current value) | Sus-Pedal: Norm/Rev toggle (saved to `PEDAL.DAT`) | Hold 800ms = save every channel as power-on default (`MIDICH.DAT`) |
+| Global: DXD-A | — | — | Toggle DXD-A on/off (`dexed_enabled_`) | — |
+| Global: DXD-B | — | — | Toggle DXD-B on/off (`dexed_b_enabled_`); the engine already on keeps its Voices, B gets what's left of 24 | — |
+| Global: Ensemble | — | — | Toggle Ensemble on/off | — |
+| Global: Organ | — | — | Toggle Organ on/off | — (encoder enters Screen::Ensemble editing the Organ) |
+| Global: Granular | — | — | Toggle Grains on/off | — |
+| Global: SMPVO | — | — | Toggle SMPVO on/off (disables SMPDR) | — |
+| Global: SMPDR | — | — | Toggle SMPDR on/off (disables SMPVO) | — |
+| Global: Looper | — | — | Toggle the whole 4-layer loop system on/off (also resets `TempoClock`'s phase) | Toggle Default On/Off (looper enabled at power-on; saved immediately). Encoder click opens Home |
+| Global: Mixer | Master Vol (same value as Home's K1 and the Mixer's Master channel) | Bypass Vol (same as the Mixer's Bypass channel) | Toggle the CPU profile view | — (entry point + overview grid; bottom row = CPU avg/peak, see *Screen::Mixer* below) |
+| Dexed: Algo | — (view-only diagram; ALGORITHM is set in Advanced) | — | — | — |
+| Dexed: Feedback | Feedback amount (0-7) | — | — | — |
+| Dexed: Vibrato | LFO speed | LFO pitch-mod depth | — | — |
+| Dexed: Brightness | Modulator level scale (0x..2x, center = as saved) | — | — | — |
+| Dexed: EnvSpeed | All-operator envelope rate scale (0x..2x, center = as saved) | — | — | — |
+| Dexed: Filter | Cutoff | Resonance | Cycle filter mode | — |
+| Dexed: Mix | Level of the selected bar: DXD-A/DXD-B engine level, or bus Level (or bus Gain, 0 to +12 dB into the limiter) | Pan of the selected bar (engine balance, or bus Pan) | Select A → B → Bus (`dexed_mix_sel_`); leaves Gain first | Toggle Gain |
+| Dexed: DX-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
+| Dexed: DX-FOLD | Fold Amount (0% = exact unity bypass) | Output trim (100% = unchanged) | — | — |
+| Dexed: MIDI | MIDI channel (Omni, 1-16): shared while locked, else the edited engine's | MAX VOICES (1-16, power-on default 12; capped by `DexedVoiceRoom()`) | Lock On/Off (`dexed_midi_lock_`) | — |
+| Dexed: Split | Split point (`kDexedSplitLowNote`..`kDexedSplitHighNote`, C#1–F5) | Octave shift -2..+2 of A or B | Layer / Split | K2 target A / B (re-seeds pickup) |
+| Dexed: Advanced | — | — | — | — (push encoder to enter Screen::DexedOperator) |
+| Dexed: Import | — | Scroll `DEXED IMPORT/` .syx files | — | Hold 800ms = import |
+| Dexed: Preset | Groups (Roms/Dexed/Imports), then folders | Presets in an open folder | Back | Open / tap loads (stays) |
+| Dexed: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
+| DexedOperator: ALGORITHM | ALGORITHM (1-32) | — | Cycle operator (1-6) | — |
+| DexedOperator: OSC FREQUENCY | F COARSE (0-31) | F FINE (0-99) | Cycle operator | OSC MODE RATIO/FIXED |
+| DexedOperator: OSC DETUNE | DETUNE (-7..+7) | — | Cycle operator | — |
+| DexedOperator: OUTPUT LEVEL | OUTPUT LEVEL (0-99) | — | Cycle operator | OP ON/OFF |
+| DexedOperator: EG RATE | R1 (or R3) | R2 (or R4) | Cycle operator | Toggle 1/2 ↔ 3/4 |
+| DexedOperator: EG LEVEL | L1 (or L3) | L2 (or L4) | Cycle operator | Toggle 1/2 ↔ 3/4 |
+| DexedOperator: LEVEL SCALING CURVE | L CURVE (or BREAK POINT) | R CURVE | Cycle operator | K1 ↔ BREAK POINT |
+| DexedOperator: LEVEL SCALING DEPTH | L DEPTH | R DEPTH | Cycle operator | — |
+| DexedOperator: RATE SCALING | RATE SCALING (0-7) | — | Cycle operator | — |
+| DexedOperator: SENSITIVITY | KEY VELOCITY (0-7) | A MOD SENS (0-3) | Cycle operator | — |
+| DexedOperator: PITCH EG RATE | R1 (or R3) | R2 (or R4) | — | Toggle 1/2 ↔ 3/4 |
+| DexedOperator: PITCH EG LEVEL | L1 (or L3) | L2 (or L4) | — | Toggle 1/2 ↔ 3/4 |
+| DexedOperator: LFO | LFO SPEED | LFO DELAY | — | Cycle LFO WAVE |
+| DexedOperator: LFO DEPTH | LFO PM DEPTH | LFO AM DEPTH | — | LFO KEY SYNC |
+| DexedOperator: P MOD SENS | P MOD SENS (0-7) | — | — | OSC KEY SYNC |
+| DexedOperator: KEY TRANSPOSE | TRANSPOSE (MIDDLE C = A-1..C7 range, C3 = none) | — | — | — |
+| Ensemble: Registration | Select drawbar (0-6, or 0-8 on the Organ; browsed directly, no pickup) | Level of the selected drawbar | — | — |
+| Organ: Perc | Percussion Decay (0.15-1.5 s) | Percussion Volume | On/Off | 2nd/3rd harmonic |
+| Organ: Click | Key click amount | — | — | — |
+| Ensemble: Env | Attack (or Sustain) | Decay (or Release) | — | Toggle AD/SR |
+| Ensemble: Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
+| Ensemble: Filter | Cutoff | Resonance | Cycle filter mode | — |
+| Ensemble: Mix | Output level (or Gain, 0 to +12 dB into the limiter) | Pan | Target Level+Pan | Target Gain |
+| Ensemble: FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
+| Ensemble: MIDI | MIDI channel (Omni, 1-16) | Voices (1-16, default 10) | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
+| Ensemble: Preset | — | Scroll the factory presets | Back | Load (tap, stays) |
+| Ensemble: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
+| Granular: Grain | Grain Size (1-1000 ms) | Density (0.5-500 Hz, exponential) | — | — |
+| Granular: Position | Position (every voice's pointer origin, live) | Spray (±0-2000 ms, squared) | — | — |
+| Granular: Scan | Scan (pointer speed −2x..+2x, centre dead zone = Hold) | — | Cycle Scan mode Loop/One shot/Ping pong | Cycle Direction Forward/Reverse/Random |
+| Granular: Rhythm | — | — | Cycle Rhythm pattern | Cycle Speed |
+| Granular: Loop | Loop Start | Loop End | — | — |
+| Granular: Pitch | Pitch (grain pitch, ±24 semitones) | — | Toggle Keymap (keyboard tracking) | Toggle Mono/Poly |
+| Granular: ADSR | Attack (or Sustain) | Decay (or Release) | Knobs → Attack+Decay | Knobs → Sustain+Release |
+| Granular: Filter | Cutoff | Resonance | Cycle filter mode | — |
+| Granular: Mix | Output level (or Gain, 0 to +12 dB into the limiter) | Pan | Target Level+Pan | Target Gain |
+| Granular: GR-FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
+| Granular: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
+| Granular: Capture | — (Import mode: browse .wav files) | — | Cycle source: Direct Record → Layer 1..N → Import | Hold = record (Direct) or capture/import (Layer/Import) |
+| Granular: Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save capture to `GRAINS/CAPTUREDn/` |
+| Granular: Preset | Folders (Starter, Captured n) | Sounds in an open folder | Back | Open / tap loads (stays; live progress bar — audio-inclusive) |
+| Granular: User | ChoosingSave: Overwrite/Save New | Scroll New + user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
+| SampleSynth: Filter | Cutoff | Resonance | Cycle filter mode | — |
+| SampleSynth: Env | Attack (or Sustain) | Decay (or Release) | Target AD | Target SR |
+| SampleSynth: Mix | Output level (or Gain, 0 to +12 dB into the limiter) | Pan | Target Level+Pan | Target Gain |
+| SampleSynth: FX | Reverb send (or Delay send) | Shared reverb size (or shared delay time) | Target Reverb | Target Delay |
+| SampleSynth: MIDI | MIDI channel (Omni, 1-16) | — | — | — |
+| SampleSynth: Import | Destination (SMPDR: first Kits/Breaks) | — | Back (SMPDR: to Kits/Breaks) | SMPDR: Open (tap); hold 800ms = Import |
+| SampleSynth: Preset | Types, then folders (SMPVO: Sounds/Captured/Multi; SMPDR: Kits/Breaks) | Items in an open folder | Back | Open / tap loads (stays) |
+| SampleSynth: User | ChoosingSave: Overwrite/Save New | Scroll user saves | Idle: Save; else Back | Load (tap) / hold 800ms = confirm Save |
+| SMPVO: Capture | — | — | Cycle source (Direct/Layer/Import) | Hold = record or capture |
+| SMPVO: Trim | Trim start | Trim end | Play trimmed section | Hold 800ms = save as Sound |
+| SMPVO: Tune | Cap Tune (±24 semitones) | Imp Tune (±24 semitones) | Mono/Poly-Cap | Mono/Poly-Imp |
+| SMPDR: Setup | Tune (±24 semitones, live) | Slices (0-16, pending) | Toggle Mono/Choke (per-kit) | Hold 800ms = apply Slices |
+| Mixer: Layer/Grains/Dexed/Ensemble/SampleSynth/Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
+| Mixer: Master | Volume | Reverb size | — | — |
+
+BPM/Bars are locked once any layer holds a recording, and the knobs stop
+affecting them, so you can't accidentally pull every track out of sync —
+clear every layer to unlock and pick a new tempo.
+
+### LED indicators
+
+Both are set once per `Ui::Update()` call (`Ui::UpdateLeds()`), not from
+the audio ISR:
+
+- **LED1**: the cursor layer's state (Empty=off, ArmedCountIn=amber,
+  Recording=red, Overdubbing=orange, Playing=green, Paused=blue) —
+  whichever layer `cursor_layer_` currently points at, not a fixed layer.
+- **LED2**: a steady Bypass on/off indicator (white when on). This used
+  to flash with the metronome instead, as a visual tempo reference when
+  the click was turned down — removed because that flash could only ever
+  be as accurate as the main loop's call rate, which under heavy DSP load
+  isn't perfectly steady, so it visibly stopped landing on the beat. A
+  plain on/off readout has no timing to get wrong.
+
+### Per-layer transport state machine
+
+```
+Empty ──long-press──► ArmedCountIn ──(count-in finishes)──► Recording
+                                                                 │ (auto-stops at
+                                                                 │  the shared loop
+                                                                 │  length, or short-
+                                                                 │  press to stop early)
+                                                                 ▼
+                                                              Playing ◄──┐
+                                                                 │ short  │ short
+                                                                 ▼        │
+                                                              Paused ─────┘
+      Playing/Paused ──long-press──► ArmedOverdubCountIn ──(count-in finishes)──► Overdubbing
+                                                                 │ (auto-stops after
+                                                                 │  one full pass, or
+                                                                 │  short-press to
+                                                                 │  stop early)
+                                                                 ▼
+                                                              Playing
+      Playing/Paused ──Button2 held 800ms (Status page only)──► Empty (cleared)
+      Overdubbing/Playing (just finished one) ──Button2 short tap (Status page,
+        only while this layer still owns the single shared Undo slot)──►
+        Playing (buffer restored to pre-overdub)
+```
+
+(Overdub used to start the instant the button was long-pressed and run for
+exactly as long as it stayed held — changed to its own count-in, then a
+fixed one-pass auto-stop, matching Recording's own shape, after a real user
+report: "the original recording and the overdub were about 1 beat late...
+can't we set it to also have a 4 beat count in like layer record?")
+
+## Tempo, metronome, and count-in
+
+One `TempoClock`, shared by all 4 layers, is the single source of timing
+truth:
+
+- **BPM** (50-240) and **Bars** together define the loop length every
+  layer records to: `samples = 60/BPM * 4 beats/bar * Bars * sample_rate`.
+  4/4 time is assumed throughout (not configurable — it's one constant in
+  `tempo_clock.h` if you ever want to change it).
+- **Bars' own ceiling is dynamic, not a flat 16**: `TempoClock::
+  MaxBarsForBpm(bpm)` = `floor(bpm/12.5)`, clamped to the existing
+  absolute ceiling of 16 — one more bar unlocks every 12.5 BPM, so the
+  knob's own usable range (and the "current/max" shown on Global:Tempo)
+  shrinks at slower tempos instead of letting you dial in a BPM/Bars
+  combination with no further restriction. This guarantees
+  `Bars * 4 beats * (60/BPM) <= kMaxLoopSeconds` (19.2s) for every
+  reachable combination, which exists for two reasons at once, not just
+  one: it bounds the one shared Undo backup buffer's size (see
+  *Undo last overdub* below) to something affordable in SDRAM, and it
+  closes a real truncation bug that predates Undo entirely — a 40 BPM/
+  16-bar loop used to request 96s of audio against a hard ~33.3s buffer
+  ceiling, silently cutting a recording off mid-phrase under 6 bars in,
+  with no indication anything had gone wrong. The BPM floor itself moved
+  40→50 as part of the same change, since 40 BPM could no longer reach
+  even 1 bar under the new ceiling without it.
+- **The main per-layer buffers themselves shrank alongside this** (`main.cpp`'s
+  `kBuffSize`, 1,600,000 → 921,600 samples/layer/channel — the exact new
+  19.2s ceiling, not a round number) — the dynamic Bars ceiling above
+  means nothing new can ever be recorded past it, so there was no reason
+  to keep paying SDRAM for the old ~33.3s allocation. Net effect, with
+  the new shared Undo backup (see below) added back in: SDRAM usage
+  84.70% → 63.34%, a net *reduction*. A performance saved before either
+  ceiling existed, whose recorded length lands between the new 19.2s
+  buffer size and the old ~33.3s one, hits the same defensive
+  `len > GetBufferSize()` clamp `Load()` already had for a corrupt/
+  foreign file (`performance_store.cpp`) — it loads and plays, just
+  truncated to the new ceiling instead of its full original length. The
+  shared Undo backup (see below) is sized to this exact same `kBuffSize`,
+  so once a layer has loaded at all (and is therefore already within
+  this ceiling), Undo is never separately unavailable to it on size
+  grounds — there's nothing left for it to not fit.
+- The metronome is a single on/off switch governing both the audible
+  click during playback *and* whether arming a recording does a count-in
+  first. Metronome off = pressing record starts immediately. Metronome
+  on = a 1-bar (4-beat) count-in always precedes recording, with an
+  accented downbeat click.
+- Once the first layer finishes recording, the tempo locks so every
+  subsequent layer's recording is exactly the same length and they all
+  loop in perfect sync — this is what "shared master length" means in
+  practice.
+- Changing BPM only affects *future* recordings once unlocked; it does
+  not retroactively time-stretch anything already captured.
+
+## Vari-speed and scrub
+
+Global:Speed's Knob 1 is a project-wide tape-machine-style speed control
+— `SpeedCurve01()` (`looper_layer.h`, shared with `LooperLayer::SetSpeed01()`
+so the two controls feel identical), applied as a second multiplier on
+top of whatever each layer's own Speed already is. This is genuine
+vari-speed (pitch and tempo move together), not time-stretching — the
+project explicitly doesn't attempt pitch-independent tempo change (see
+Known limitations).
+
+**Playback**: `LooperLayer::Process()`'s per-sample position advance
+(`play_pos_ += speed_ * project_speed`) is the only change needed for
+existing content to speed up/slow down correctly.
+
+**Tempo/metronome**: `TempoClock::Process(float speed)` scales its own
+phase accumulator the same way (`phase_samples_ += speed`), so the
+metronome click, on-screen beat indicator, and bar boundaries all track
+the *actual* audible tempo instead of the originally-locked one — without
+this, the click would audibly drift out of sync with a sped-up/slowed-down
+loop within a few bars.
+
+**Recording/overdubbing while vari-speed isn't 1.0** is the correctness-
+sensitive part: since every layer shares one fixed-length loop buffer,
+newly captured audio has to land in the same native (1x) coordinate space
+every other layer already lives in, or it wouldn't stay in sync with
+everything else once vari-speed returns to 1.0x. Real input still arrives
+1-per-real-sample regardless of `project_speed`, so both the fresh-Recording
+write path and the Overdubbing write path now track a fractional native-
+space write cursor that advances by `project_speed` per real sample
+(mirroring `play_pos_`'s own advance) and linearly interpolate between the
+current and previous real input sample whenever a step needs to fill more
+than one native slot (`project_speed > 1`, upsampling) or skip some
+(`project_speed < 1`, decimation, same "no anti-alias filter"
+simplification the existing playback read path already accepts). This is
+also a deliberate creative surface, not just a compatibility fix: record
+something while sped up, and it comes back lower and slower once you
+return to 1.0x — the classic tape vari-speed trick — because what got
+captured is honestly in the same coordinate space as everything else, at
+whatever relative pitch you performed it against.
+
+**Scrub/Freeze**: Button 1 on Global:Speed cycles a 3-state
+`Ui::SpeedTransportMode` — Normal → Scrub → Freeze → Normal
+(`speed_transport_mode_`, replacing an earlier plain `scrub_mode_active_`
+bool once Freeze needed a second, mutually-exclusive encoder-repurposing
+mode on the same page). `HandleEncoder()` checks this state *before* its
+normal page-cycling logic, exactly as the original Scrub-only version
+did — while either mode is active, encoder rotation is repurposed
+instead of moving between Global's sub-pages.
+
+- **Scrub** (unchanged from the original design): rotation calls
+  `Ui::ScrubBy()`, nudging every non-empty layer's `play_pos_` by the
+  same raw-sample amount via `SetPlayPosRaw()` (the same accessor
+  `PerformanceStore::ExportWav()`'s snapshot/restore already proven safe
+  for direct position manipulation), with **turn-speed acceleration**: it
+  tracks the time between consecutive scrub ticks
+  (`daisy::System::GetNow()`) and scales the per-click distance up when
+  ticks arrive close together (a fast spin), from a base ~50ms of audio
+  per click up to an 8x cap (~400ms/click) for fast turns — slow,
+  deliberate turns stay fine-grained. Scrubbing also calls
+  `TempoClock::SetPhaseToPosition()` (using the same lowest-indexed
+  non-empty layer the composite waveform's playhead reads) so the
+  metronome/beat indicator/bar-start jump to match wherever scrub moved
+  the audio, instead of continuing to free-run from wherever they
+  already were — without this, scrubbing back would leave the audio and
+  the metronome permanently out of sync by however far you scrubbed.
+  Normal playback keeps advancing underneath the whole time — Scrub only
+  ever nudges the shared position, it never stops the transport.
+
+- **Freeze**, added after a direct request for "the playhead to just
+  hold still on whatever part of the wave it's on, so I can scrub through
+  it without the looper pushing forward" — genuinely different from
+  Scrub, which nudges position but leaves normal tempo-driven playback
+  running underneath. Freeze actually stops that advance: each
+  `LooperLayer` gets its own `freeze_active_`/`freeze_anchor_`/
+  `freeze_phase_` state (`SetFreezeActive()`/`NudgeFreeze()`), and while
+  active, `Process()`'s audible-playback branch reads a small
+  (`kFreezeWindowMs` = 60ms) window starting at `freeze_anchor_` on a
+  continuous loop instead of advancing through the rest of the buffer.
+  Chosen as a smooth "freeze drone," not a stuttery one-shot retrigger —
+  a genuinely silent hold, or a hard-looped raw sample, were both
+  considered and rejected (silence isn't a "freeze," and a raw loop
+  clicks at the seam); instead each pass through the window is
+  Hann-windowed (0 at phase 0 *and* 1, the exact same click-avoidance
+  principle `GranularEngine`'s own per-grain envelope already uses), so
+  the loop point never clicks and the frozen window genuinely sustains a
+  texture instead of holding one static sample. `play_pos_` is kept
+  synced to the live freeze read position throughout, so un-freezing
+  resumes exactly where the drone left off with no jump. While Freeze is
+  active, encoder rotation calls `Ui::NudgeFreezeBy()` instead of
+  `ScrubBy()` — same per-layer raw-sample nudge and turn-speed
+  acceleration as Scrub, just moving each layer's frozen window instead
+  of its live `play_pos_`, so scrubbing while frozen picks which part of
+  the loop the drone plays from. All 4 layers freeze and un-freeze
+  together (there's no per-layer Freeze toggle) so the whole mix holds
+  on the same instant.
+
+Both modes auto-clear the instant you leave Global:Speed (including via
+the normal long-press-to-Home) — leaving while Freeze is active also
+un-freezes every layer first — so the encoder can never get stuck
+scrubbing or the transport stuck frozen somewhere it shouldn't.
+
+Global:Speed's display is a composite waveform (per-column max across all
+4 layers' existing `waveform_peaks_` caches, not just one layer) with a
+single shared playhead — reusing the same drawing routine Layer:Status
+uses for its own single-layer view (`Ui::DrawWaveform()`), just fed a
+synthesized peaks array and a different position source.
+
+**Persistence**: vari-speed is a live-performance control like Master
+Volume — it always resets to 1.0x on boot and after `Load()`, and is
+never written into a saved performance (no `FileHeader`/version changes
+at all for this feature). Unlike Master Volume, though, it's *not*
+excluded from `ExportWav()` — whatever it's set to when Export is
+pressed gets rendered into the file on purpose, since vari-speed is
+something dialed in as a deliberate part of a performance, not an
+incidental monitor-level knob position. This does mean an export's frame
+count depends on `project_speed` too: `ExportWav()` computes a
+`render_len` (`total_samples / project_speed`, i.e. how many render ticks
+complete one full pass at that speed) and drives everything -- the render
+loop, the WAV header's `data_size`, and (for the MicroDexed/CD path) the
+`Resampler48to44_1` frame count -- from that instead of the raw native
+loop length, so a sped-up export is correctly shorter and a slowed-down
+one correctly longer.
+
+## Overdubbing
+
+Long-press the transport button on any layer that's Playing or Paused to
+arm an overdub: like a fresh Recording, it waits for its own count-in
+(same tempo-locked, metronome-gated bar wait, `LayerState::
+ArmedOverdubCountIn`) rather than starting the instant the button is
+pressed — added after a real user report ("the original recording and
+the overdub were about 1 beat late... can't we set it to also have a 4
+beat count in like layer record?"). Once the count-in finishes, new
+input is additively mixed into the existing loop buffer, sample-for-
+sample, in sync with playback, clamped to ±1.5 to stop runaway buildup
+over many passes. The pass auto-stops back to Playing after exactly one
+full loop (`overdub_remaining_`, the same "runs a fixed duration
+automatically" shape `Recording`'s own `write_idx_`/`target_len_` pair
+already has) — holding the button down for the overdub's own duration is
+no longer required, same as a fresh Recording already didn't require
+it. A short press of the transport button while actively Overdubbing
+stops that one pass early, same idiom as Recording's own early stop.
+Works identically on every layer.
+
+### Undo last overdub
+
+A single-level "undo the last overdub" (`Ui::TriggerUndoOverdub()`,
+`LooperLayer::RestoreFromBackup()`), triggered by a **short tap of
+Button 2 on Layer:Status** (previously unclaimed — that page's only
+existing Button 2 behavior was an 800ms+ hold for Clear).
+
+**One shared backup, not one per layer**: `main.cpp`'s
+`g_undo_backup_l/r` (sized to `kBuffSize`, the same 921,600-sample/19.2s
+ceiling as the main per-layer buffers — see *Tempo, metronome, and
+count-in* above) and a single `g_undo_owner_layer` index (-1 = none) are
+process-wide, shared by every layer, not duplicated per layer — a
+deliberate choice, not an oversight: only one layer can ever be
+mid-overdub at a time, so one buffer suffices, and a 4x-per-layer
+version would cost roughly 4x the SDRAM for a feature that, by design,
+only ever needs to undo the single most recent overdub anyway. The
+direct consequence: if you overdub layer A, then B, then C, then D in
+sequence, only **D's** last overdub stays recoverable — starting a new
+layer's overdub silently invalidates whatever layer previously held the
+shared slot, the same "undo the most recent action" semantics every
+other action in this firmware already has (there's no undo history
+anywhere else either). Pressing Undo with nothing pending (or on a
+different layer than the current owner) shows a brief "Nothing to
+undo" message that self-expires after `kUndoStatusTimeoutMs` (1.5s) —
+it deliberately can't just wait for some unrelated action to clear it
+(the usual convention for this file's other transient status_ messages)
+since it squats on the one thing Layer:Status is *for*, the live
+waveform/playhead, and an idle user needs that back on its own.
+
+**How the backup is actually captured — two rejected designs first**:
+the overdub write (`LooperLayer::Process()`) mixes new audio in-place
+with an immediate lossy `Clampf(-1.5, 1.5)`, so Undo needs a real
+pre-overdub snapshot, not a computed reversal (subtracting back out
+isn't valid once clipping has happened).
+1. ***Deferred to the main loop entirely*** — tried first, wrong: the
+   main loop's own `Ui::Update()` does blocking OLED I2C writes with no
+   time bound, so by the time a main-loop-driven copy actually ran,
+   real overdub audio could already have landed in the buffer, and the
+   "pre-overdub" snapshot silently included the first several,
+   sometimes many, milliseconds of the new take — audible on hardware
+   as "the start of the overdub survives Undo."
+2. ***A bulk copy inside the audio ISR, chunked across the count-in***
+   — moved the copy into `Process()` itself, spread in fixed-size
+   chunks (`kUndoCopyChunkSamples`) across the count-in that already
+   precedes every overdub, with a defensive instant-finish fallback at
+   the exact transition. Correct, but a real, measured, audible glitch
+   on hardware every time overdub was armed or held — confirmed in two
+   stages: first, the chunk logic had accidentally been placed *inside*
+   the per-sample loop instead of running once per 48-sample block,
+   so one block could attempt up to 48x its intended copy size,
+   badly overrunning the audio callback's ~1ms budget (an easy mistake
+   to miss, since the code still reads as "once per chunk" either way).
+   Fixing that scope bug fixed the loud version, but shrinking the
+   chunk size further (4000 → 1500 samples/channel/block) still left an
+   audible, smaller glitch — confirmed, by disabling the copy entirely
+   as a diagnostic, to be a real, inherent cost of *any* dedicated bulk
+   SDRAM-to-SDRAM sweep on this hardware, regardless of chunk size: it's
+   cold (first-touch, no cache reuse) and source/destination are
+   different regions of the same physical SDRAM chip, so every access
+   risks a row-close/row-open round trip on top of the raw transfer
+   cost.
+
+**What's actually implemented — lazy, per-sample capture**: the overdub
+write loop in `Process()` already reads `buffer_l_[wrapped]`/
+`buffer_r_[wrapped]` immediately before overwriting it, to mix the new
+audio in. Capturing that same, already-hot value into the backup one
+line earlier is one extra read+write on a cache line the very next two
+lines were going to touch anyway — not a separate sweep, so it
+introduces no new cost class at all, and sidesteps the count-in-window
+timing problem entirely: there's no separate "finish the copy before
+overdubbing starts" step to race, because the backup is always exactly
+as complete as the pass itself is, by construction. `overdub_start_idx_`
+(where `play_pos_` was when this pass began) plus the existing
+`overdub_remaining_` together define exactly which wrapped arc of the
+backup is valid — indices the pass hasn't reached yet were never
+touched this time around, so `buffer_l_`/`buffer_r_` there is *already*
+the correct pre-overdub value with or without a backup entry, and
+`RestoreFromBackup()` only ever touches that same arc, nothing more.
+This also makes a (currently unreachable via the UI, but not actively
+prevented) Undo invoked *mid-overdub* correct for free: it just restores
+less, exactly as much as has actually been overwritten so far — the
+alternative, a bulk snapshot taken once at the overdub's start, would
+have stayed fully valid for that case too, but only because it paid the
+cost of capturing the *entire* buffer up front regardless of how much of
+the pass ever actually runs.
+
+## Per-layer signal chain
+
+Applied on **playback only**, never baked into the recorded buffer — so
+retakes, overdubs, and tweaking any of this are always working with
+clean material:
+
+```
+looped sample -> Filter (Svf: Low/High/Band) -> one selectable character
+                  effect -> Volume/Pan -> this layer's Reverb send ->
+                  ONE shared reverb bus, Process()'d once per sample in
+                  main.cpp -> mixed to output bus
+```
+
+- **Filter**: cutoff and resonance are both live, turnable while the
+  loop plays. Off/Low-pass/High-pass/Band-pass, cycled with Button 1.
+- **Character effect** (one per layer, DaisySP-backed, mutually
+  exclusive — pick one): Drive (Overdrive — Param A = drive amount,
+  Param B = output trim), Bitcrush (Decimator — Param A = bit depth,
+  Param B = downsample), Chorus (Param A = depth, Param B
+  = rate — fed the left channel only, generates its own stereo spread, a
+  deliberate simplification), Tremolo (depth/rate), Phaser (depth/rate),
+  AutoWah (wah amount/level), Flanger (depth/rate). Switching effect type
+  resets both params to 0 (a genuine "off" state for every one of these,
+  verified against DaisySP's actual source, not assumed) so a newly
+  selected effect never starts already dialed in loud — you turn each
+  knob up from 0 to bring it in.
+  **Drive's Param B specifically is a real exception to that "0 = off"
+  framing**, and worth stating plainly: Overdrive is a genuine gain
+  stage (louder drive = louder output, not just more saturated), so a
+  plain 0..1 trim knob was mapped bipolar instead — the same "0x at 0,
+  1x/unchanged at 0.5, 2x at 1" convention `DexedSynth::SetBrightness01()`/
+  `SetEnvSpeed01()` already use — specifically so the shared param
+  pair's own pre-existing *default* (0.5) means "no change" for anyone
+  who saves a preset with Drive selected and never touches Knob 2. A
+  real, direct consequence of this that's easy to miss: `SetEffect()`'s
+  own reset-to-0-on-type-change (above) still fires for Drive like every
+  other effect, so freshly *selecting* Drive via Button 1 lands Trim at
+  0% — which under the bipolar mapping means 0x (silence), not unity.
+  Confirmed, explained, and deliberately left as-is rather than special-
+  cased: the reset convention predates Trim and is correct for every
+  other effect's Param B (a real rate/depth knob, where 0 is a sensible
+  "off"); fixing the one Drive-specific collision would mean making
+  `SetEffect()` itself aware of which effect it's switching into, not a
+  change to Trim's own math.
+- **Reverb**: ONE shared `DattorroReverb` bus (`main.cpp`'s
+  `fx_reverb_shared`), not one per layer. Every layer's Send-scaled
+  signal is summed into a shared accumulator (`LooperLayer::Process()`'s
+  `reverb_send_out` parameter) and run through the single instance once
+  per sample, in `AudioCallback()`, after every layer's own `Process()`
+  call. Send stays independent per layer; Size/decay (Global:GLB-FX) is
+  one setting shared by everyone's send. This used to be 4 independent
+  `ReverbSc` instances (one per layer) — that was by far the heaviest
+  thing in this signal chain (~386KB per instance) and, in the worst
+  case (reverb active on all 4 layers at once), was enough real-time DSP
+  cost to starve the main loop/TIM5 badly enough to cause actual audio
+  glitches and OLED corruption, not just UI lag. Consolidating to one
+  instance cut that worst case ~4x; replacing `ReverbSc` with
+  `DattorroReverb` (see *Dattorro plate reverb* below) is the second,
+  more recent cut on top of that. See *Boot process: bootloader + QSPI
+  flash* below for the current, real-hardware-measured worst-case CPU
+  number.
+
+### One filter for everything: the trapezoidal SVF
+
+Every filter in the project -- each engine's Filter page, the looper
+layers, the master filter, export's copy and the import anti-alias
+filters -- is now `TptSvf` (`svf_setup.h`), Andrew Simper's 2013
+trapezoidal/zero-delay-feedback state-variable filter (Cytomic,
+"SvfLinearTrapOptimised2"), replacing `daisysp::Svf`.
+
+`daisysp::Svf` is Simper's older double-sampled design (musicdsp.org
+#92). Its resonance carries a cubic saturation term,
+`band -= drive * band^3`; Simper gives drive's range as 0-0.1, while
+DaisySP sets it to 0.5 x resonance, and that nonlinearity isn't covered
+by the design's stability analysis. Dexed and Ensemble filter *before*
+their limiters, so a chord can reach +-4 inside the filter, and the
+cubic term then over-corrected and crackled (Ensemble's Dark Drone,
+Dexed at high resonance). Setting drive to Simper's own range helped at
+moderate resonance but exposed the top end, where damping reaches zero.
+
+The trapezoidal SVF is linear and stable at any input level, cutoff and
+resonance. Resonance keeps the old knob curve (damping =
+2(1 - res^0.25)) so the knobs feel the same, but stops at a damping of
+0.05 (Q 20) rather than 0, where a linear filter would have nothing left
+to hold it. Cutoff is also more accurate at high settings (exact tan()
+prewarp rather than the double-sampled sine approximation). It runs once
+per sample instead of twice: with the looper, Dexed, SMPVO and Ensemble
+all playing through filters, CPU went from 73% average / 85% peak to
+**65% / 76%**.
+
+A faint crackle on high held Ensemble notes with a resonant low-pass
+remained after the swap -- so it isn't the filter; most likely the
+oscillators' residual aliasing near the cutoff being lifted by the
+resonance. Judged a rare special case and left.
+
+### Dattorro plate reverb
+
+The shared bus (`src/dattorro_reverb.h/.cpp`) is a from-scratch `float`
+port of Jon Dattorro's 1997 figure-8 plate reverb topology, built from
+`el-visio/dattorro-verb`'s real C source (MIT, Pauli Pölkki 2022; see
+*Credit* above) rather than a from-scratch re-derivation from the paper
+— same real delay lengths, tap offsets, and tuned default coefficients,
+kept byte-for-byte, with only the storage changed (`double` → `float`,
+`malloc()`'d buffers → fixed-size static member arrays, matching this
+project's own no-heap-allocation convention for every other audio
+object). Verified natively (off-target, same technique used elsewhere
+in this project for DSP ports) against a reference build of the
+original `double` code before ever touching hardware: a 15,000-sample
+impulse response, both at the library's own defaults and at a second
+set of non-default parameters, matched to ~1.5e-7 relative error (pure
+float-vs-double rounding) with identical onset timing and energy-decay
+curves.
+
+Replaced `daisysp::ReverbSc` entirely (not a second, selectable engine)
+for two reasons: `ReverbSc` runs 8 delay lines with continuous
+random-walk pitch modulation, needing fractional interpolation on every
+read, every sample — Dattorro's network (11 delay buffers) uses plain
+integer-indexed circular reads, no interpolation, no modulation math,
+genuinely cheaper per sample. And as `float` with static buffers it's
+~166KB total (11 delay buffers, sized to the original's own real delay
+lengths rounded up to the next power of 2) versus `ReverbSc`'s ~386KB
+`aux_[]`.
+
+Mono-in, stereo-out by design — `Process(in1, in2, &out1, &out2)` sums
+`in1+in2` before the signal ever enters the tank, same as a real
+physical plate reverb (one exciter, stereo pickup) and the real
+algorithm's own intent, not a limitation of this port. The previously
+genuinely-stereo shared send becomes one mono signal feeding the tank.
+
+Seven parameters total, matching the original library's own real
+`Set*` functions one-to-one (just reshaped to 0..1, `float`):
+`Decay` (Size, Global:GLB-FX's existing knob, unchanged in meaning),
+`Damping` (inverted from the library's own internal convention — there,
+higher means *less* damping; this project's knob reads the normal
+hardware-reverb way, higher = darker), `PreDelay`, `PreFilter`,
+`InputDiffusion1`, `InputDiffusion2`, `DecayDiffusion` (the tank's own
+`DecayDiffusion2` stays internally derived from `Decay`, matching the
+library's own design — not separately exposed). The last 6 live on two
+new Global pages, `Global:RevTone` (PreDelay/PreFilter toggled with
+DecayDiffusion/Damping, same Button-toggle idiom as Global:GLB-FX's own
+Reverb/Delay toggle) and `Global:RevDiff` (Input Diffusion 1+2, no
+toggle needed — only 2 knobs).
+
+One small built-in modulation is inherited as-is from the original
+algorithm: the `DecayDiffusion` all-pass stage's read offset wobbles by
+a fixed ±1 sample, direction flipping every 2048 samples over a ~1.4s
+cycle, breaking up metallic ringing in that stage. Fixed amount/rate,
+not exposed to any setter — the original library never exposed it as
+a parameter either.
+
+None of these 7 parameters are smoothed against live changes — turning
+`DecayDiffusion` (or any of the others) while audio is actively
+circulating in the tank can produce an audible click/glitch, since each
+`Set*` call writes straight into a feedback-loop coefficient with no
+ramp. This matches the original library's own design (every `Set*`
+function there is an instant assignment too) rather than being
+introduced by this port, but it's the same category of issue as the
+Dexed multi-note headroom click fixed earlier in this project's history
+— a real, fixable gap if live-twiddling these knobs turns out to matter
+in practice, not yet addressed.
+
+### Bypass reverb send
+
+Bypass (Home, Button 2 — the live-input monitor mix, e.g. for a powered
+mic plugged straight into the Pod) has its own independent send into
+that same shared reverb bus, set on Global:GLB-FX's Knob 2. In
+`AudioCallback()` this is one small block right before the shared
+reverb's `Process()` call (the same `bypass_gain`-scaled, L+R-summed-to-
+mono treatment the existing dry bypass mix already uses, for the same
+reason — see *Bypass sums to mono* below): if Bypass is on and the send
+is above zero, the live input adds into `reverb_send_l/r` alongside
+whatever the 4 layers are already contributing, then the one shared
+`DattorroReverb` processes the combined total as usual. No new reverb
+instance, no measurable extra cost — a multiply-add per sample. Turning
+Bypass off silences this contribution too, and recordings stay
+completely dry regardless of this setting (it only ever feeds the
+monitor-mix reverb tail, never the recording path).
+
+### The shared delay: Ping-Pong, Tone, Sync, Dly-Rev, and its own pages
+
+The Global reverb and delay controls used to share one page (GLB-FX,
+with a button flipping its knobs between reverb Size/Bypass Send and
+delay Time/Feedback). They're now split by job: **Reverb** (Size),
+RevTone, RevDiff, **Dly-Rev**, **Delay** (Time, Feedback, Sync),
+**DlyTone** (Ping-Pong, Tone), and **Bypass** — the live-input monitor's
+own sends, laid out exactly like an engine FX page (B1 Reverb / B2
+Delay, K1 Send, K2 the shared Size/Time). Bypass gained a Delay Send it
+never had.
+
+The delay itself is one `SharedDelay::Bus` (`shared_delay.h`), used by
+both the live audio and WAV export — export used to carry its own copy,
+which had already drifted (it ran the delay even at Time = Off).
+
+- **Why it never audibly ping-ponged.** The two lines always had crossed
+  feedback, but every source sends in stereo, already panned. A centred
+  sound puts the same signal into both lines, and swapping two identical
+  signals changes nothing — only panned sounds bounced. **Ping-Pong**
+  therefore controls the *input*, not the feedback: at 0% each line gets
+  its own side (exactly the old behaviour, so old performances sound
+  the same); at 100% the input is summed to mono (×0.707, roughly equal
+  loudness) into the left line only, so echoes alternate L, R, L, R
+  whatever the pan.
+- **Tone** is a one-pole low-pass (18 kHz down to 800 Hz) on the
+  feedback only: the first echo stays bright, each repeat after it is
+  filtered once more.
+- **Sync** turns the Time knob into note values at the current BPM:
+  1/16, 1/8T, 1/8, 1/4T, 1/8D, 1/4, 1/4D, 1/2 (shortest first; the
+  knob's very bottom is still Off). The buffer grew from 1.5 s to 3 s
+  per side (~1.15 MB of SDRAM) so a 1/2 note fits down to 40 BPM; below
+  that it halves until it fits. Free time now spans 20 ms–3 s.
+- **Dly-Rev.** Reverb and delay ran in parallel, so a note's reverb
+  was there but its echoes were dry. The delay now runs first in each
+  sample and adds `wet × Dly-Rev` into the reverb's input.
+- **Saving.** Time and Feedback were never saved anywhere before. All
+  delay settings plus the Bypass Delay Send are now a 7-field block at
+  the end of the performance/PREFS header — **file version 16**, read as
+  one chunk after the v15 part (guarded by `static_assert`s on its
+  offset and size). v11–v15 files load through the same version chain as
+  before and leave the live delay untouched, since they never stored it.
+  A v16 file won't load on older firmware, same as every earlier header
+  change.
+- **A boot-safety note.** `Bus` deliberately has no default member
+  initializers: it lives in SDRAM, and a constructor that wrote to it
+  would run before `main()` switches SDRAM on. `Init()` clears and sets
+  everything instead.
+
+### Reverb/delay bypass-at-zero, and a live CPU meter
+
+Both the shared reverb and the shared delay run their full fixed
+per-sample cost **unconditionally**, regardless of input level or
+settings — confirmed directly: `DattorroReverb::SetDecay01()` only
+reassigns a feedback-gain coefficient, the actual `Process()` call runs
+the same fixed sequence of delay taps/allpass filters every time no
+matter what Decay/Size is set to. Same for the shared delay's cross-
+feedback read/write. Measured on hardware with a live CPU meter (see
+below): with every engine disabled and nothing feeding either bus,
+turning Reverb Size and Delay Time to 0% still cost ~36% average /
+41% peak of the audio ISR's own time budget — paying the full cost of
+both algorithms processing silence.
+
+`reverb_bypassed`/`delay_bypassed` in `AudioCallback()` now skip the
+real `Process()` call (and, for delay, the cross-feedback read/write)
+entirely once the respective knob reaches its own lowest reachable
+position, instead of running the algorithm on near-silent input.
+Confirmed real: that same "everything off" test dropped from
+36%/41% to 10%/12% once this actually worked. Known trade-off for
+delay specifically: dropping Time to 0 while a long Feedback tail is
+still ringing freezes that tail rather than fading it out, since
+nothing drives the delay line forward at all while bypassed — accepted
+deliberately, same spirit as Reverb Size losing its own initial
+diffusion "splash" at Decay 0 (inaudible there, since zero decay
+already kills any tail almost instantly). Delay's own startup default
+moved from 30% to 0% to match — a fresh boot no longer pays this cost
+until Delay is actually turned on.
+
+**A real pot almost never settles on an exact `0.0f`** at its physical
+end-stop — ADC noise, the pot's own tolerance, and `Ui::ApplyKnobs()`'s
+existing drift deadband all mean the real value can easily sit at
+e.g. `0.002` while still rounding to the "0%" the screen shows (that
+rounding is `(int)(v*100+0.5)`, which is 0 for any `v < 0.005`). The
+first version of this used a strict `<= 0.f` check, which — confirmed
+on hardware — almost never actually fired despite both knobs reading
+0% on screen: the bypass code was effectively dead on arrival. Both
+checks now use `< 0.005f` instead, matching the same rounding the
+display already does, so "reads 0% on screen" and "is actually
+bypassed" are guaranteed to agree.
+
+**Live CPU meter** (`Global:Mixer`'s own footer, previously empty on
+that page) made this whole investigation possible to verify rather
+than guess at: `daisy::CpuLoadMeter` (libDaisy, `util/CpuLoadMeter.h` —
+an existing utility built for exactly this, not something written from
+scratch) wraps `AudioCallback()` with `OnBlockStart()`/`OnBlockEnd()`,
+both at the very top of the function and right before *every* return
+path (the normal end and the `g_audio_suspended` early-return both
+need their own call, or the reading would freeze stale during a
+Load/Save). Two separate instances, not one: `GetAvgCpuLoad()`'s own
+smoothing should run forever uninterrupted, but the Peak reading needs
+its own periodic `Reset()` (every `kCpuPeakResetSeconds`, 10s) so a
+just-made change's new peak becomes visible again quickly instead of
+staying stuck on whatever the worst moment was several minutes ago —
+sharing one instance between both readings would reset the average
+too, since `CpuLoadMeter::Reset()` clears `avg_`/`min_`/`max_`
+together. Important caveat: this measures only `AudioCallback()`'s own
+time against its block budget — it does **not** include the control-rate
+(TIM5, ~2 kHz — see **Arpeggiator: time**) MIDI/encoder/button polling ISR, the OLED display refresh, or general
+main-loop UI work, all of which run on separate schedules this meter
+never touches. The number is real, just narrower in scope than "the
+whole chip's CPU."
+
+### SDRAM-placed effects are explicitly zeroed before use
+
+`Phaser` (per-layer) and `DattorroReverb` (the shared bus, plus its
+counterpart in `PerformanceStore::ExportWav()`) both live in SDRAM —
+libDaisy's `sdram.h` documents, and this project's linker script/
+startup code confirm, that `.sdram_bss` is **not** zero-initialized at
+boot, unlike ordinary SRAM `.bss`. `LooperLayer::Init()` and the
+equivalent setup in `main.cpp`/`performance_store.cpp` `memset()` each
+of these objects to zero before calling their own `Init()`. This isn't
+cosmetic: it was a real, reproducible bug, first found via the
+(since-removed, see *Pitch removal* below) `PitchShifter` effect, whose
+`Init()` didn't touch several of its own internal fields, so without
+zeroing first they started out holding raw leftover SDRAM contents, and
+on some boots that decoded as NaN/Inf. Since NaN survives a plain
+min/max clamp unchanged (NaN compares false against both bounds) and
+neither `ReverbSc` (the previous shared-bus engine) nor `DattorroReverb`
+has any NaN/Inf guard anywhere in its feedback path, one bad sample
+could permanently poison the shared reverb bus's internal state — silencing the
+*entire* mix, not just that layer, until a full power cycle. The zeroing
+is kept as cheap insurance against this exact failure shape for any
+current or future SDRAM-placed effect, not just the one that first
+surfaced it.
+
+### Engine state and Dexed's tables in DTCM
+
+DTCM (128 KB of zero-wait data RAM, read without going through the 16 KB
+data cache) used to hold only the stack. The four engines' objects
+(Ensemble 21 KB, Dexed 9 KB, Grains 8 KB, Sampler 1.5 KB) and Dexed's
+FM lookup tables (`sintab`, `exp2tab`, `lut`, `Porta::rates`, 20.5 KB —
+via `TABLE_MEM` in `msfa/synth.h`) now live there (`DSY_DTCM_BSS` in
+`itcm.h`). In AXI SRAM they shared the data cache with the loop audio
+streaming in from SDRAM, which could evict them mid-callback. Measured on
+hardware with every engine playing chords plus a 4-bar, 4-layer loop, all
+with reverb/delay: **76% average / 89% peak → 73% / 85%**. It also freed
+~60 KB of AXI SRAM (from ~12 KB free to ~72 KB).
+
+Two rules come with it. Startup code only zeroes ordinary `.bss`, so
+`ZeroDtcmBss()` in `main.cpp` (a `constructor(101)`, which runs before
+every default-priority global constructor) clears the section first. And
+the SDMMC DMA can't reach DTCM, so nothing that's an SD/audio/ADC
+transfer buffer may go there. About 68 KB is left for the stack, which
+also lives in DTCM; the largest stack arrays in the code are ~2–3 KB.
+
+### Swapping memory tiers: the reverb's big buffers into SRAM, Export/Import's scratch buffers into SDRAM
+
+The single biggest CPU win measured this session, bigger than the
+compiler-flag work combined. The shared reverb's 13 delay-line/
+allpass/lowpass stages (`DattorroReverbStorage`, ~166KB) had always
+lived in SDRAM, simply because that was the only place with room. An
+earlier attempt to test whether SDRAM's own per-access latency was
+the reverb's real bottleneck only moved ~300 bytes of small
+bookkeeping fields (`DelayBuffer` structs, the "amount" scalars) and
+measured no improvement — unsurprising in hindsight, since the actual
+166KB of big arrays, the real candidate for the cost, were never
+touched by that test.
+
+Testing the real hypothesis needed room SRAM didn't have (only ~51KB
+free at the time). `ExportWav()`/`ImportWav()`'s own scratch buffers
+(`performance_store.cpp`, all sized by `kChunkSamples=4096` — `raw_buf`,
+`dummy_in_l`/`dummy_in_r`/`dummy_ticks`, `chunk_l`/`chunk_r`,
+`reverb_send_l`/`reverb_send_r`, `delay_send_l`/`delay_send_r`,
+`pcm_chunk`) total ~196KB and sat in plain SRAM for no real reason —
+both functions already run with the audio engine fully suspended (see
+*Audio suspended during save* above), never measured by the live CPU
+meter, so SDRAM's extra latency costs nothing there. Moving that
+~196KB to SDRAM and the reverb's ~166KB the other way into SRAM nets
+out as a **drop** in SRAM usage overall (measured: 461KB → 430.6KB
+used, ~30KB freed, not consumed), not a tight squeeze.
+
+One real correctness catch, not just a mechanical tag swap:
+`dummy_in_l`/`dummy_in_r`/`dummy_ticks` relied on a declaration-time
+`= {}` zero-initializer ("an all-zero, never-written array is safe to
+reuse every chunk"). Confirmed directly against the startup code and
+linker script: only ordinary `.bss` gets zero-filled at boot (see the
+section above) — `.sdram_bss` never does, so that initializer would
+have silently stopped doing anything once these moved to SDRAM. Fixed
+with an explicit `memset()` each call instead, the same "re-zero every
+call" treatment `export_reverb_storage` already gets a few lines away.
+
+**Measured result, confirming the real hypothesis cleanly**: reverb's
+own marginal CPU contribution (over an idle baseline of 6%) dropped
+from ~29-30% down to **~11-12%** — roughly a 60% cut, not a marginal
+one. The heaviest combined scenario tested (4 recorded layers, reverb,
+Dexed, and Grains all active and playing at once) landed at **70%
+peak**, down from the 85-100%+ territory earlier combinations of
+engines had been hitting. SDRAM's own per-access latency, not the
+algorithm's arithmetic, really was the dominant cost of this
+memory-bound hot loop — moving the big arrays somewhere faster helped
+far more than anything that changed what the loop actually computes.
+Confirmed clean by ear afterward: the live reverb's sound is
+unchanged (same algorithm, same constants, only where its backing
+memory lives moved), and both an actual Export and an actual WAV
+Import were run end-to-end to verify the buffer-tier swap didn't
+introduce any artifacts — both came out clean. Export itself likely
+runs a little slower wall-clock-wise now (its own scratch buffers pay
+SDRAM's extra latency), accepted deliberately since Export already
+runs fully audio-suspended and isn't time-critical.
+
+### Bypass's own mix volume/pan
+
+Home's Bypass (Button 2) mixes live input directly into the output; it
+now has its own Volume/Pan on `Screen::Mixer`'s Bypass channel,
+independent of the per-layer recording input **Gain** (which only ever
+affects what gets *captured*, not the Bypass monitor mix). Like Master
+Volume and vari-speed, these are live-performance controls, not part of
+a saved performance — they reset to their defaults (Volume 0.8, Pan
+center) on boot and after `Load()`, never persisted to `PERF/*.DAT`.
+
+## MIDI
+
+Three MIDI-played instruments — Dexed, Ensemble, and Grains, all
+described below — run alongside the looper, driven by the Pod's built-in
+MIDI IN jack
+(`hw.midi`, a `MidiUartHandler` on the Pod's UART). One real hardware
+quirk this needed working around: libDaisy's default MIDI transport
+config claims the same physical pin as the encoder's own click button
+(`D13`) for MIDI TX, but the Pod's MIDI jack only ever wires up RX per
+Electrosmith's own pinout — that TX claim is never actually usable here.
+`main.cpp` re-inits MIDI with TX explicitly disabled
+(`Pin(PORTX, 0)`, the standard "don't claim this pin" sentinel) and
+re-inits the encoder afterward to reclaim `D13`, rather than relying on
+TX simply never being driven.
+
+MIDI is polled from the **control-rate callback** (TIM5; nominally 1 kHz,
+really ~2 kHz — see **Arpeggiator: time**), not the main
+loop — the same reasoning buttons already use: the main loop's OLED
+redraw is a blocking I2C write, and if a redraw stall delayed draining
+the UART, a very fast note tap's NoteOn and NoteOff could end up sitting
+in the queue together, both getting drained in the same pass with no
+audio block ever seeing the note as held — a silent note instead of a
+short blip. Pitch bend updates read more naturally at this steady rate
+too, for the same reason.
+
+- **NoteOn/NoteOff** are filtered per-engine by **MIDI channel**
+  (`DexedParamPage::MIDI`/`EnsembleParamPage::MIDI`/`GranularParamPage::MIDI`,
+  each engine's own page — K1 only, quantized across 17 buckets: Omni +
+  channels 1-16, same knob-quantized idiom the Bars knob already uses)
+  before reaching any engine — `Ui::dexed_midi_channel_`/
+  `ensemble_midi_channel_`/`granular_midi_channel_` (`-1` = Omni, 0-15 =
+  that 0-indexed channel, matching how libDaisy's own `MidiEvent` fields
+  already arrive 0-indexed) live on `Ui`, not inside
+  `DexedSynth`/`EnsembleSynth`/`GranularEngine` — a routing/IO setting,
+  not a sound parameter, same reasoning `reverb_size01_` and friends are
+  already owned by `Ui` and just read every poll rather than pushed into
+  an engine. `main.cpp`'s MIDI block reads all three channels once per
+  poll (not once per event, since they can only change between UI
+  redraws anyway) and gates each of NoteOn/NoteOff's three forwarding
+  calls independently — Omni matches every channel, otherwise the
+  event's own channel must match exactly, so all three engines can each
+  listen on their own channel, the same channel as each other, or any
+  stay on Omni. Playing a note still only reaches an engine that's
+  actually enabled (see *Per-engine on/off* below) regardless of
+  channel.
+- **Pitch bend** (±2 semitones, the MIDI standard default) feeds Dexed
+  and Ensemble — Grains has no pitch bend input. `EnsembleSynth::
+  SetPitchBend14bit()` deliberately matches Dexed's own range/raw-14-bit
+  convention rather than inventing a second one, and re-applies the
+  current bend to every currently-held voice's real frequency on every
+  update, not just newly-struck notes, so bending while a chord rings
+  bends the whole chord, same as any real synth. Gated by each engine's
+  own MIDI channel the same way NoteOn/NoteOff are.
+- **Mod wheel** (CC1): Dexed's own target is always one of Pitch/Amp/EG
+  Bias (`DexedSynth::ModWheelTarget`, no Off state — real DX7 hardware
+  always routes the wheel somewhere). Ensemble's own target
+  (`EnsembleSynth::ModWheelTarget`, cycled by Button 1 on its own MIDI
+  page) is a deliberately different shape: **Off by default**, and once
+  a target (Chorus Depth / Output Level / Filter Cutoff) is picked, the
+  wheel pushes that parameter UP from whatever its own knob already set
+  toward 1.0 (`effective = base + wheel01*(1-base)`) rather than
+  sweeping an independent range of its own — wheel=0 always reads as
+  "unchanged," matching whichever knob setting is already dialed in. A
+  real, deliberate design choice made explicit mid-session: an earlier
+  draft had the Filter Cutoff target force Filter Mode on (so the wheel
+  would always audibly do something even with the Filter page's own
+  Mode still at Off) — rejected in favor of "the wheel always modulates
+  whatever's already dialed in, never overrides an independent setting
+  on its own," so Filter Cutoff genuinely does nothing unless Filter
+  Mode is already something other than Off. Grains has no mod wheel
+  input. Also gated by each engine's own MIDI channel.
+- **MIDI CC 123 (All Notes Off) / CC 120 (All Sound Off)**: added after
+  a real, confirmed-on-hardware stuck-note report using an Akai MPK Mini
+  Plus's own arpeggiator (see *Ensemble*'s own section below for the
+  actual root cause, which turned out to be a real bug in
+  `daisysp::Adsr`, not a MIDI-handling gap at all) — `AllNotesOff()` now
+  exists on `DexedSynth`/`EnsembleSynth`/`GranularEngine` alike (same
+  class of real-world need: a controller/arpeggiator that doesn't
+  reliably send a matching NoteOff for every NoteOn, most commonly the
+  very last note when it stops or a key releases mid-cycle), gated by
+  each engine's own MIDI channel the same way NoteOn/NoteOff are.
+  Toggling an engine's own Global on/off switch (see *Per-engine on/off*
+  below) also calls its `AllNotesOff()` on every flip now, independent
+  of MIDI entirely — a manual "panic" workflow that doesn't depend on
+  the controller sending this message at all.
+- All three channels persist exactly like the Dattorro reverb parameters
+  did when they were added: per-performance (`FileHeader`, `kFileVersion`
+  14) and as a startup default (`PREFS.DAT`) — see *Save/load* below for
+  the version chain. Default Omni for all three, so an existing v11/v12/
+  v13 performance or prefs file loads with every engine still listening
+  to everything, matching its pre-upgrade behavior exactly.
+- **Global:MIDI** shows every engine's channel as one list, laid out like
+  Global:Snap's grid. It edits the same `Ui` fields as the engines' own
+  MIDI pages (`Ui::MidiRowChannel()` maps a row to one): DXD-B's row
+  points at DXD-A's channel while `dexed_midi_lock_` is on, and setting it
+  to anything else turns the lock off, as on the Dexed MIDI page. SMPVO
+  and SMPDR share `sample_synth_midi_channel_`, so they are one row. K1
+  is read directly (no pickup) but only after it has moved past
+  `kPickupMove`, so arriving on the page doesn't jump the row; changing
+  row re-arms K2's pickup at the new engine's channel.
+- **Sustain pedal (CC 64)** is handled once in `main.cpp`, not inside
+  each engine: every keyboard engine (Grains, DXD-A, DXD-B, Ensemble,
+  SMPVO) goes through `SustainNoteOn()`/`SustainNoteOff()`, which track
+  each key (`g_sus_key_down`) and, while that engine's pedal is down,
+  hold back the NoteOff (`g_sus_held`). Pedal up releases every held note
+  whose key isn't still down; a key struck again while held just
+  retriggers and waits for the pedal again. Each engine follows the pedal
+  on its own channel, like the mod wheel. `EngineAllNotesOff()` (panic,
+  CC 123/120) also clears the held flags, so a later pedal-up can't
+  release notes that are already gone. Sustained notes stay allocated, so
+  they count against Voices and are stolen oldest-first like any other.
+- **Pedal polarity.** Controllers like the MPK Mini Plus sense the
+  pedal's polarity at power-on, so a pedal plugged in late (or a
+  different switch type) arrives reversed. `main.cpp` keeps the raw CC 64
+  state per engine (`g_sus_raw`: nothing yet / up / down) and applies
+  Global:MIDI's Reversed in `SustainDown()`. Kept raw so flipping the
+  setting re-applies at once, and "nothing yet" counts as up either way:
+  a reversed pedal at rest sends nothing until it's first pressed, so
+  treating it as down at boot would sustain everything. The setting is
+  its own `PEDAL.DAT` (same pattern as `LOOPER.DAT`), written the moment
+  it changes. The page's **SUS** box (filled = down, hidden until the
+  pedal first sends anything) is fed back through `Ui::SetPedalState()`.
+
+## Per-engine on/off
+
+`Global:DXD-A`/`Global:DXD-B`/`Global:Ensemble`/`Global:Granular`/`Global:Looper` each
+carry a plain Button-1-tap on/off toggle (`dexed_enabled_`/`dexed_b_enabled_`/
+`ensemble_enabled_`/`granular_enabled_`/`looper_enabled_`) — a real CPU
+lever, not just a mute: `AudioCallback()` skips calling that engine's
+`Process()` entirely while disabled and writes silence instead, so
+someone using only Grains (say) genuinely gets Dexed's and Ensemble's
+own CPU share back, not just their silence. Every one of these toggles
+also calls that engine's own `AllNotesOff()` on every flip, not just
+disabling — see *MIDI*'s own CC 123/120 entry above for why: a stale
+held note from before an OFF→ON flip would otherwise start sounding
+again the instant `Process()` resumes, with no NoteOn of its own to
+explain it (MIDI dispatch still updates an engine's held-note state
+while it's "disabled," only `Process()` itself is gated by the toggle).
+Switching the looper off also resets `TempoClock`'s phase (bar/beat
+position, count-in state, click envelope) back to bar 1 beat 1, so
+turning it back on always resumes cleanly rather than picking up
+mid-phase from wherever it happened to be frozen. All three instrument
+toggles default **off** on boot — a real toggle exists for each, so
+there's no reason for any of them to be making sound before it's asked
+to.
+
+Dexed, Ensemble, and Grains are fully independent — no mutex, unlike the
+earlier Pad Synth/Fm Synth pair they replaced (which shared one
+"melodic voice" role and one Mixer channel, and were kept mutually
+exclusive as a result). Dexed's own real 6-operator DX7 emulation made
+both of those from-scratch approximations redundant at once rather than
+needing a third alongside them; Ensemble (added later, see its own
+section below) is a third, fully independent voice again rather than a
+return to that old shared-role arrangement — a divide-down string-
+ensemble instrument occupies a genuinely different sonic role from
+either Dexed's FM synthesis or Grains' granular processing, so there's
+still no case where two of the three need to be kept from overlapping.
+
+## Dexed (Screen::Dexed)
+
+A MIDI-played, real 6-operator, 16-voice DX7 clone (`dexed_synth.h/.cpp`)
+built around a vendored copy of Google's own **msfa** (`src/msfa/`,
+Apache-2.0 — the same DX7 emulation core Google's official open-source
+`dexed`-lineage synths trace back to), replacing both Pad Synth and Fm
+Synth outright rather than sitting alongside either — a real DX7 clone
+makes both of those earlier from-scratch approximations redundant at
+once, and unlike them, Dexed and Grains are fully independent (no mutex
+— Dexed's own on/off toggle doesn't touch Grains' or vice versa).
+
+**Why msfa, not another from-scratch FM voice**: after building and
+tuning two increasingly-elaborate custom FM engines in turn (Pad Synth's
+oscillator-bank approach, then Fm Synth's own lookup-table 4-operator
+voice — see project history for both), the real DX7's own operator
+algorithms, envelope behavior, and parameter ranges turned out to be
+worth having exactly right rather than approximated again a third time.
+msfa is the genuine article: the same 32 real algorithms, the same
+per-operator envelope/keyboard-scaling/velocity-sensitivity model, real
+patch data ported directly from real DX7 SysEx dumps rather than
+hand-guessed. No GPL'd decoder/UI code was ported alongside it — msfa's
+own `synth.h` deliberately excludes the packed-SysEx conversion and
+patch-editor logic that lived in the original (GPLv3) Dexed plugin, so
+everything UI/preset/SysEx-adjacent in this project (`dexed_sysex.h/
+.cpp`'s packed↔unpacked converter, the whole preset/macro/UI layer
+below) is this project's own, written directly from the public 1993
+Yamaha MIDI SysEx spec.
+
+**Voice architecture**: `kMaxVoices = 16` (was 10), oldest-note-steal (matching
+every other engine's own voice-stealing convention), each backed by
+msfa's own `Dx7Note`. `patch_[156]` (msfa's unpacked patch layout) is
+shared by every voice — there's no per-voice patch copy — so switching
+or previewing a preset is a single write that every currently-held note
+picks up on its next `update()` call, not a per-voice re-copy.
+
+**A real cross-ISR race condition, found from real-hardware note
+dropouts during fast playing**: `NoteOn()`/`NoteOff()` are called from
+`ControlTimerCallback` (TIM5, a genuinely lower NVIC priority than the
+audio DMA ISR), and perform real multi-step, non-atomic mutations to a
+voice's `Dx7Note` state (`init()`/`keyup()`). `RenderQuantum()`, running
+from the higher-priority audio ISR, reads that same voice state every 64-
+sample quantum and can genuinely preempt a `NoteOn()`/`NoteOff()` call
+mid-mutation — dropping or corrupting a note when playing fast enough
+for the two to actually collide. Fixed with tight `__disable_irq()`/
+`__enable_irq()` critical sections around just the actual voice-mutating
+calls (not the surrounding voice-search logic) in `NoteOn()`, `NoteOff()`,
+and `ApplyPatchToHeldVoices()` (also reachable from the equally-
+preemptable main-loop context via the UI's own knob-driven setters).
+
+**A follow-on regression from that same fix**: `Ui::KnobPickUp()` has no
+"did this actually change" check of its own — once engaged, it
+unconditionally re-applies the setter on every single main-loop tick,
+harmless for every other engine's own cheap float-assignment setters, but
+this meant `ApplyPatchToHeldVoices()`'s new critical section was firing
+at the full main-loop tick rate for as long as any Dexed knob stayed
+engaged, and with several notes held, the cumulative disabled-interrupt
+time was enough to cause fresh dropouts. Fixed with explicit "value
+actually changed" guards in `Ui::ApplyKnobs()` specifically for Dexed's
+expensive setters (Feedback/Vibrato compare the resolved byte value;
+Brightness/EnvSpeed use a small float epsilon) — Filter/Mix's own
+setters are left unguarded, since those are cheap plain-float
+assignments like every other engine's.
+
+**Output level, headroom, and the post-mix filter**: `Process()` reads
+msfa's own Q24 fixed-point render output (`kQ24Scale = 1/(1<<24)`), then
+an empirically-measured `kHeadroomScale` correction — a single hand-tuned
+worst-case test patch first suggested `1/4.41`, but real hardware testing
+with actual factory patches (several using feedback, and real chords
+beyond 3 notes) showed that margin was still too tight, engaging the
+final `tanhf()` soft limiter hard enough to audibly compress even a
+single patch played alone; doubled to `1/8.82`, confirmed clean up to
+full master volume. A `daisysp::Svf` pair (mirroring `GranularEngine`'s
+own bus-filter shape) sits post-mix, pre-limiter, so a resonant peak is
+still caught by the safety net rather than clipping past it. Dexed now
+has a real Pan control too (see below) — added after this engine's own
+initial "no Pan yet" gap turned out to have a real, audible consequence.
+
+(The compensation below was later switched off and then removed -- see
+"Fixed headroom margin" further down.)
+
+**Voice-count headroom compensation, found from a real multi-note
+distortion report**: "when I play more than 1 note at the same time in
+Dexed it seems to distort a little." Root-caused (via a native, off-
+target patch-byte inspection tool, not guessed at) to a genuinely *hot*
+factory patch — BRASS 1, feedback set to 7 (the maximum) with several
+operators near-unity output level — where several simultaneous voices'
+summed peaks could exceed what the fixed `kHeadroomScale` margin above
+was tuned against (that margin was measured against single-voice and
+modest-chord playing, not several loud, high-feedback voices stacked at
+once). Fixed with `voice_headroom_scale_`, computed once per
+`RenderQuantum()` from the live count of currently-held voices
+(`held_note_ != -1`): for N > 1 held voices, an additional `1/sqrt(N)`
+scale is applied before the existing `kHeadroomScale`, leaving
+single-note loudness completely untouched (N=1 applies no extra scaling
+at all) while giving multi-voice chords proportionally more headroom
+before they'd otherwise clip into the limiter.
+
+**Pan, added after a real hardware report**: same linear pan law every
+other engine here uses (`panL = 1-v`, `panR = v`), applied to the same
+mono `s` right after the limiter/output-level stage, feeding both the
+dry output and the reverb send (same position and reasoning
+`GranularEngine::Process()` already uses). This didn't exist initially
+-- Dexed's own live signal reached the master mix completely unscaled,
+with no pan-law attenuation at all, while every OTHER source (loop
+layers, Grains) already took the usual -6dB-at-center cut before
+reaching `out[]`. The result: a user reported Dexed sounding
+disproportionately loud playing live compared to a recorded-and-played-
+back loop layer at the same nominal settings -- not a bug in either
+signal path, just a real structural gap in Dexed's own gain-staging
+that every other engine here didn't have. Saved as `pan01` in
+`DexedPresetData` (see below), and reachable from Dexed's own Mixer
+channel (see *Screen::Mixer* below) -- not from a dedicated page on
+`Screen::Dexed` itself, since the existing Mix page had no free knob
+slot to add it without a Button-toggle idiom for just one control.
+
+**Macros — Brightness and Envelope Speed**: both bipolar, knob-center
+(0.5) = "exactly as the loaded preset stored it," scaling relative to a
+`patch_baseline_[156]` snapshot taken whenever a preset actually loads
+(not relative to whatever the knob did last, so repeatedly nudging
+Brightness back to center always returns to the *preset's own* sound,
+not some drifted intermediate state). Both use
+`FmCore::get_operator_routing()`/`get_carrier_operators()` to identify
+which operators to scale generically for whichever of the 32 algorithms
+is loaded, rather than 32 hand-authored per-algorithm tables:
+- **Brightness** scales every non-carrier (modulator) operator's output-
+  level byte together, carriers untouched — 0x at the bottom of its
+  range, unchanged at center, 2x at the top.
+- **Envelope Speed** scales all 6 operators' 4 rate bytes together, same
+  0x/1x/2x curve.
+
+Both call `Dx7Note::update()` (never `init()`) on every currently-held
+voice after writing the scaled bytes into `patch_` — genuinely
+click-free, confirmed on real hardware: `update()`'s own `Env::update()`
+doesn't reset the envelope's `level_` or restart the attack, it only
+retargets from wherever the envelope already is.
+
+**A real, previously-latent bug found while building the Algo page's
+diagram**: `FmCore::get_carrier_operators()` (msfa/fm_core.cpp) checked
+only the `OUT_BUS_ADD` flag bit, which actually means "sum into my
+target rather than overwrite it" — a flag also set on plain modulators
+that sum into a shared bus (used by several converging algorithms, e.g.
+16-18) — not "carrier" specifically. Decoding all 32 real algorithms
+directly confirmed this over-reported carriers on 15 of the 32. Fixed to
+check `outbus == 0` (writes straight to the final mix, exactly what
+`render()` itself checks), which is what the Brightness macro above and
+the Algo diagram below both now rely on.
+
+**Algorithm diagram (`DexedParamPage::Algo`)**: a real, generic box-and-
+arrow diagram of whichever of the 32 real algorithms is loaded, laid out
+fresh from `FmCore::get_operator_routing()`'s per-operator bus data —
+not 32 hand-drawn pictures. The routing graph (which operator feeds
+which bus, and in what order, exactly matching msfa's own sequential
+`render()` processing) is reconstructed into a column (independent
+chain)/row (depth from that chain's root) layout; a parent feeding more
+than one child branches the later child(ren) into a fresh column instead
+of overlapping the first; a converging algorithm (multiple parents into
+one child) centers that child between its parents' columns. Every
+connector is strictly horizontal/vertical (a straight drop for a same-
+column parent, an elbow — down to the child's own row height, then
+sideways into the middle of its near side edge — for a cross-column one)
+by explicit design constraint, not a limitation: it keeps the diagram
+legible on a 128x64 monochrome display without needing a curve renderer.
+Filled boxes are carriers, outline boxes are modulators (the operator
+number punched through as "off" pixels on a filled box so it still
+reads); a horizontal "OUT" bus line collects every carrier's drop; the
+one operator (if any) with real self-feedback — both `FB_IN` and
+`FB_OUT` set, confirmed from the routing data to always be a single
+self-loop on one chain-root operator, never split across two — gets an
+explicit "FB" text tag beside it (a small pixel bracket was tried first
+and read poorly at this box size; feedback operators are always chain
+roots with no incoming edges, so their side edges are always free for
+this). Algorithm can be cycled three ways: Knob 1 (quantized bucket
+selection across all 32, soft pickup), Button 1 (step back), Button 2
+(step forward).
+
+**Factory presets — 3129 across 54 folders, real sourced data, never
+invented**: real, freely-distributed SysEx bank dumps drawn from the
+broader Dexed/MicroDexed open-source ecosystem this whole port's msfa
+lineage already traces through (not one single traceable upstream
+repo), each a real, standard 32-voice SysEx bulk-dump bank. **Rom 1**
+through **Rom 4** (`kDexedFactoryCategories` in `dexed_factory_data.cpp`)
+are each the real, unsorted 64-voice contents of an actual Yamaha
+factory ROM cartridge pair (ROM1=1A+1B ... ROM4=4A+4B), kept in their
+own original folders rather than sorted by sound type. Real quality/
+popularity rankings for DX7 patches aren't something that can be
+sourced reliably, so these stand in as an objective proxy instead --
+genuine factory data every real DX7 shipped with (ROM1) or that Yamaha
+sold as official cartridges (ROM2-4).
+
+**The other 50, from one real ~100-bank, ~2900-voice collection** that
+came already organized into 13 named categories by its own upstream
+source manifest -- Synth/Piano/EPiano/Bass/Strings/Woodwind/Brass/
+Organ/Perc/Voice/Bells/FX/Div. An 8th category in that same collection,
+its own "ROM" folder, was confirmed byte-for-byte identical to Rom 1-4
+above (same ultimate origin) and skipped rather than duplicated. Voices
+that were entirely empty (all-zero patch bytes, ~2% of the raw set --
+real banks aren't always fully populated) were filtered out during
+import rather than embedded as dead presets. Each of the 13 categories
+is split into as many same-named numbered folders (Synth 1, Synth 2,
+...) as it takes to keep every single one at or under 64 voices -- 2
+source bank files (64 voices) per folder, 1 for any odd file left over.
+
+This went through two real iterations on hardware. An
+earlier version of this project also shipped 11 hand-picked "Synth/
+Piano/E.Piano/..." categories of its own (2 bank files each, sourced
+independently, before this much larger collection was found) -- removed
+once the larger collection made them a smaller, redundant duplicate
+covering the same sound types (one hand-picked voice, the classic
+ROM1A "MARIMBA", that had been added to the old Percussion folder after
+a user report that no marimba existed anywhere in the set, turned out
+unnecessary too -- the larger collection's own Perc/Div folders already
+contain over 20 real marimba voices). The 13-category collection was
+also initially embedded as one folder per category (up to 320 voices in
+"Synth 2" alone) -- a real user report that this was too fine-grained
+to land on a specific preset with one knob's worth of physical rotation
+led to a first pass splitting each into two halves, then a second pass
+(after a follow-up "still too many, cap every folder at 64") splitting
+by source-file boundary (never a mid-bank byte split, so every folder
+is still a clean, real subset of the original bank files) into however
+many same-named numbered folders it actually takes.
+
+Stored as raw 128-byte-per-
+voice **packed** payloads (never pre-expanded and held in flash/RAM
+unpacked) — `DexedSynth::GetFactoryPreset()` unpacks on demand via
+`DexedSysex::UnpackVoice()`, verified byte-exact via a native (non-
+embedded) round-trip test against real bank data before ever being
+embedded. The original `.syx` bank files themselves aren't kept in the
+repo (they were only ever needed for that one-time offline extraction,
+never read by the firmware build itself) — attribution for the source
+material lives here and in `README.md`'s own Thanks section instead.
+
+**Duplicate factory names, and why some folders auto-number them**: real
+factory banks occasionally have a long run of voices someone saved
+without ever renaming from a generic default -- indistinguishable
+from each other while scrolling the preset browser, confirmed by a real
+user report (against an earlier factory bank this project has since
+replaced, but the same real-world data quirk can recur in any bank).
+`DexedSynth::GetFactoryPresetName()` disambiguates any name
+that repeats anywhere within its own category with a running " N" suffix
+(numbering every occurrence, including the first, so no two presets in
+the same folder ever display identically) — a display-only fix; the
+underlying patch data/sound is untouched.
+
+**Folder-line overflow, found from a real user report**: the folder-
+browsing line used to read `"Folder: %s (%d)"`, e.g. "Folder: Woodwind 3
+(64)" — 23 characters. `Font_6x8` is fixed 6px/char, so the 128px
+display only ever fits 21 characters; the longest real category name
+("Woodwind N") pushed the trailing count off the right edge entirely.
+Dropped the redundant "Folder: " label (the screen's own title already
+establishes you're browsing folders) — just `"%s (%d)"` — bringing the
+worst case down to 15 characters, comfortably inside the budget.
+
+**Preset data & save/load** (`DexedSynth::DexedPresetData`): patch bytes
+plus `reverb_send01`/`output_level01`/filter mode+cutoff+resonance/
+`pan01` — a
+flat snapshot via `ApplyPreset()`/`CapturePreset()`, the same shape every
+other engine's own preset struct already uses. `pan01` was added later,
+once Dexed got a real Pan control (see below) -- a trailing field with a
+0.5 (centered) default member initializer, same convention PadSynth's
+own tune01/pan01 fields used when THEY were added later, so every
+existing positional/aggregate initializer still gets a sensible neutral
+value. `output_level01` defaults
+to **0.70** (not 1.0), and since factory presets never set this field
+themselves, that's the level every one of the 3129 factory presets
+actually loads at. User presets save/load to `DEXP/PRESnnn.DAT` via
+`PerformanceStore` (up to `kMaxDexedPresets = 3500` total slot numbers,
+headroom above the 3129 factory presets for up to ~371 of your own) — the
+factory range is served straight from `GetFactoryPreset()` with zero card
+I/O and, unlike the user range, is never subject to Delete/Duplicate's
+own slot-renumbering (`CompactSlotsAfterDelete()` is fundamentally
+incompatible with a fixed factory bank, the same reasoning Grains'
+preset range already established).
+
+*Superseded: a tap now simply loads and stays in the folder, with no
+separate hold-to-commit — see* Shared browse convention *below.*
+
+**Preset folder browsing & live preview**: the identical "a short Button
+2 tap while a folder's open previews the highlighted preset live,
+without resetting `save_load_mode_`" behavior as the removed Fm Synth's
+own preset browser — confirmed directly from that engine's own source
+(`git show fm-synth-experiment:src/ui.cpp`) that live preview and commit
+were always literally the same function call, just with or without also
+exiting back to `Idle`; reused as-is here rather than redesigned. The
+folder browsing itself grew a third level (see *SysEx import* below)
+once a real Import feature meant the folder list could no longer stay a
+single flat sweep.
+
+**SysEx import** (`DEXP/`, `DXIMPORT/`): added directly after confirming Dexed's factory data has no import path
+of its own for a user's own real DX7 patches — the clean-room packed
+↔ unpacked SysEx converter already existed (`dexed_sysex.h/.cpp`, built
+for embedding the factory banks themselves, see above), so wiring up a
+real *import* path reused that converter rather than needing new
+decoding logic.
+
+**A separate SD folder from Grains' own Import, on purpose**: `.syx`
+files are dropped into `DXIMPORT/` (not created automatically — same
+"you make this folder yourself" convention Grains' own WAV `IMPORT/`
+folder already uses), kept completely separate from Grains' `IMPORT/`
+so the two file types and their listings never collide, per a direct
+request once a user initially (reasonably) assumed the two importable
+formats might share one folder.
+
+**Two real SysEx wire shapes recognized, both fully validated before
+anything is trusted** (Yamaha ID byte, message length, a real 7-bit
+checksum — never just assumed correct): a **Single Voice Dump** (format
+0, 163 bytes on the wire) turned out to be, byte-for-byte, *already* this
+project's own internal 156-byte unpacked `patch_[]` layout — confirmed
+directly against the public DX7 SysEx spec, so importing one is a
+straight `memcpy`, no `UnpackVoice()` step needed at all. A **32-Voice
+Bulk Dump** (format 9, 4104 bytes) uses the same packed 128-byte-per-
+voice layout the embedded factory banks already ship in, so it reuses
+`DexedSysex::UnpackVoice()` unchanged, once per voice.
+
+**A real hardware bug in the read path itself, found and fixed through
+several rounds of on-device diagnosis**: a byte-perfect bulk-dump file
+(independently verified via a Python replica of the exact same
+validation logic, confirming the file itself was never the problem)
+consistently failed its own header check on real hardware — its very
+first byte came back one position early, as if the read had silently
+skipped it. An isolated 1-byte probe read at the same file offset came
+back correct every time, isolating the fault to something specific
+about a *single large* (multi-sector, direct-to-caller-buffer) SD
+transfer, not the file, not the file position, and not a simple
+alignment fix (splitting the same read into "one sector-aligned call,
+one small remainder call" was tried first and didn't fix it either).
+The real fix sidesteps the faulty code path entirely rather than
+chasing its root cause further: reading the whole file through repeated
+small (128-byte) chunks instead of one large transfer, the same shape
+proven correct by the passing 1-byte probe, every single time.
+
+**One named folder per import, since the SysEx data itself carries no
+overall "bank name" field** (only each voice's own 10-character name) —
+each import is named after its own `.syx` filename (extension stripped),
+so importing `vrc112a.syx` creates a folder named "VRC112A" holding just
+that bank's own voices, rather than dumping everything into one flat,
+ever-growing list. Recorded in its own small per-import file
+(`DEXP/IMPORTS/IMPnnn.DAT`, one file per import — an earlier version
+kept a single shared, appended manifest file instead; switched to one
+file per import, per a direct request, so a single import's own record
+can be found, backed up, or removed independently of every other one,
+matching this project's own established "one numbered file per item"
+convention already used everywhere else (`PERF/`, `GRNP/`, `DEXP/`
+itself). A one-time migration reads any leftover copy of the old shared
+manifest format, splits it into the new per-file scheme, and deletes the
+old file, so an import made before this change doesn't lose its folder
+grouping.
+
+**A new group level, added once the folder list itself couldn't stay
+flat any longer**: Dexed's own 54 factory categories plus a "User"
+folder was already a lot for one knob sweep before any import existed;
+each completed import adds one more folder on top of that. Picking
+"Files" from the Preset page's own top chooser now opens a **group**
+chooser first — **Roms** (the 4 real, unmodified "Rom 1"–"Rom 4"
+cartridge categories), **Dexed** (the other ~50 curated-by-sound-type
+categories), **Imports** (one folder per completed import, above), and
+**User** (every hand-saved preset that ISN'T part of a recorded import
+range — filtered out during the same refresh that scans the import
+folder list, so an imported preset never shows up twice). Roms/Dexed/
+Imports each still open onto their own folder list beneath the group;
+User has no folder level of its own (there's nothing to sub-group), so
+opening it goes straight to its own flat list, the same one-level shape
+Global:Perf's own numbered list always used.
+
+**Back (Button 1) / Open (Button 2) split, at the group and folder-list
+levels only**: a direct request ("within these we need a back button")
+once the group level made "how do I get back out of Files without
+abandoning the whole Save/Load flow" a real, previously-unaddressed gap
+— the original two-level browser never had a way back out of "Files"
+short of leaving the whole chooser. Button 2 is otherwise idle at these
+two levels (nothing there is a real preset yet to preview/commit), so
+it was free to take over "drill deeper" duty, freeing Button 1 to mean
+"back" consistently at every level of this browser. Once inside an
+actual folder (or User's own flat list) — a real preset, not a
+container — Button 2 goes back to its own established Load-preview/
+hold-to-commit job, since there's nothing further to open from there.
+
+**Real names, not slot numbers, for every USER preset — not just
+imports**: a saved preset's real 10-character DX7 name already lived
+inside its own patch bytes the whole time (a manual save keeps whatever
+name was in the live patch at save time; an import keeps the bank's own
+original name verbatim), but the browser only ever displayed it for
+factory presets, showing a bare slot number for anything else — a
+direct request ("they have proper names... not user saves") to fix that
+gap for every user slot, not just newly-imported ones.
+`DexedSynth::GetPresetDataName()` reads that name straight out of an
+already-decoded patch (no unpacking needed, since a user slot's saved
+data is already in the unpacked layout); the currently-loaded preset
+reads it for free from the live engine already in RAM, while a
+highlighted-but-not-yet-loaded slot needs one small SD read, cached by
+slot number so scrolling doesn't re-read it every screen refresh. A
+genuinely blank name (some presets predate this whole factory-bank/
+naming system and never had one) falls back to showing the slot number
+rather than a bare "?", so an old save doesn't read as a fresh
+regression.
+
+**Two real performance bugs found from a single "why does this look
+frozen" report on a full 32-voice bank import**: (1) finding a free slot
+for each of the 32 voices called `NextFreeDexedPresetSlot()` fresh every
+time, each call re-scanning the *entire* user slot range from its own
+start — O(n) work called n times is O(n²) for the whole batch. Fixed
+with an optional `search_from` parameter so the import loop resumes each
+search exactly where the last one left off, turning the batch into one
+continuous forward sweep. (2) nothing drew anything to the screen for
+the whole multi-second batch, so it looked completely frozen with no
+way to tell it was doing real work at all — fixed by reusing the exact
+same "WORKING..." progress overlay (`Ui::OnSaveLoadProgress()`) every
+other multi-step SD operation in this project already shows. A related,
+smaller lag was found and fixed on the group chooser itself: scrolling
+through Roms/Dexed/Imports/User (a screen that shows no counts at all)
+was triggering a real SD directory re-scan on every group the knob swept
+past, not just the one it settled on — removed, since the real refresh
+this data actually needs already happens once a group is opened.
+
+**Filter/Mix**: one bus-level `Svf` pair (post-mix, pre-limiter, see
+above) and Reverb Send/Output Level, both reachable identically from
+Dexed's own Mix page and from `Screen::Mixer`'s DXD channel — same
+underlying value either way.
+
+**On by default? No** — `dexed_enabled_` defaults to **false**
+(`Global:DXD-A`'s own Button 1 toggle turns it on; DXD-B likewise), matching Grains' own
+default-off convention now that a real toggle exists — early in this
+engine's development it defaulted on, back when no toggle existed yet to
+turn it off.
+
+**Recording Dexed (and Grains) into a loop layer**: `main.cpp`'s
+`AudioCallback()` sums live input with Grains' and Dexed's own generated
+audio into a `mixed_in_l/r` buffer, and each loop layer's `Process()`
+call uses that mixed buffer instead of plain `in` only while that
+specific layer is actually `Recording`/`Overdubbing`/`ArmedCountIn` —
+layers just playing back always get plain `in`. This exact mechanism
+existed before Pad/Fm's removal (as `mixed_in`, feeding Pad/Fm's own
+output into recordings) and was deleted along with them under the
+incorrect assumption that it existed only for those two instruments — it
+also covered Grains (a real regression, since fixed) and needed
+extending to cover Dexed too. Grains' own separate "Direct Record"
+capture feature (its own dedicated live-input-into-Grains'-buffer path,
+independent of the loop layers) was extended the same way, to also
+include Dexed's generated audio (not Grains' own — that would be a
+self-capture feedback loop).
+
+**Reverb never gets recorded, for any instrument -- not a bug**: a
+real user question ("if reverb is active on Dexed, why doesn't it
+record with that reverb?") — the same principle applies identically to
+Ensemble's own Reverb Send, added later, since it feeds the exact same
+shared bus the same way. `mixed_in` above is built entirely from dry
+per-source signals; the shared `DattorroReverb` bus (fed by every source's own
+Reverb Send, loop layers included) is computed once per sample and
+added straight into `out[]` afterward, never routed back into
+`mixed_in`. This has always been true for the loop layers' own reverb
+sends too -- reverb here is a genuinely live/monitoring-only effect
+across the whole project, never "printed" into a recording. Making it
+print would need either a separate reverb instance per source (defeats
+the deliberate "one shared bus" CPU-saving design) or feeding the wet
+output back into `mixed_in` (which would pull in every source's reverb,
+not just one, and risks a real feedback buildup across successive
+overdubs) -- a real architecture change with real tradeoffs, not
+attempted here.
+
+**Grains' own output level, raised for the same underlying reason**:
+real-hardware testing after the recording fix above surfaced that Grains
+sounded much quieter than Dexed even at Grains' own Output Level knob
+maxed — traced to two real, structural facts about `GranularEngine`'s own
+gain chain that Dexed simply doesn't share: overlap-gain compensation
+(dividing by however many grain slots are active, a deliberate,
+documented anti-clipping tradeoff) and the shared linear center-pan law
+(a real -6dB dip at center that Dexed skipped entirely at the time,
+having no Pan control yet -- see *Dexed*'s own note above; it since
+got one, closing that specific gap, though the overlap-gain difference
+remains a genuine structural one). `GranularEngine::SetOutputLevel01()`'s ceiling was
+raised from 1.4x to 12x (in two real-hardware-driven steps, 4x first,
+then further after that still measured too quiet) specifically to give
+that knob enough real headroom to compensate — paired with a new
+`tanhf()` soft limiter in `Process()` (same convention as Dexed's own)
+so pushing the knob that hard drives it into deliberate, audible
+saturation rather than harsh digital clipping.
+
+**A real tradeoff surfaced while chasing a separate ADSR report below**:
+pushing Output Level high enough that the pre-limiter signal sits deep
+into `tanhf()`'s saturation zone doesn't just add the intended
+loudness/drive character -- it also compresses away most of the
+audible difference between different envelope stages, since values as
+different as 0.3 and 1.0 both land close to the same near-1.0 ceiling
+once heavily saturated. This isn't a bug in the ADSR itself (the engine
+settings are applied correctly throughout), but a real consequence of
+how far this ceiling can now push a signal into the limiter -- worth
+knowing before assuming a "no audible ADSR effect" report is a wiring
+bug rather than an Output Level setting.
+
+### FM voice summing and chord headroom
+
+A real, reported symptom ("Dexed sounds very gritty with reverb turned
+off" -- confirmed independent of reverb specifically, present even at
+low-but-nonzero reverb, so just something reverb's own diffuse energy
+had been masking) traced to two separate, stacked issues.
+
+**Every voice sharing one raw `int32_t` accumulator, with no clamp at
+all, was a real bug** -- not just a style choice. `RenderQuantum()`
+originally called every voice's `note.compute()` with the *same*
+shared `stage_i32_` buffer, meaning multiple voices added together in
+raw integer arithmetic with nothing stopping that from silently
+wrapping if any single voice's own FM math (feedback, resonant
+modulation -- normal, expected behavior for this engine, not a defect)
+transiently produced a value outside its nominal range. Confirmed by
+comparing against the reference implementation
+(`positionhigh/MicroDexed-touch`'s vendored `Synth_Dexed`, the exact
+same msfa-derived core files this project also vendors): its own
+`Dexed::getSamples()` renders each voice into its own private scratch
+buffer, clamps *that voice's own* output individually
+(`signed_saturate_rshift`), converts to float, and only then sums into
+the shared result -- specifically so one voice's transient overshoot
+can never corrupt another's contribution via integer wraparound before
+either is even added together. This project's own equivalent
+(`voice_scratch_`, `kVoiceClampQ24`, summed into a `float stage_f_`
+instead of a raw `int32_t` one) now does the same thing, in the same
+shape: a fresh scratch buffer per voice, clamped (64x nominal unity --
+real measured peaks top out around 1.74x for a single voice and 4.41x
+for a 3-note chord, so this is ~15x more headroom than the hottest
+real patch measured so far, comfortably clear of any legitimate signal
+while still well short of actual `int32_t` wraparound), converted, and
+summed in float space. Confirmed this half of the fix on hardware: the
+single-note grit went away immediately; chords still showed residual
+grit, which was the second, separate issue below.
+
+**Fixed headroom margin, not dynamic per-chord compensation** --
+`voice_headroom_scale_` (a `1/sqrt(N-held-notes)` equal-power
+pulldown) existed in the code for exactly this, but stayed disabled
+and was later removed: a real, measured
+artifact confirmed independently by the user's own recollection before
+even reading the code -- it keys off currently-*held* notes, not
+currently-*sounding* voices, so releasing one note of a chord makes
+the *other*, still-held notes audibly louder mid-release-tail, before
+the released note has actually finished ringing out. Fixing that
+properly would mean reworking what the compensation keys off entirely;
+instead `kHeadroomScale` (the fixed scale every voice's summed output
+is multiplied by, before the `tanhf()` safety limiter) was widened in
+two more steps this session -- `1/8.82` → `1/17.64` → `1/35.28`, each
+a plain doubling (~6dB) -- matching the reference implementation's own
+actual strategy once directly compared: a single fixed headroom
+margin, no per-chord dynamic scaling at all. Real trade-off, stated
+plainly rather than hidden: single notes got quieter too each step, not
+just chords, since a flat scale has no way to apply more headroom only
+when it's actually needed -- the Output Level knob (which sits *after*
+this scale and *before* the live/record split point, same as the scale
+itself) compensates for both live monitoring and whatever gets
+recorded into a layer equally, not just one or the other.
+
+**The Output Level knob was never part of the headroom picture at
+all, before or after any of this session's changes** -- a real,
+clarifying question the user raised directly ("is this what
+microdexed does?", "did we boost the Dexed signal somewhere?"). The
+pre-limiter clip/level checks (see *Peak level + clip indicator*
+above) read the signal *before* `output_level_` is ever applied, by
+design: "is the limiter compressing hard" is a property of the raw FM
+synthesis itself (chord size, patch feedback), not of how loud the
+channel's been mixed afterward. Turning that knob down makes an
+already-compressed result quieter; it was never capable of reducing
+how hard the limiter engages in the first place, on this firmware or
+on the reference implementation either -- confirmed by checking
+`PluginFx.cpp` (reference's own post-engine gain/filter stage): no
+polyphony-dependent gain there either, just a fixed multiplier, and no
+limiter on the summed signal at all.
+
+**Why does the reference implementation seem to handle this better,
+if the headroom math is now comparable?** Checked rather than
+guessed: `config.h` sets `MAX_NOTES 64` split across `NUM_DEXED` (2-4)
+engine instances, giving each instance 16-32 voices of polyphony --
+*more* per limiter than this project's single 10-voice engine, not
+fewer, ruling out "smaller chords per limiter" as the explanation.
+Comparing the actual scale factors instead: reference's own conversion
+chain (`audiobuf >> 4`, then `signed_saturate_rshift(x, 24, 9)`, then
+`/32768.0`) works out to an effective divisor of `~2^28` -- 16x more
+conservative than this project's original bare `kQ24Scale` (`1/2^24`,
+before any `kHeadroomScale` multiply) ever was. After this session's
+two doublings, this project's combined scale is now *more*
+conservative than reference's own fixed conversion, not less. The
+remaining, unverified-by-listening-alone difference is likely
+*character*, not margin: reference has no limiter on its summed
+output at all, relying purely on generous fixed headroom plus the
+per-voice hard clamp, so normal play likely never approaches it (rare
+hard clips at genuine extremes, if ever). This project's `tanhf()` is,
+deliberately, an *always-active* soft limiter that starts gently
+coloring the signal below the point it would actually hard-clip --
+smoother in principle, but potentially audible as a persistent texture
+even when technically safe, where reference would simply stay clean
+until a genuine rare extreme. Not a hardware difference either way --
+Teensy 4.1 (NXP i.MX RT1062) and the Daisy Seed (STM32H750) are both
+Cortex-M7 cores with a hardware FPU, same DSP class; Teensy's ~25%
+higher clock and its PSRAM-gated extra polyphony explain its own specs,
+not this specific behavior.
+
+### Wavefolder (DexedParamPage::Fold)
+
+A direct follow-up request after an earlier hard/soft-clip "Distortion"
+feature (Dexed + Grains + all 4 Looper layers, each with its own Soft/
+Hard toggle) was fully implemented, flashed, and real-hardware-tested,
+but ultimately reverted whole: Soft and Hard kept sounding
+indistinguishable even after two separate fix attempts (first widening
+the drive-gain ceiling, then switching Soft's curve from the original
+cubic polynomial to a `tanhf()`-based one, then giving that curve a
+lower asymptote than Hard's so the two could never converge at extreme
+drive) — the user's own verdict was "I don't like it," not a specific
+remaining bug, so the whole feature was shelved (`git stash`, not
+deleted) rather than iterated on further.
+
+The replacement idea, Dexed-only this time: a true wavefolder
+(`daisysp::Wavefolder`, MIT, already vendored and already linked into
+this project's DaisySP build — no new code needed for the DSP itself).
+Two reasons this is a different bet, not a repeat of the same mistake:
+
+- **A fundamentally different nonlinearity, not two flavors of the
+  same one.** Clipping (hard or soft) just flattens peaks — on Dexed's
+  already harmonically dense FM output, both flavors converged to
+  "generically crunchy," which was the real root cause of the old
+  feature's "can't tell them apart" complaint. Folding reflects
+  overshoot back into the waveform instead, generating genuinely new
+  harmonic/inharmonic content proportional to drive. There's also only
+  one mode this time (no Soft/Hard toggle to confuse), so the "do two
+  sub-modes actually sound different" problem doesn't exist here by
+  construction.
+- **Dexed-only is deliberate, not a first step toward everywhere.**
+  Folding on recorded/granular audio (Grains, Looper layers) tends to
+  read as broken digital artifacts rather than character — this is
+  treated as a synthesis-stage effect (the classic FM + West-Coast-
+  style wavefolding pairing), not a general-purpose "make anything
+  crunchy" effect.
+
+**A real unity-bypass win over the old Distortion feature, found by
+reading `Wavefolder::Process()`'s own math rather than assuming it**:
+with `gain=1, offset=0` (its own `Init()` defaults), the fold formula
+returns its input completely unchanged for any value in (-1,1). Mapping
+Fold Amount's `0%` knob position to `gain=1.0` (not `gain=0`, which
+would be the exact "drive=0 silences everything" trap the old
+Distortion feature needed a caller-side bypass-threshold special case
+to avoid) gives a genuine, exact unity bypass for free — no equivalent
+of `kDriveBypassThreshold` needed anywhere in this feature.
+
+**Insertion point**: right after the post-mix bus filter, before the
+pre-limiter tap — i.e. operating on `kHeadroomScale`'s own output (see
+*FM voice summing and chord headroom* above), deliberately the
+quietest point in Dexed's whole chain (a single voice peaks ~0.05
+there, a 3-note chord ~0.125). `kFoldMaxGain` (currently `40.f`,
+explicitly a retune-by-ear starting point, not a settled value) exists
+specifically to push that quiet signal into the fold's own interesting
+range at all — chosen a little below the old Distortion feature's own
+`kDriveMaxGain=60` at this identical insertion point, after a real hot/
+feedback-heavy patch was found to already start audibly distorting at
+just 6% knob position under that 60x.
+
+**A real, expected (not buggy) consequence, confirmed directly rather
+than assumed**: minor chords fold noticeably worse than major ones, and
+polyphony in general folds worse than a single note. The fold stage
+sits *after* every voice is already summed into one mono signal
+(`stage_f_`, see *FM voice summing and chord headroom*), so folding a
+chord means folding the sum of several frequencies at once —
+intermodulation distortion, new tones at the sums/differences of every
+pair of frequencies present, not just harmonics of any one note. A
+folder is especially prone to this versus a clip: every fold-crossing
+re-reflects the whole complex waveform, so small amplitude changes from
+notes beating against each other get thrown into large, chaotic
+harmonic reshuffling. Minor intervals (a minor third's 6:5 ratio
+overlaps less cleanly with the root's harmonic series than a major
+third's 5:4) are a bit rougher even dry, so folding turns that mild
+roughness into outright dissonance faster than it does for a major
+chord. This matches real analog/digital wavefolder behavior generally
+(classically paired with a single oscillator or unison, not chords, for
+exactly this reason) — not something specific to this implementation,
+and not something this change tries to engineer around.
+
+An independent output trim knob (Knob 2, same `powf(v01, 2.5f)` taper
+as this project's other Output Level-style knobs, default 100% =
+unchanged) exists for the same reason Drive's own Param B trim does
+(above): folding is a real gain stage before the clip, so loudness
+climbs with Amount even though the folded output's peak is bounded.
+
+### Skipping idle voices in RenderQuantum()
+
+A real, free CPU win, found while investigating a report that Dexed and
+Grains together were overloading the CPU: `RenderQuantum()` was calling
+every one of the `kMaxVoices = 10` voice slots' `note.compute()`
+*unconditionally* every block, on the assumption (stated directly in
+this file's own prior wording of that loop's comment) that msfa's own
+internal gain threshold made a silent voice's cost negligible. Checking
+msfa's actual `Dx7Note::compute()` disproved that: there is no
+early-exit in there at all — every operator's full pitch/amp-mod/
+envelope math runs regardless of whether that voice is sounding. A
+typical played note uses only a few of the 10 slots at once, so this
+meant paying for several voices' full FM synthesis every single block
+for nothing. `VoiceIsIdle()` (already trusted elsewhere in this same
+file for voice-stealing allocation — see *Voice architecture* above)
+checks the real per-operator envelope state, so `RenderQuantum()` now
+skips `compute()` entirely for any voice that is both unheld and
+confirmed idle by that same check — provably silent already, not a
+guess, and a voice can never get stuck wrongly skipped since a new
+`NoteOn()` always re-triggers whichever voice it allocates. Confirmed
+on real hardware as a genuine (if modest) CPU reduction — the saving is
+proportional to how many of the 10 slots are actually idle, so it helps
+most for sparse/single-note playing and least for a dense chord using
+most or all of them at once.
+
+**The chord+Grains CPU ceiling, and a reverted experiment**: real
+hardware testing confirmed a full chord plus Grains both active
+together still reaches ~100% CPU even with the idle-voice skip above —
+expected, since a dense chord keeps most/all 10 voices legitimately
+sounding, leaving little idle to skip. Lowering the hard polyphony cap
+itself (`kMaxVoices`, 10 → 4) was tried as a direct way to recover
+headroom for exactly that combination, and was reverted at the user's
+own request: a flat, compile-time cap also limits Dexed's own
+*standalone* polyphony, even with Grains completely off and CPU to
+spare, which wasn't the actual intent. A real fix targeting the
+chord+Grains combination specifically would need a runtime-conditional
+polyphony limit — full 10 voices while Grains is idle, capped lower
+only while Grains is actually producing output — rather than a fixed
+array size; not yet implemented.
+
+*Since then: `kMaxVoices` is 16 (16 held notes measured ~27% on the CPU
+meter with Dexed alone), and the runtime limit is in the player's hands
+rather than automatic: the Dexed MIDI page's K2 sets MAX VOICES (1-16,
+`DexedSynth::SetMaxVoices()`), 12 at power-on (about 20% CPU) so the
+full 16 is a choice rather than the default (snapshots saved before
+MAX VOICES existed load at 16, since that's how they were made). Only the first `max_voices_` slots are
+handed out to new notes; lowering it keys up any held notes above the
+limit so they finish on their own release, and `RenderQuantum()` still
+walks every slot so nothing is cut off. It's saved in Dexed User presets
+(file v7, `max_voices`; -1 = not stored, so factory/SysEx patches and
+older saves leave the current limit alone) and therefore in snapshots
+too.*
+
+*Steal fade:* restarting a slot that is still sounding (a voice steal, a
+releasing tail being reused, or the same key struck again) used to cut
+the old sound to zero in one sample, a quiet click on every note at
+Voices = 1. `NoteOn()` now copies the old voice into an idle slot (the
+slots above `max_voices_` are always free for this) and `RenderQuantum()`
+fades that copy out over `kStealFadeSamples` (240, ~5 ms) before marking
+it unplayed. Only when all 16 slots are sounding is there nowhere to put
+it, and the cut happens as before.
+
+*Fade-only slots:* an arm across the keys at 16 voices still clicked,
+because all 16 slots were holding notes and a steal had nowhere to fade.
+`voices_` now has `kVoiceSlots` = `kMaxVoices` + `kFadeSlots` (16 + 4):
+the 4 spares never take a note (`FindVoiceForNote()` only hands out the
+first `max_voices_`), they only hold stolen voices while they fade. If a
+burst has every spare fading, the new steal takes over the fade nearest
+its end, which is nearly silent. Cost: ~2.8 KB DTCM, and a brief CPU
+peak (16 held + 4 fading ≈ 31 on the Dexed meter for ~5 ms after an arm
+press).
+
+*Fold at 0% is now a real bypass:* `daisysp::Wavefolder` at gain 1.0 is
+only unity for |s| < 1 -- past that it folds the peak back down. A loud
+16-note chord (chord compensation is off) went over 1.0 and got folded,
+a buzzy crackle, instead of reaching the `FastTanh` limiter -- and the
+clip cap never showed it, since the meter reads after the fold.
+`Process()` now skips the Wavefolder entirely while Fold is 0%; any
+other amount is unchanged.
+
+*One bus filter, not two:* the Dexed filter was an L/R pair fed the same
+mono signal, with `filter_r_`'s output never read. It's now one
+`filter_`, identical output, one filter less per sample while it's on.
+
+*Operator kernel on the M7's DSP multiplies:* the NEON kernel in
+`fm_op_kernel.cpp` is Cortex-A only and never built here; the plain C
+loop ran instead. `FM_KERNEL_DSP` (on by default when the compiler
+reports `__ARM_FEATURE_DSP`) swaps its two 64-bit multiplies for `SMULWB`
+(sine-table interpolation) and `SMMUL` (envelope gain), via two inline-
+asm helpers so LTO still inlines everything. Bit-exact by construction
+(both floor the same exact product) and checked on the host: 128 M
+kernel samples and all 16.7 M sine lookups identical, and the check
+fails loudly on a deliberate one-bit change. 10-15% fewer instructions
+in the loops, ~1 point off Dexed's meter (27 -> 26 at 16 held notes) --
+the M7 already ran the 64-bit multiplies well. Unrolling by two was
+tried and dropped: it spilled registers to the stack. Building with
+`-DFM_KERNEL_DSP=0` brings back the original loops for an A/B.
+
+For comparison, MicroDexed-touch runs the same msfa code (its kernel is
+the original plain-C loop on Teensy too); it's cheaper there because the
+Teensy 4.1 runs at 600 MHz against our 480 MHz and at 44.1 kHz against
+our 48 kHz, ~35-40% more cycles per sample, not because of a different
+engine.
+
+### Preset directory listing: one real scan instead of hundreds of f_stat() calls
+
+*Since generalised: every numbered user-save list (Performances, Grains,
+Dexed, Ensemble, SMPVO/SMPDR User) now goes through one shared
+`ScanSlotFolder()`. The old `f_stat()`-per-slot loops treated any failed
+SD read as "no file", so a save could silently drop out of a list — and
+the matching `NextFree*()` loop could then pick that slot as free and
+overwrite it with Save New. The scan retries on a read error and, if it
+still fails, reports it (Global:Perf shows "Read fail:…") and Save New
+refuses rather than guessing.*
+
+A real hardware report ("slow to get to the Dexed save/load screen,
+and makes a quiet electrical sound — also happens loading
+performances") led to a wrong guess corrected by actually checking the
+code. Dexed's factory presets are baked into QSPI flash
+(`dexed_factory_data.cpp`'s `const uint8_t kXxxPacked[8192]` arrays) on
+this `BOOT_QSPI` build, so the first theory was that the Preset page
+was doing real QSPI flash reads Grains never does (it has no baked-in
+presets at all). Checking `GetFactoryCategoryCount()` disproved that —
+it's a trivial, instant lookup into a small static table, not a scan of
+anything. The real cause was in `performance_store.cpp`:
+`ListDexedPresets()` looped every possible user slot number
+(`GetNumFactoryPresets() + 1` through `kMaxDexedPresets = 3500`, ~370
+iterations) calling `f_stat()` once per slot — a real, individual SD
+filesystem lookup each time, every single time the Preset page was
+entered. The exact same per-call SD overhead class already diagnosed
+and fixed for bulk audio streaming (see *Removing the chunk loop*
+above), just never applied to directory listing. `ListGranularPresets()`
+has the identical `f_stat()`-loop shape, but only scans up to
+`kMaxGranularPresets = 99` — ~4x fewer calls, fast/quiet enough that it
+was never noticed as a problem, which is what first pointed away from
+Grains and toward Dexed specifically.
+
+Fixed by replacing the loop with one real `f_opendir()`/`f_readdir()`/
+`f_closedir()` scan of the `DEXP/` folder (same pattern this file
+already uses in `ListImportWavFiles()`), parsing each filename's slot
+number directly instead of probing for it. Confirmed much faster on
+hardware, and the electrical sound got noticeably quieter too —
+consistent with it being genuine electrical coupling from the SD
+card's own bus activity (confirmed separately: the *same* sound occurs
+during a Performance Load, which runs with the audio engine fully
+suspended — output forced to literal digital zero — so it cannot be a
+digital audio artifact; it has to be something electrical), not fully
+eliminated since Performance Load's own (now much shorter, but still
+real) SD transfers remain. `NextFreeDexedPresetSlot()` had the exact
+same `f_stat()`-loop shape (used when saving a *new* preset, searching
+for the next free slot) — fixed the same way, except via a packed
+bitmap (one bit per slot, ~438 bytes for the full `kMaxDexedPresets`
+range) rather than reusing `ListDexedPresets()` itself: that function
+caps its own output at `max_out`, and `f_readdir()`'s directory order
+has no relationship to slot-number order, so a capped call could
+miss a real gap below a slot it simply hadn't enumerated yet. A full
+bitmap has no such cap — every file found sets its own precise bit,
+in any order.
+
+One subtlety the fix had to preserve deliberately: the old loop always
+produced slots in ascending numeric order by construction; `f_readdir()`
+returns entries in whatever order the FAT directory itself stores them
+(creation order, not numeric), and the Preset browser UI expects
+ascending order — so `ListDexedPresets()`'s new version sorts its
+(always small) result before returning.
+
+Controls and LEDs were checked as a possible other source of CPU
+competition while investigating this, and ruled out: button/knob/
+encoder polling runs on a dedicated TIM5 ISR at a steady ~2 kHz,
+independent of and lower-priority than the audio DMA ISR, doing only a
+few GPIO/already-DMA-converted-ADC reads per tick; LEDs update once
+per main-loop iteration via pure software PWM (one phase-accumulator
+add, one compare, one GPIO write per color channel). Neither is
+measured by the CPU meter (which only ever covers `AudioCallback()`'s
+own time) and neither is a realistic contributor to any of this.
+
+## Dexed advanced editor (Screen::DexedOperator)
+
+*Much of the page detail below is history: the editor was rebuilt as the
+full DX7 voice -- see "Dexed Advanced: the full DX7 voice" at the end.
+The navigation and pickup-reset notes still apply.*
+
+The per-operator FM editor referenced in *Dexed*'s own Presets section
+above as a later phase -- built once the simple-page macros (Brightness/
+EnvSpeed) proved not to be enough on their own for actually shaping a
+patch from scratch.
+
+**Navigation**: reached from `Screen::Dexed`'s own **Advanced** page
+(`DexedParamPage::Advanced`, positioned directly before Preset in the
+page order -- an explicit user placement decision, not the "last page"
+default the plan's own initial write-up assumed) via encoder click, the
+same "click on this specific page enters a real screen" idiom
+`GlobalPage::Granular`/`GlobalPage::Dexed` already use, just triggered
+from a Screen::Dexed page instead of a Global one. A short encoder
+click inside `Screen::DexedOperator` returns to `Screen::Dexed` (landing
+back on Advanced); long-press still goes all the way to Home from
+there, same as every other screen -- no special-casing needed, since
+the existing "long-press from anywhere goes Home" handling in
+`HandleEncoder()` is already screen-agnostic.
+
+**Operator select, pages, and the v1 core scope**: Button 1 cycles
+through the 6 operators (shown as the real HW op number, `6 -
+dexed_op_index_`, matching the Algo diagram's own convention) --
+encoder rotate stays reserved for `DexedOpParamPage` navigation (Algo,
+RatioLevel, Detune, EgRate, EgLevel, AmpModSens, VelocitySens,
+KeybRateScale), matching every other screen's own "rotate cycles
+pages" rule. RatioLevel/Detune/EgRate/EgLevel are the "Core set for v1"
+scope chosen earlier in this project's own planning: Ratio (coarse only
+-- fine is left at whatever the loaded preset stored, not exposed),
+Output Level, Detune, and the 4 EG Rates + 4 EG Levels via the existing
+AD/SR Button-toggle idiom every ADSR-shaped page in this codebase
+already uses. The other three were added in later increments, each
+prompted by a real gap found through actual use rather than planned
+upfront: **AmpModSens** (`patch[off+14] & 3`) after a user report that
+the mod wheel's Amp/EG Bias targets had no audible effect, traced to
+this byte never being exposed anywhere (see `DexedSynth::
+ModWheelTarget`'s own comment); **VelocitySens** (`patch[off+15]`,
+read directly/unmasked by msfa's own `ScaleVelocity()`) and
+**KeybRateScale** (`patch[off+13]`, read directly/unmasked by `ScaleRate()`)
+after a user report that a low-velocity note sounded unexpectedly loud,
+traced to this specific patch's own velocity sensitivity being 0 -- a
+real, legitimate per-patch sound-design choice (some patches, e.g.
+pads/organs, intentionally don't respond to velocity at all), just one
+with no on-device way to see or change until now. Keyboard *level*
+scaling (breakpoint + left/right depth + curve, a 5-byte block) is a
+separate, larger feature and remains deliberately deferred.
+
+**Algo was added as this screen's own first page** (`DexedOpParamPage::
+Algo`), after a direct request to be able to see the routing/carrier
+diagram while browsing per-operator pages, without leaving back to
+`Screen::Dexed` for it. Read-only here specifically -- Button1 is
+already committed to operator-select duty on every page in this
+screen, so there's no button left free to cycle the algorithm the way
+`Screen::Dexed`'s own Algo page lets Button1/Button2 do; editing it
+stays there. Both pages read and draw the exact same single patch byte
+(`patch[134]`) through one shared `Ui::DrawAlgorithmDiagram(int algo0)`
+-- extracted from `DexedParamPage::Algo`'s own previously-inline body
+specifically so this screen could reuse it verbatim, not a second
+implementation to keep in sync. There is only ever one value to begin
+with, so "staying in sync" isn't something either page has to do --
+changing the algorithm from `Screen::Dexed` is immediately reflected
+here the next time this page draws, same as any other read of the same
+byte.
+
+**EgRate/EgLevel's AD/SR toggle is Button2-only, not Button1+Button2**:
+unlike Granular's own ADSR page (which uses Button1 to explicitly
+select AD and Button2 to select SR), Button1 here is already committed
+to operator-select duty, so Button2 alone has to cover both directions
+-- it toggles (flips) the bool rather than just setting it, since
+there's no second button free to jump straight back to AD.
+
+**The 4 EG stages are labeled Attack/Decay/Sustain/Release, not
+Rate1..4/Level1..4**: the real DX7 R1-R4/L1-L4 envelope isn't literally
+an ADSR, but a direct user request after real hardware testing found
+the numbered labels didn't communicate what the knobs were actually
+doing. Reusing the same AD/SR-pair naming this codebase's own ADSR
+toggle idiom already implies (Attack+Decay one pair, Sustain+Release
+the other) reads far more clearly, and the page title ("Op N:EG Rate"
+vs "...EG Level") already disambiguates which of the two parameter
+sets is being edited, so reusing identical stage names on both pages
+isn't ambiguous.
+
+**KnobContext reuse across all 6 operators**: `DexedOpRatioLevel`/
+`DexedOpDetune`/`DexedOpEgRateAD`/`DexedOpEgRateSR`/`DexedOpEgLevelAD`/
+`DexedOpEgLevelSR` are each ONE context shared across all 6 operators
+(branching internally on `dexed_op_index_`), the same "one context,
+branch on which target" idiom `KnobContext::LayerStatus` already uses
+for `cursor_layer_` -- chosen specifically to avoid a 6x blowup of the
+`KnobContext` enum a naive per-operator-per-page context would cause.
+
+**A real bug this idiom introduced, found on hardware**: unlike
+rotating between `LayerStatus`'s own layers (which always passes back
+through Home first, a genuine context change), changing
+`dexed_op_index_` via Button1 does NOT change which `KnobContext` enum
+value `CurrentKnobContext()` returns -- so `ApplyKnobs()`'s own
+automatic "re-arm pickup on context change" never fired. Left
+unguarded, an already-engaged knob would immediately re-apply its last
+raw position against the newly-selected operator's bytes on the very
+next tick -- exactly what a real user report showed ("change one rate
+[on one operator], all the other operators' rates change to that
+value"), and confirmed to affect every `DexedOpParamPage`, not just
+`EgRate`, since they all share the same root cause. Fixed the same way
+`Screen::Mixer`'s own `mixer_position_` handling already had to for the
+identical class of bug: `OnButton1Short()`'s `Screen::DexedOperator`
+case explicitly re-runs the pickup reset/reseed (`k1_pickup_engaged_`/
+`k2_pickup_engaged_` cleared, `SyncPickupTargets()` re-run,
+`last_knob_context_` updated) every time it changes `dexed_op_index_`,
+rather than relying on the automatic path.
+
+**Byte offsets**: each operator's 21-byte block (`base = dexed_op_index_
+* 21`) exposes output level (`base+16`), coarse ratio (`base+18`),
+detune (`base+20`), the 4 EG rates (`base+0..3`), and the 4 EG levels
+(`base+4..7`) -- all written via the existing generic
+`DexedSynth::SetPatchByte()`, the same low-level single-byte-edit
+mechanism the simple pages' Algo/Feedback/Vibrato controls already use,
+with the same "did this actually change" guard on every write (see
+*Dexed*'s own note on `KnobPickUp()`'s lack of one, above) since these
+trigger the same expensive per-held-voice `Dx7Note::update()` path.
+
+## Ensemble (Screen::Ensemble / EnsembleSynth)
+
+A MIDI-played, 8-voice divide-down string-machine/ensemble-organ
+instrument (`ensemble_synth.h/.cpp`), added as a third fully independent
+voice alongside Dexed and Grains — not a return to the old Pad/Fm
+shared-role arrangement (see *Per-engine on/off* above).
+
+**Why a divide-down organ, and why this specific implementation**: a
+real physical-modeling alternative was tried and measured first —
+`daisysp::ModalVoice`/`StringVoice`, both already vendored and linked.
+Real, isolated hardware measurement ruled both out: `ModalVoice` alone
+(its own 24-mode resonator bank) cost 58% average/61% peak CPU for *one*
+voice; `StringVoice` alone cost 30%/39%. Neither could realistically
+support useful polyphony alongside the rest of this firmware. A genuine,
+fixable inefficiency was found in `Resonator::Process()` along the way
+(it recomputed a `cos()`-based filter coefficient and a `powf()` call
+every single sample regardless of whether `structure_`/`damping_` had
+actually changed, unlike `StringVoice`'s own correctly-gated equivalent)
+— documented here for the record, but the whole exploration was
+reverted wholesale once measurement closed the door on the approach
+itself, so that inefficiency was never actually fixed on any shipped
+branch. `daisysp::OscillatorBank` (ported from Mutable Instruments
+Plaits' own `string_synth_oscillator`, the same divide-down lineage as
+the real ARP Solina String Ensemble — see `README.md`'s own Thanks
+section) measured dramatically cheaper by comparison: 8 voices plus one
+shared `Chorus` cost only ~19-23% peak CPU in isolation, confirmed
+real, not estimated, before any of the rest of this engine was built
+around it.
+
+**Voice architecture**: `kMaxVoices = 8`, chosen directly from that
+measurement rather than carried over from another engine.
+`FindVoiceForNote()`/`NoteOn()`/`NoteOff()` are a line-for-line port of
+`DexedSynth`'s own 3-tier shape (reuse a voice already holding this
+exact note → prefer a free voice that's confirmed idle → any free voice
+→ steal the oldest-triggered) — the user's own stated aim was "how we
+have Dexed set should be our aim here," not a mechanical copy picked by
+default. `OscillatorBank` itself has no envelope or note lifecycle of
+its own (it's a continuously-running oscillator), so each voice wraps
+one in a `daisysp::Adsr`, substituting `!adsr.IsRunning()` for Dexed's
+own envelope-based `VoiceIsIdle()` "is this voice idle" check — the same
+substitution this project's own (since-removed-from-this-branch) sample
+player already used for the identical reason. `NoteOn()` wraps its
+multi-field voice mutation in the same `__disable_irq()`/`__enable_irq()`
+critical section `DexedSynth::NoteOn()` uses, for the identical
+real-hardware race (`ControlTimerCallback`, a lower NVIC priority than
+the audio DMA ISR, can genuinely preempt a multi-step voice write
+mid-mutation under fast playing).
+
+### Registration: real drawbars, not a macro — a direct mid-session redesign
+
+The Registration page's first shipped design was a single K1 macro,
+linearly interpolating between two fixed, hand-picked registrations
+("Warm," mostly the 8' fundamental; "Bright," a more even spread across
+all three octaves plus more square content) — explicitly scoped that
+way up front (full per-drawbar editing was written into the original
+plan as "explicitly out of scope this pass"). Real hardware testing
+found it had no audible effect at all, which led first to tracking down
+and fixing a genuine `daisysp::OscillatorBank` bug (see below) — but
+even after that fix, the user's own follow-up was direct: "I thought we
+would have control over the 7 drawbars" and "macro currently does not
+have any effect on the sound... drawbars would be good." The macro was
+removed entirely (not kept alongside drawbars as a second, parallel
+control) and replaced with real manual control: K1 selects which of the
+7 drawbars (0=Saw8', 1=Sq8', 2=Saw4', 3=Sq4', 4=Saw2', 5=Sq2', 6=Saw1',
+the same organ-stop/pipe-footage naming `OscillatorBank`'s own API
+already documents) is selected — browsed directly with no knob-pickup
+catch, the same "selector, not a persisted value of its own" idiom
+`DexedFilesGroup`/Preset browsing already use — and K2 sets that one
+drawbar's level, 0..1, independently (not normalized/forced to sum to
+1 the way the old two-preset macro design required — a real Hammond-
+style drawbar slider doesn't either). Since K1 and K2 now edit two
+genuinely different things (which drawbar vs. its level), switching
+drawbars needed the identical "same KnobContext, manual resync" fix
+`dexed_op_index_`/`mixer_position_` already established: K2's own
+pickup state is explicitly re-armed and reseeded to the newly-selected
+drawbar's real value every time the selection changes, rather than
+relying on the automatic "context changed" path, which never fires here
+since `CurrentKnobContext()` keeps returning the same enum value
+regardless of which drawbar is selected.
+
+**There is no Sq1' drawbar, and that's structural, not an oversight**:
+the divide-down trick synthesizes a square wave at a given octave by
+combining that octave's own sawtooth partial with the one *below* it
+(`OscillatorBank::Process()`'s own gain formulas: `saw_8_gain_ =
+Saw8' + 2*Sq8'`, `saw_4_gain_ = Saw4' - Sq8' + 2*Sq4'`, and so on down
+the stack) — each square drawbar boosts its own octave by 2x while
+subtracting from the octave above it. The top octave (1') has nothing
+above it in this 4-octave stack to borrow from, so it can only ever be
+a sawtooth.
+
+### Two real bugs found during this work, not guessed at
+
+**`OscillatorBank`'s own frequency-shift state compounds instead of
+resetting — found from the drawbar redesign above, before the stuck-
+note report below**: `Process()`'s `if(recalc_)` block scaled its own
+`frequency_` member *in place* (`frequency_ *= 8.0f`, then halved
+repeatedly for the octave-anti-aliasing shift) — correct exactly once
+per genuine `SetFreq()` call, but `SetAmplitudes()`/`SetSingleAmp()`
+(what the registration macro, and now every drawbar edit, calls) *also*
+sets `recalc_ = true`, with no fresh `SetFreq()` in between. Each such
+call re-entered the same scaling block on top of the *already-scaled*
+value from the previous pass, compounding the `*8` and the octave-shift
+every time a registration knob moved while a note was held. Enough
+repeats pushed the internal octave-shift count past 7, and since it's
+computed as `size_t` (unsigned), `7 - shift` then underflowed to a huge
+value, walking both `registration_[]` and `unshifted_registration_[]`
+arrays far out of bounds — memory corruption, not just a wrong note.
+Fixed by introducing a separate `freq_ratio_` member holding the stable,
+un-scaled ratio `SetFreq()` itself sets, with `frequency_` (the actual
+phase increment `Process()` uses) recomputed fresh from `freq_ratio_`
+on every `recalc_` pass instead of being scaled cumulatively — bounded
+correctly now regardless of how many times `recalc_` fires between
+real frequency changes.
+
+**`daisysp::Adsr`'s own gate-edge detection can permanently miss a
+release — found from a real, reproducible stuck-note report using an
+Akai MPK Mini Plus's own arpeggiator**: the first fix attempt added MIDI
+CC 123 (All Notes Off)/CC 120 (All Sound Off) handling (`AllNotesOff()`
+on all three engines, see *MIDI* above) on the theory that the
+controller simply wasn't sending a matching NoteOff for every NoteOn —
+a real, independently-worth-having gap, but the user's own follow-up
+testing ruled it out as *this* bug's actual cause: "this does not happen
+with grains or dexed" even though both share the identical plain
+NoteOn/NoteOff dispatch path, which meant the real cause had to be
+something specific to how Ensemble's own envelope is driven, not a
+generic MIDI-handling gap. `Adsr::Process(bool gate)` detects attack/
+release purely from comparing the current `gate` against its own
+previously-seen value (`gate_`, an internal member) — it has no way to
+know a note happened at all unless `Process()` was actually *called*
+while `gate` was `true` at least once. If a NoteOn is followed by a
+NoteOff fast enough that no audio block ever runs with that voice's
+`gate` reading `true` in between (a real, structural risk with a fast
+arpeggiator's short note durations, or just two control-rate MIDI events
+landing in the same inter-audio-block gap), `gate_` never records the
+rising edge, so the falling edge is never detected either — the
+envelope keeps climbing through attack into decay and then holds at its
+own sustain level *forever*, since decay's target is a positive sustain
+value and its own idle check (`out < 0.f`) can never fire against a
+positive target. A genuinely stuck note, with nothing externally
+wrong at all: the caller's own `held_note` tracking was already
+correctly cleared: the problem was purely internal to the envelope's own
+gate memory. `GranularEngine` uses the identical `daisysp::Adsr`,
+driven the identical gate-sampled way, and so carries the identical
+structural risk even though it hadn't been observed there yet — not
+assumed safe by omission. Fixed with a new `Adsr::ForceRelease()`
+(`adsr.h/.cpp`), mirroring the exact precedent `Retrigger()` already
+set: a caller that explicitly *knows* a note just ended (not just
+inferring it from a sampled boolean) needs a direct way to say so,
+bypassing the fragile edge detection entirely. Both
+`EnsembleSynth::NoteOff()`/`AllNotesOff()` and
+`GranularEngine::NoteOff()`/`AllNotesOff()` call it now, defensively in
+Grains' own case.
+
+### Mod wheel and pitch bend
+
+See *MIDI* above for the full behavior and the specific "modulates what's
+already dialed in, never forces an independent setting on" design choice
+— made explicit mid-session after an earlier draft considered forcing
+Filter Mode on for the Filter Cutoff mod-wheel target, and the user
+rejected it directly in favor of parameters "behaving as they're set,"
+with the wheel defaulting to **Off** rather than a target that does
+something by default.
+
+### Gain, a re-voiced 16-preset bank, and user saves that keep their numbers
+
+Ensemble's loudness follows how many drawbars are up (each voice sums
+its drawbars at a fixed per-voice level), and centre Pan halves both
+sides on top -- a thin registration was genuinely quiet, and Output
+Level, applied after the tanh limiter, couldn't make that up without
+clipping further down the chain. **Gain** (Mix page, B2) multiplies the
+signal into the limiter by 4^x, 0 to +12 dB; pushed hard it saturates
+gently. It's saved in Ensemble presets as file version 2 (v1 files load
+at 0 dB, so they sound as they did).
+
+The factory bank was rewritten as 16 presets, each setting
+registration, envelope, filter mode/cutoff/resonance, chorus, Gain and
+a reverb send (`ensemble_factory_data.cpp` lists the parameter curves at
+the top for tuning by ear). None send to the delay -- tried and dropped
+by ear: echoes smear these long-release sounds; the delay is left for
+per-song use.
+
+Growing the bank exposed a numbering trap: user saves were numbered
+straight after the factory presets (ENSM9 onwards, because there were
+8), so adding factory presets would have hidden ENSM9..ENSM16.
+`PerformanceStore::kEnsembleFirstUserSlot = 9` now fixes user numbering
+for good, and the UI tracks factory presets in their own range
+(`kEnsembleFactorySlotBase = 1000 + index`), loading them straight from
+the firmware table -- so the Preset page also works with no SD card.
+Dexed's Roms/Dexed groups likewise no longer need a card; only its
+Imports group does.
+
+### Factory presets, and a real filter-cutoff bug found while retuning them
+
+8 hand-authored factory presets (`ensemble_factory_data.h/.cpp`, pure
+parameter numbers — drawbar levels, chorus depth/rate, envelope shape,
+filter, output level/pan — no audio at all, so genuinely zero licensing
+concern, same reasoning as Dexed's own factory bank). Their drawbar
+levels were carried over from the original macro design's own Warm/
+Bright interpolation at each preset's old macro position, preserving
+each preset's intended character once drawbars replaced the macro.
+
+A real, user-reported "some of the presets sound weak" turned out not
+to be about the drawbars (or the registration macro bug above — already
+fixed by this point) at all. Three presets (Thin Strings, Sub Swell,
+Mellow Choir) use the post-mix LowPass filter; computing their actual
+cutoff frequency from this project's own Cutoff curve
+(`kFilterMinHz=20`/`kFilterMaxHz=9000` in `looper_layer.h`, `20 *
+450^cutoff01`) showed Sub Swell's original `cutoff01=0.35` landed at
+roughly **170Hz** — close to muting every harmonic above the fundamental
+for most played notes, not a subtle darkening. Retuned (Sub Swell to
+`0.60` ≈ 900Hz, Thin Strings to `0.75` ≈ 1740Hz, Mellow Choir to `0.60`)
+without touching any drawbar registration value at all, so each
+preset's actual organ-stop character is unchanged — a direct response
+to "I want it to sound authentic" when offered the alternative of
+adding automatic loudness-compensation DSP to the engine itself instead,
+which the user declined specifically because pulling fewer drawbars
+getting quieter is itself authentic drawbar-organ behavior, not
+something to engineer away. Bright Pluck's `sustain01` (0.20) was also
+raised to 0.40, for a related but separate reason: holding a note (not
+just tapping it) let it decay to near-silence and stay there, "weak
+when held" with a different real cause (envelope shape, not
+registration or filtering) — still a clear pluck transient, just not
+dead when sustained.
+
+A later, separate request: "the first ensemble preset is a little weak
+let add another one with all bar values set to 50 as a starting
+preset." First read as "add an entry to the factory preset list" — a
+new preset ("Flat Drawbars") was inserted ahead of Warm Pad as the new
+slot 1. Corrected once the user clarified what "default" actually
+meant: "i asked for the ensemble default to have all bars set to 60%
+this means when first enabled it loads this patch" — not a preset the
+user has to browse to and select, but the actual state Ensemble boots
+into *before any preset is ever loaded*. That's a different piece of
+state entirely: `drawbar_levels_[kNumDrawbars]`'s own default member
+initializer in `EnsembleSynth` (previously `{0.60, 0.00, 0.25, 0.00,
+0.10, 0.00, 0.05}`, the asymmetric "fundamental-heavy" registration
+carried over from the old single-macro design), fed straight into
+`OscillatorBank::SetAmplitudes()` at `Init()` with no `ApplyPreset()`
+call in between — confirmed nothing else overwrites it at boot (no
+factory preset auto-loads, and the loaded-preset slot is pure runtime
+UI state, never persisted across a power cycle, per `performance_
+store.cpp`'s own prefs save/load). The "Flat Drawbars" factory-preset
+addition was reverted (back to 8 presets, Warm Pad first again) and
+`drawbar_levels_`'s own default changed to all 7 drawbars flat at
+`0.60` instead — so that's genuinely what plays the moment Ensemble is
+first enabled, no browsing required.
+
+### Default output levels rebalanced to 70% across the board
+
+A direct request to make a consistent, moderate starting volume the
+default everywhere rather than each engine carrying its own
+independently-chosen number: Dexed/Ensemble/SampleSynth/Grains' own
+live `output_level01_` (the per-engine Mixer-channel level) all moved
+from their previous 0.8 default to **0.70**, together with the Home
+screen's own `master_volume01_` (previously 0.5, the "main" overall
+volume) and each engine's own factory/new-preset `output_level01`
+default (Dexed 0.6, Ensemble 0.8, SampleSynth 0.8, all now 0.70 too) --
+so a freshly-loaded factory preset lands at the same level the Mixer
+channel itself now starts at, rather than the two quietly disagreeing.
+Grains' own `grain_volume01`/`scan_volume01` (the Grain-cloud/Scan-
+layer internal mix, a separate control from its Mixer-channel level)
+were moved to 0.70 each too, for the same "one consistent number"
+reasoning, replacing their previous 0.8/0.5 split.
+
+### ADSR graphic and live scope, added for parity with Grains
+
+A direct request: "adsr needs the graphic that grains has and I would
+like to see the scope on ensemble pages." Both `Ui::DrawAdsrShape()` and
+`Ui::DrawOscilloscope()` were already written generically (explicit
+seconds/sustain01 parameters, or an explicit buffer/capacity pointer —
+see their own doc comments) rather than reading an engine pointer
+directly, specifically so a later page could reuse them without any
+redesign — which is exactly what happened here. `EnsembleSynth` needed
+two small additions to support it: `GetAttackSeconds()`/
+`GetDecaySeconds()`/`GetReleaseSeconds()` (declared in the header,
+defined in the `.cpp` since they need `powf()` — the same split
+`GranularEngine`'s own equivalents already use), converting the raw
+0..1 knob value through the same 2ms-4s exponential curve
+`SetAttack01()` and friends already apply, since the graphic needs real
+seconds, not the raw knob value. A new `g_ensemble_scope_l` ring buffer
+(`main.cpp`, same 1024-sample convention as Dexed's own) captures
+Ensemble's dry output every block, threaded through `Ui::Init()`'s
+already-long parameter list the same way `g_dexed_scope_l` was. The
+scope now shows on Registration, Ensemble (Chorus), Filter, Mix, FX, and
+MIDI pages — not Env (which shows the ADSR graphic instead) or Preset
+(a chooser, same as every other engine's own Preset page).
+
+### Screen::Mixer — a 9th channel, and an odd-channel-count layout bug
+
+Added as a real Mixer channel (`kNumMixerChannels` 8 → 9), with full
+Volume/Pan/Reverb-Send control and a real Peak bar + clip indicator —
+same treatment Dexed/Grains already have, which meant giving
+`EnsembleSynth` its own `IsLimiting()`/`GetPreLimiterLevel01()` (reading
+`max(|l|,|r|)` right before the final `tanhf()` limiter, same
+threshold/hold-seconds convention as `DexedSynth`'s own equivalent, just
+over a genuinely stereo pair instead of Dexed's own mono-then-panned
+signal — the louder of the two channels is what actually risks
+clipping). First named "ENSB" on the Mixer, shortened to **ESB** after
+direct feedback that it was too long (the overview grid's column width
+is `disp_->Width() / kNumMixerChannels`, and going from 8 to 9 channels
+already made every column narrower).
+
+Going from 8 channels (even) to 9 (odd) surfaced a real, found-not-
+guessed layout bug: the Mixer's own Detail page groups channels in
+pairs of 2 (`group_start = (mixer_position_ / 2) * 2`), which worked
+cleanly at 8 (four exact pairs) but leaves Master alone in its own
+group at 9 — the pairing loop would have read/drawn a 10th, out-of-range
+channel index for Master's own "neighbor" column (silently falling
+through to `MixerChannelName()`/`MixerGet*01()`'s own `"?"`/`0.f`
+defaults rather than crashing, but a real, confusing-looking bug).
+Fixed with an explicit bounds check that simply leaves the second
+column blank once `group_start + col` reaches `kNumMixerChannels`,
+rather than assuming every group is still a clean pair.
+
+## Grains (Screen::Granular / GranularEngine)
+
+### GR-1 redesign: one cloud, 4 voices, GR-1 names
+
+*This supersedes the two-layer description further down wherever they
+disagree; the rest (source shadow, trim, rendering, limiter, presets'
+audio) still applies.*
+
+There is no separate scan layer any more: one grain cloud per voice, read
+around a play pointer that **Position** places and **Scan** moves. The
+old engine had two half-overlapping clouds (a fixed Grain cloud and a
+moving Scan cloud, each with its own Fill, Gap, Direction and volume),
+which was the least intuitive part of it. Removing the Scan cloud also
+freed its grains for polyphony.
+
+- **Voices and grain pool.** `kNumVoices` = 4 voices share
+  `kPoolGrains` = 32 grains, so the worst case costs about what the two
+  clouds (16 + 10, plus release fades) did. `TriggerGrain()` takes a
+  free slot; failing that, a voice under its fair share (pool / voices
+  sounding) takes the oldest grain of whichever voice holds most,
+  otherwise it reuses its own oldest. One note alone gets all 32. Every
+  stolen grain gets its own 2 ms release fade. Each `Grain` records its
+  owning voice; `RenderPoolSpan()` renders each into that voice's chunk
+  buffer, and the mix pass applies that voice's own ADSR. A 5th note
+  takes the oldest voice (`ChokeVoice()` fades its grains) and the
+  envelope soft-retriggers from where it is. Mono uses voice 0 only,
+  choking on a key change like the old engine. Chords get 1/sqrt(n)
+  headroom, ramped over 8 ms. `NoteOn()` runs under `__disable_irq()`,
+  as Dexed's does, since it rewrites state the audio ISR reads.
+- **Pointer.** Each voice keeps an `offset` from Position (samples), so
+  turning Position moves every cloud live. `AdvancePointer()` adds the
+  Scan speed (samples per sample: 1 = the sample's own speed) and
+  applies the Loop Start/End range: Loop wraps, One shot holds at the
+  edge, Ping pong reflects and flips the voice's heading. Every note
+  starts at offset 0, which is the GR-1's Scan Key Sync. Scan's knob
+  is squared either side of a 4% dead zone (1x at about 70%).
+- **Density** replaces Fill + Gap: grains per second per voice,
+  0.5-500 Hz exponential. Overlap gain is 1/(Size x rate), capped at the
+  pool. Past about 32 overlapping grains each grain is stolen before its
+  Hann window peaks, so very long grains at high Density thin out and
+  get quieter -- a known, accepted limit (the GR-1 instead stalls when
+  its 128 grains are used up).
+- **Spray** replaces Jitter: each grain's start is offset by up to
+  ±(spray01^2 x 2000 ms) around the pointer, in time rather than as a
+  fraction of grain size.
+- **Direction** stays per grain (Forward/Reverse/Random), separate from
+  the pointer's own heading. **Keymap** (keyboard tracking) defaults on.
+- **Rhythm** is unchanged but gets its own page, and each voice keeps
+  its own step clock.
+- **Presets** are file v12: `density01`, `spray01`, `scan_speed01`,
+  `scan_mode`, `poly` are appended; older fields stay so v10/v11 files
+  and older snapshots still load. `density01 < 0` marks an old preset
+  and `ApplyPreset()` converts it: if the old Scan cloud was audible and
+  at least as loud as the Grain cloud, the one cloud takes the Scan
+  cloud's settings (and moves), otherwise the Grain cloud's (and holds).
+  Fill/Gap become the same grains per second, Jitter becomes Spray in ms.
+  The old Scan speed was a fraction of the buffer per second, so in x it
+  depends on the buffer length: it waits in `legacy_scan_frac_` until a
+  source is loaded (`ResolveLegacyScan()`).
+- **Mix** matches every other engine (Level/Pan, Gain). The old Grain
+  volume survives as a hidden `grain_volume01_` so older presets keep
+  their loudness.
+- **Starter sounds** were rewritten as v12 with scanning, chord-ready
+  settings (audio byte-identical), and Ethereal Piano became Airy Piano
+  so it sorts first.
+- Checked before flashing by building the engine on the host with
+  UBSan and explicit bounds checks: 25,850 blocks across every scan
+  mode, a reversed loop, Mono, more notes than voices, and tiny and
+  empty sources -- no out-of-range reads, no non-finite samples.
+
+A MIDI-played, **monophonic** granular instrument (`granular_engine.h/
+.cpp`) — deliberately much simpler than an earlier 8-voice granular
+engine this project shelved on its own git branch: one held note at a
+time, no oscillator layer (Dexed covers that role now), and two
+overlapping-grain layers sharing one Size/Fill/Gap scheduling mechanism
+instead of one polyphonic grain cloud plus a separate, thinner "scan
+grain".
+
+**Does not own its captured buffer** — `SetSource()` just points the
+engine at whatever buffer currently holds a capture (SDRAM, owned by
+`main.cpp`), the same convention the earlier engine used. `len == 0`
+means "nothing captured yet" (`NoteOn()` is then a no-op); setting a new,
+possibly-shorter source outright silences both grain clusters, since a
+grain's position was computed against the *old* `src_len_` and could
+otherwise read out of bounds against a shorter new capture.
+
+**Two grain layers, one mechanism**: both **Grain** (a fixed-Position
+anchor) and **Scan** (a continuously-sweeping anchor, bouncing or
+wrapping between an independently adjustable Start/End range) are the
+exact same `GrainCluster` — up to 16 overlapping grain slots for Grain
+(`kGrainsPerVoice`) and 10 for Scan (`kScanGrainsPerVoice`) (raised from
+an original 3, then to 10, then Grain alone to 16 — see *Grain count 16,
+and making each grain cheaper* below; see *A real periodic-click bug* below
+for why headroom to go well past a bare minimum overlap turned out to
+matter), scheduled independently per cluster. This is a deliberate
+redesign, not a port: the earlier engine's Scan was a single retriggered
+grain on its own timer, and even after several rounds of tuning it
+stayed thinner/choppier than the main grain cloud, because one voice
+retriggering periodically is inherently less smooth than several
+overlapping ones. Giving Scan the identical multi-slot scheduling the
+Grain layer already uses fixes that by construction rather than by
+tuning constants further.
+
+**Size is shared, Fill/Gap/Direction are fully independent per
+cluster** — an explicit redesign from an earlier version where Fill/Gap
+were one shared pair governing both layers at once. A direct user
+question ("so to confirm gap on grains page only affects grain and gap
+on scan range only affects scan grain?") surfaced that a fixed Position
+anchor holding a stable drone and a sweeping Scan layer underneath it
+are genuinely different textures that want different overlap/spacing
+— locking them together meant tuning one always disturbed the other:
+- **Size** (Grain page): grain length, `kMinGrainMs`(0ms)..`kMaxGrainMs`
+  (1000ms) — widened from an original 1-500ms range per a direct
+  request, once the shorter ceiling turned out to rule out longer,
+  more ambient textures.
+- **Fill** (Grain page Knob 2, Scan page Knob 2, independently): how many
+  of its cluster's slots each layer uses (0 = silence; up to 16 for
+  Grain, 10 for Scan).
+  Renamed from the earlier engine's "Grain Count" to match the reference
+  hardware granular device this redesign is modeled after.
+- **Gap** (Grain page Knob 1 under Button2's Gap+Jitter toggle for
+  Grain's own; ScanRange page Knob 1 under its own Button2 toggle for
+  Scan's own): 0 = grains packed with no gap (hop = grain length /
+  Fill), 1 = maximally sparse (real silence between grains). Renamed AND
+  polarity-flipped from the earlier engine's "Density" (where 1.0 meant
+  "packed") to match that same reference device's own "Gap" vocabulary,
+  which goes the other way. Scan's own Gap defaults to 0 (packed),
+  matching Grain's own default.
+- **Direction** (per-grain read direction, Forward/Reverse/Random):
+  Grain's own lives on the Position page (Knob 2, moved there from the
+  removed Tune/Direction pairing once that page's own K2 slot freed up,
+  per a direct request); Scan's own is a separate, independently-set
+  control, Button2-cycled on the Scan page itself
+  (`GranularEngine::CycleScanDirection()`/`ResolveScanDirectionSign()`,
+  mirroring `ResolveDirectionSign()`'s own logic exactly, just kept as
+  fully separate state) — confirmed via a direct user question ("does
+  jitter affect the scan grain too?") that Jitter, similarly, is a
+  Grain-layer-only refinement and never reads into Scan's own triggering
+  at all.
+
+**Position, Scan, and Scan Range** are three separate pages, each
+pairing one layer's "what plays" control with its own "where it reads
+from" control, deliberately kept adjacent to each other in the page
+order (Grain → Position → Scan → ScanRange):
+- **Position** (`GranularParamPage::Position`) — Knob 1 is the Grain
+  layer's own fixed anchor; Knob 2 is Grain's own Direction (above).
+- **Scan** (`GranularParamPage::Scan`) — Knob 1 is the sweep's own
+  speed/direction, the same dead-zone-centered bidirectional curve as
+  this project's own vari-speed/scrub controls (center = off, above/
+  below picks which end it heads toward first, speed proportional to
+  distance from center); Knob 2 is Scan's own Fill (above). Button 1
+  toggles **Bounce vs Wrap** at the range edges
+  (`GranularEngine::ToggleScanBounce()`) — Bounce (the original,
+  default behaviour) reverses direction at each edge; Wrap jumps
+  straight to the opposite edge and keeps sweeping the same way, added
+  after a direct request for the sweep to restart from its own original
+  edge instead of ping-ponging back. Button 2 cycles Scan's own
+  Direction (above).
+- **Scan Range** (`GranularParamPage::ScanRange`) — Knob 1/Knob 2 are
+  Scan's own Start/End under Button 1 (default), or Knob 1 is Scan's own
+  Gap (above) under Button 2. Both Start and End are independently
+  adjustable — previously Scan's own end was fixed to the buffer's own
+  end and only the start (then folded into the Position page as "Scan
+  Position") was adjustable at all; split out to its own page, with a
+  genuinely independent End, once that turned out not to be enough. The
+  waveform display draws both boundaries as full-height vertical lines
+  (extended up past the normal peak-meter band specifically so they read
+  clearly against the rest of the wave, per a direct follow-up: "the
+  vertical lines need to extend up some more").
+
+This three-page split (and the Fill/Gap/Direction independence above)
+replaced an earlier design that tried to cover Scan with a single
+knob wearing two jobs (speed/direction and a static starting position)
+on the Grain page itself, worked through across two real, sequential
+user reports on that single control. First: with that single Scan
+knob, its own dead-zone center froze the anchor's movement but left it
+*still audible* from wherever it froze ("scan is set to 50% (off) but
+its starting grain still sounds"). The first fix collapsed Scan into a
+single static-position knob with a real center-mute — which fixed the
+audibility bug but, in trying to solve it, accidentally deleted the
+sweeping motion Scan is named for entirely ("now scan does not scan at
+all"). The actual fix needed the ideas kept *separate*, and — once Scan
+was clearly its own independent layer rather than a Grain-page
+accessory — kept growing into the full independent-page treatment
+above as Fill, Gap, Direction, and a real adjustable range all turned
+out to need the same treatment in turn. `IsScanMuted()` reflects the
+current combination: `scan_speed_ == 0.f` (Scan's own dead zone) or
+Mix's Scan Volume at/near zero.
+
+**A real periodic-click bug, found while chasing a user report on a
+specific imported sample** ("when I import the sample mleckert82-synth-
+pad, I get clicking when playing grains"): reproduced natively (a
+standalone off-target harness against the real captured audio, not
+guessed at) down to a fixed Position anchor with Jitter at zero —
+replaying the *exact* same buffer offset on every retrigger means any
+source with a strong feature sitting inside the grain's window (not at
+its very edge, where the Hann window already silences it) repeats that
+feature identically forever, audible as a perfectly periodic click.
+**Jitter** (Grain page Knob 2, under Button2's Gap+Jitter toggle) fixes
+this at the root: a per-grain random offset around the fixed Position
+anchor, scaled to a fraction of the current grain length
+(`GranularEngine::SetJitter01()`), smearing consecutive grains across
+nearby offsets instead of hammering one exact sample repeatedly —
+confirmed against the same real exported capture that first reproduced
+the bug. Jitter only ever affects the Grain cluster, never Scan (whose
+own continuously-moving anchor doesn't have this failure mode in the
+first place). Two smaller, genuinely real contributing factors were
+found and fixed alongside the root cause during the same investigation
+(kept, not reverted, once confirmed real): grain/scan overlap-gain
+headroom compensation, and steal-fade phase correctness during a
+`ChokeCluster()` cutover.
+
+**Rhythm/Speed** (Position page, Button1/Button2): a pattern gate on top
+of the Grain layer's existing hop scheduling, added after a direct
+request for the layer to sound "more rhythmic" without being flat --
+plain evenly-spaced hops (whether Fill/Gap-driven or naively tempo-
+synced) still read as a metronome, not a groove. **Button1 cycles
+Rhythm** through a fixed list (`rhythm_index_`, `CycleRhythm()`): Off,
+then `4Floor`/`Tresillo`/`OffBeat`/`Sparse` (named grooves), then two
+fixed Euclidean density stops (`EclSparse`/`EclDense`). All the named
+grooves are generated by the same small `EuclideanMask(steps, hits,
+rotate)` helper (a Bresenham-style even-distribution algorithm — e.g.
+`EuclideanMask(16, 6, 0)` gives the classic doubled-tresillo 3-3-2
+family) rather than hand-authored bitmask tables, with `rotate` turning
+a pulse into an off-beat without a second algorithm. At Off, the mask is
+all-1s (`0xFFFF`) so every scheduled hop fires — byte-identical to this
+engine's original, pattern-free behaviour. Once active, a step's own bit
+being clear means that hop is a *real* silence (skipped grain, not a
+re-timed one), which is what makes the gaps genuinely uneven rather than
+just quantized-but-still-flat; `rhythm_step_` resets to 0 on every
+`NoteOn()` so a pattern always starts the same way.
+
+**Button2 cycles Speed** (`grain_speed_`, `CycleGrainSpeed()`): Slow
+(400ms/step) → Medium (200ms) → Fast (100ms) → Sync (locks the whole
+16-step cycle to exactly one bar — 4 beats — of the Looper's live tempo,
+pushed in from `Ui::Update()` every tick via `SetExternalBpm()`, since
+the engine has no tempo concept of its own). Speed only takes effect
+once Rhythm is not Off (`CurrentGrainIntervalSamples()` returns the
+original `ComputeHopSamples()` at Rhythm=Off, `ComputeRhythmStepSamples()`
+otherwise) — this is a deliberate decoupling, not just a second knob.
+Before Speed existed, the *only* thing that controlled how fast the
+Grain layer's hops repeated was Fill (`hop = grain_length / Fill`),
+which meant a texture/thickness control (how many overlapping grains
+make up the sound) was secretly also the only tempo control (a direct
+user observation: "if I have 1 grain it is very slow and 3 grains it is
+very fast"). Speed gives rhythm its own independent clock so Fill can go
+back to only controlling thickness.
+
+**Tune / Map to Note**: Tune is a fixed per-grain pitch offset
+independent of the held note; Map to Note additionally tracks the note's
+own pitch (12-TET against middle C) on top of Tune. `SetGrainTuneSemitones01()`
+quantizes to whole semitones (±24) — its matching getter,
+`GetGrainTuneSemitones01()`, returns each bucket's *center*, not its
+edge: a discretizing setter using `(int)(v01*N + 0.5f)` must have its
+getter return `(value+offset)/N`, not `(value+offset+0.5f)/N` (which
+would land on the bucket edge and round-trip to the next semitone up on
+every save/reload) — a real bug once found and fixed here, and
+deliberately avoided when `PadSynth::GetTuneSemitones01()` was written
+afterward using the same pattern.
+
+(Grain's own Direction, and Scan's own independent Direction, are both
+covered under *Position, Scan, and Scan Range* above — both are the
+same Forward/Reverse/Random per-grain read direction, quantized from one
+knob/button, just set fully independently per cluster. Spray, a
+randomized per-grain timing jitter distinct from the Jitter feature
+above, was dropped in this redesign — it was a source of real,
+hard-to-diagnose jitter bugs in the earlier engine.)
+
+**Note-level ADSR**: shapes the whole voice's overall loudness across a
+held note, layered ON TOP of (not instead of) a fixed per-grain Hann
+window (a 256-entry lookup table, `ReadHann()`) — the Hann window only
+prevents clicks within a single grain, it has no swell-in/tail-off of
+its own, which is what the ADSR adds. Same curved-seconds convention as
+Pad Synth's own ADSR.
+
+**A real release-tail bug, found from a user report**: "if I set a long
+release and let go of the note it should sound on but it doesn't". Both
+grain clusters' triggering was gated on plain `gate` (`held_note_ >=
+0`), so new grains stopped being scheduled the instant a note was
+released, regardless of how long Release was set to -- the only "tail"
+that could ever be heard was whatever grain(s) happened to already be
+in flight at that moment, capped at one grain's own Size (up to
+500ms), never the actual configured Release duration. The engine-side
+ADSR itself was never broken (`Adsr::Process()` correctly kept
+producing a slowly-decaying `env` for as long as Release said it
+should), but with no new grain material being generated to apply that
+envelope to, there was nothing left to hear well before Release
+actually finished. Fixed by triggering on `gate ||
+adsr_.IsRunning()` instead (`daisysp::Adsr::IsRunning()` stays true
+until the envelope genuinely reaches its idle/finished state) --
+`NoteOff()` already leaves `note_gain_`/`note_rate_` untouched (only
+`held_note_` changes), so grains triggered during this extended tail
+still use the same pitch/velocity the held note did, no extra state
+needed.
+
+**Monophonic voice logic**: `NoteOn()` always retriggers the single
+voice (last-note priority, plain retrigger, no legato/portamento).
+`NoteOff()` only releases if it matches the currently-held note, so
+releasing an old note after a new one has already retriggered doesn't
+cut the new one short. A genuinely different note interrupting one still
+sounding calls `ChokeCluster()` on both clusters — moving every
+currently-active grain into its own release-fade slot (one per grain
+slot, not one shared slot, so several simultaneously-active grains each
+fade independently) rather than an audible instant cut.
+
+**Capture**: three sources, all landing in the same SDRAM-owned buffer
+`main.cpp` allocates (`kGranularCaptureSamples`, ~10s @ 48kHz -- raised
+from an original ~5s after a real imported WAV file turned out longer
+than that; anything captured/imported past this length is simply
+truncated, not refused):
+- **Direct Record** — Button 2 held on the Capture page streams live
+  input straight into the buffer for as long as it's held (or until the
+  buffer's fixed capacity is reached).
+- **From Layer** — an instant copy of whichever loop layer is currently
+  selected as the capture source (independent of Home's own cursor) into
+  the same buffer, then points the engine at it via `SetSource()`.
+- **Import** — reads a user-supplied `.wav` file from the SD card's
+  `IMPORT/` folder. Originally 16-bit PCM, 48kHz/44.1kHz only; widened in
+  two real, user-driven passes. First: also accept 24-bit and 32-bit
+  PCM, plus 32-bit IEEE float, after a real user's commercial sample-pack
+  loop (an otherwise perfectly ordinary stereo/44.1kHz file, just 24-bit)
+  failed to import with no path to fix it short of re-encoding on a
+  computer first -- 24-bit in particular is extremely common for
+  commercial sample packs. `ImportWav()`'s previously `int16_t`-only read
+  buffer became a generic byte buffer, decoded per-sample based on the
+  file's own (constant-for-the-whole-stream) `audio_format`/
+  `bits_per_sample`: 24-bit has no native integer type, so it's
+  reconstructed by shifting its 3 little-endian bytes into the top 24
+  bits of a 32-bit int and arithmetic-shifting back down by 8,
+  sign-extending and rescaling in one step.
+
+  Second: sample rate support widened from just 48000/44100 Hz to every
+  common real-world WAV rate -- 8000/11025/16000/22050/24000/32000/
+  44100/48000/88200/96000/176400/192000 Hz (24000 Hz specifically added
+  in a follow-up fix after a real file at that exact rate was missed by
+  the first widening pass). Anything other than 48000 Hz is resampled to
+  the engine's native rate: the existing exact-ratio `Resampler44_1to48`
+  was generalized from a hardcoded ratio into a runtime `Init(in_hz,
+  out_hz)` (GCD-reduced, so every listed rate still gets an exact
+  integer up/downsampling ratio, not an approximation) for upsampling
+  below 48kHz; a genuine downsample from a rate above 48kHz additionally
+  gets a real anti-aliasing prefilter first (two cascaded `daisysp::Svf`
+  lowpass stages) before decimating, rather than just dropping samples
+  and letting them alias. Arbitrary (non-integer-ratio) sample-rate
+  conversion remains out of scope -- every rate on the list above has a
+  clean integer relationship to 48kHz, which is what makes the
+  GCD-reduced exact-ratio approach viable at all.
+- **Trim**: non-destructive start/end trim over whatever's currently
+  captured — the underlying buffer is untouched, only the sub-range
+  passed to `SetSource()` changes, so re-trimming always works from the
+  original full capture, not whatever the previous trim left behind.
+  **Button1 plays the trimmed section directly** (`GranularEngine::
+  PlayTrimPreview()`), added after a direct request for a quick way to
+  actually hear it rather than inferring the result from the waveform
+  markers or playing a MIDI note through the grain engine. A straight,
+  one-shot linear read of `src_l_`/`src_r_`/`src_len_` — i.e. exactly
+  whatever `SetTrimRange()` currently has selected, live, nothing extra
+  to keep in sync.
+
+  **Real hardware bug, since fixed**: this preview used to be mixed in
+  *before* the shared clamp/filter/pan/output-level chain, on the
+  theory that it would then "sound like it would if actually played."
+  It didn't — `output_level_` scales up to 12x (see its own comment
+  below) specifically to compensate for how quiet a *real* grain
+  signal is after Hann-window overlap-gain division and Grain/Scan
+  Volume, and the raw, unattenuated preview sample hit that same
+  12x-ceiling compensation at near-full-scale, playing back
+  dramatically loud. Scaling the preview down by `grain_volume01_`
+  alone wasn't a real fix either — 0.8x against a 12x multiplier is
+  still ~9.6x, no perceptible difference. The actual fix: the preview
+  is now injected *after* `output_level_`/pan (and after the filter —
+  previewing the raw trim selection, not a filtered version of it),
+  with its own small fixed gain (`kPreviewGain = 0.5f`) completely
+  independent of Output Level, Grain Volume, or the filter, so its
+  loudness stays predictable regardless of how those are set. It still
+  runs through the same pre-limiter tracking and `tanhf()` safety net
+  as everything else. Tapping again always restarts from the
+  beginning, same "tap to retrigger" convention the preset browser's
+  own live preview already uses.
+
+**Filter/Mix/Reverb send/Pan/Output level**: one bus-level `Svf` pair
+(same shape Dexed's own post-mix filter follows, see above), independent
+Grain-layer and Scan-layer volumes summed before a single Output Level
+stage — raised from a 1.4x to a 12x ceiling, plus a new `tanhf()` soft
+limiter, after real-hardware testing showed Grains reading much quieter
+than Dexed even maxed (see *Dexed*'s own note on this above for the full
+story) — a continuous Reverb Send knob (also reachable, alongside Delay
+Send/Time, from the FX page below), and the same linear pan law
+`LooperLayer` uses, applied to the already-stereo captured signal (Grains
+reads real L/R from whatever was captured/imported, unlike a mono voice
+sum).
+
+**FX page** (`GranularParamPage::FX`, labeled **GR-FX** on screen):
+full reverb/delay control from within Grains itself, same shape as
+`DexedParamPage::FX`/`LayerPage::Reverb` — Button toggles between Reverb
+(own Send + the shared bus Size) and Delay (own Send + the shared bus
+Time); Mix's own Reverb Send is untouched by this, a genuinely reachable-
+from-two-places value like every other Send-shaped control here. The
+**GR-FX**/**DX-FX**/**LYR-FX**/**GLB-FX** naming (Grains/Dexed/Layer/
+Global's respective reverb-and-delay pages) replaced four pages that all
+used to just say "FX" or "Reverb" — indistinguishable from each other at
+a glance while navigating, and from Global's own page specifically
+easy to mistake for a master-bus control rather than one specific
+source's own send.
+
+**Presets** (`GranularEngine::GranularPresetData`): unlike Dexed,
+Grains presets are **audio-inclusive** — a Grains preset IS a specific
+captured sound plus how it's being played back, so saving/loading one
+needs to restore both. `PerformanceStore::SaveGranularPreset()`/
+`LoadGranularPreset()` stream the captured audio alongside the
+parameters into ONE combined file per slot (`GRNP/PRESnnn.DAT`, up to 99
+slots — no factory range, there's no hand-tuned-capture equivalent to a
+hand-tuned patch), so this can take real SD-transfer time (up to ~1.9MB
+of audio) and shows a live progress bar during the save/load, unlike
+Dexed Presets' instant tiny-struct transfer. Output Level, Pan, and
+Delay Send are deliberately excluded from the saved struct — session-
+level mixer settings, not part of the captured sound's own identity.
+Reverb Send used to be in that same excluded group but was pulled back
+out of it (see `GranularEngine::SetReverbSend01()`'s own comment) after
+a direct request to match how `DexedPresetData` already saves its own
+`reverb_send01` — this engine's one deliberate exception to its own
+"mixer settings aren't part of the sound" rule, not an oversight.
+`kGranularPresetFileVersion` has been bumped repeatedly as the struct's
+layout changed (currently 10, most recently for `reverb_send01` above)
+— each bump means presets saved under an older version fail their
+magic/version check on load (a clean, reported failure) instead of
+being read as garbage, so nothing saved before the most recent bump
+loads without being re-saved. Unlike Performance files, this format has
+never carried a backward-compatible version chain across any of these
+bumps.
+
+**A known aliasing artifact with Map to Note**: playing notes well above
+or below the held note that a grain's Tune was set at can sound
+noticeably louder/brighter going up and quieter going down. Traced this
+to `RenderGrainSpan()`'s plain 2-point linear interpolation (`p0 +
+(p1-p0)*frac` between adjacent source frames) having no anti-aliasing filter — Map to
+Note pushes `read_inc` above 1.0 for higher notes, skipping source
+samples with nothing band-limiting the read first, which is a textbook
+recipe for aliased energy folding back into the audible range (heard as
+extra brightness/loudness); reading slower for lower notes has no such
+foldback, so it stays comparatively clean and quiet by contrast. Nothing
+in the gain path itself scales with pitch (`note_rate_` only ever feeds
+`read_inc`; `note_gain_` is velocity-only) — this is a structural
+property of the interpolation, not a gain bug. A real fix (a properly
+band-limited resampler, or an oversample-then-filter approach) is a
+genuine DSP addition with its own real per-grain CPU cost, not attempted
+yet.
+
+**Grain count 16, and making each grain cheaper**: a request for denser
+Grain textures without more CPU — Scan deliberately left at 10. Grains
+was the most expensive engine on its own (Size 60ms, Fill 10, Scan 68%
+Fill 10, reverb send 35%, everything else off: **45 avg / 49 peak**
+playing, 20/22 idle), so raising the count alone wasn't acceptable.
+Three changes, each checked on the Mac against the previous version
+with a host build of `GranularEngine` (7–8 scenarios: jitter, short
+pitched grains, reverse+Gap, Scan muted, Rhythm, note interrupts, release
+tails, live Trim):
+- **Block rendering.** `Process()` used to render every active grain
+  once per sample, hopping between up to 2×slots SDRAM read positions
+  every sample. It now runs a per-sample *control* pass (ADSR, grain
+  scheduling, Scan sweep) and renders each grain across a whole span in
+  one tight loop (`RenderClusterSpan()`/`RenderGrainSpan()`), splitting
+  the span exactly where a grain is about to trigger so slot stealing
+  sees the same grain phases as before. Output was identical to float
+  rounding (~6e-8). Fill 10: 45/49 → **38/43**; idle 20/22 → 16/17 (the
+  old per-sample bookkeeping ran even with no grains active).
+- **16-bit source copy.** `SetSource()` now builds the engine's own
+  interleaved int16 copy (`g_granular_shadow`, 1.9MB SDRAM, owned by
+  main.cpp), peak-normalized to the full int16 range with the inverse
+  scale folded into each grain's gain — so neither a hot capture clips
+  nor a quiet one wastes bits. Grains (both layers) read only this; the
+  float buffer still feeds Trim preview, the waveform, capture and save.
+  `SetTrimRange()` stays O(1) by offsetting into the existing copy, and
+  orders its pointer/length updates so a callback landing mid-update
+  never reads past either range. `SetSource()` hides the source
+  (`src_len_ = 0`, with a signal fence so the compiler can't fold the
+  store away) while the copy is rebuilt.
+- **Hann window** read nearest-entry from a 1024-point table instead of
+  interpolating a 256-point one.
+
+The last two together measured 72–80dB below the signal against block
+rendering alone — inaudible. Final numbers, same test: **Fill 10: 31/35**
+(fast playing 33/36); **Fill 16: 34/38** slow, 37/40 fast with an 83%
+release (was 52/56 before the 16-bit copy); Scan muted at Fill 16:
+27/30. Idle 15–16/17. So the grains' own cost (playing minus idle) went
+from ~25 points at 10 grains to ~19 at 16, with Scan's 10 grains ~7 of
+that — the 16-bit copy was the biggest single win, confirming the grain
+loop was mostly waiting on SDRAM, not doing arithmetic. A suggested cap
+on concurrent release fades was dropped after reading the code: a note
+interrupt fades the old grains over 2ms while new ones start one hop at
+a time, so it never actually doubles the grain count — the higher
+"fast playing" figure was just the engine never going idle under a long
+release.
+
+Fill is stored in presets as a fraction of the slot count, so — as when
+it went from 3 to 10 — existing Grains presets come back proportionally
+denser (full Fill = 16 now); the 1/Fill overlap gain keeps loudness the
+same. Cost: SDRAM 89.4% → 92.3%, SRAM +~5KB (95.4%).
+
+## Screen::Mixer
+
+One screen covering all 9 mixable channels — Loop Layers 1–4, Grains,
+Dexed (DXD), Ensemble (ESB), Bypass, and Master — reached by clicking
+the encoder on `Global:Mixer` (which itself shows an at-a-glance
+overview grid: all 9 channel names in a row, each with a real vertical
+bar, via `DrawMixerOverviewGrid()`). See *Ensemble*'s own *Screen::Mixer*
+entry above for the real odd-channel-count layout bug adding this 9th
+channel surfaced, and why it's named "ESB" rather than the originally-
+shipped "ENSB."
+
+### Knob pickup only after the knob is turned
+
+Every page's knobs use soft pickup (`KnobPickUp()`): a knob takes over a
+setting only once it reaches the setting's value, so changing page never
+yanks a value to wherever the knob sits. But it engaged on the first tick
+if the knob merely *happened* to be within its 4% epsilon of the value
+-- and then wrote the knob's own value over it, with nothing touched.
+Reported on Dexed: load a preset, scroll on, and the sound changed
+completely. Browsing presets moves both knobs to arbitrary positions,
+and on the Algorithm page the target was the *start* of the current
+algorithm's 1/32 step while the knob maps by `floor(k1 * 32)`, so a knob
+just below it selected the previous algorithm.
+
+All 132 pickup calls now go through `PickUpK1()`/`PickUpK2()`: a knob
+does nothing on a page until it has moved `kPickupMove` (2%) from where
+it was on arrival, then picks up as before. Algorithm's pickup target is
+also the centre of its step now.
+
+### Gain staging: equal-power pan, a master limiter, dB meters
+
+Reported: synths sounded fine live but quiet once recorded into a
+layer, mic/guitar takes too, and the Mixer's bars "never got past half
+way". Three things combined:
+
+- **Linear pan law, everywhere.** Every channel used left = 1 - pan,
+  right = pan, so a centred source sat at -6 dB per side -- and a synth
+  recorded into a layer paid it twice: its own pan on the way in, then
+  the layer's on playback (only partly offset by the layer Volume
+  curve's 1.4x). Every channel -- the 4 layers, all engines and Bypass --
+  now uses one equal-power law (`pan_law.h`: cos/sin, -3 dB in the
+  centre, unity hard left/right), so centred sources gain 3 dB and a
+  sound keeps the same loudness as it pans. WAV export renders through
+  the same layer code, so it follows automatically.
+- **Nothing protected the output**, which is why levels had been kept
+  conservative. `MasterSoftLimit()` (main.cpp) is now the last stage:
+  untouched below 0.8 (-2 dBFS), then a tanh knee rounding everything
+  above into +-1.0 -- a tanhf() only on the rare samples above the
+  knee. The Master meter reads *before* it, so its clip light now means
+  "the limiter is working hard". Export doesn't need it: it normalises
+  its own peak.
+- **Linear meters.** A bar at half height was -6 dBFS, a healthy level
+  that read as quiet. `MeterBar01()` maps peak level onto -48..0 dB, so
+  the bars read like a studio meter. (Volume/Send bars still show knob
+  settings, unchanged.)
+
+`Global:Mixer` also gained knobs: **K1 Master Vol, K2 Bypass Vol** --
+Bypass runs through Master, so with Master up a mic monitored through
+Bypass could feed back; now it can be pulled down right there. Bypass
+Vol defaults to 60% at power-on (it isn't saved in performances or
+startup defaults). The CPU readout moved to that page's bottom row,
+drawn without a centre icon since it's a readout, not a control
+(`DrawControlRow(..., show_icon = false)`). The overview grid's 10 bars
+went from 4 px to 5 px apart, still centred.
+
+### Peak level + clip indicator
+
+Added after a real gap: there was no way to see signal level anywhere in
+the UI before saving/recording, only fader *settings*. `MixerGetLevel01()`/
+`MixerIsClipping()` expose a live, independent-of-any-fader reading per
+channel:
+
+- **Layers 1-4** already had the plumbing — `LooperLayer::GetLevel()`
+  tracks `|sample|` continuously during both Recording and Playback
+  (pre-fader, the raw buffer content), just never read by the UI before
+  now.
+- **Grains/Dexed/Bypass/Master** didn't exist before this: `main.cpp`
+  now maintains one `UpdateLevelMeter()` call per channel, each reading
+  that channel's own real signal at the point it's computed — `gran_l`/
+  `dexed_l` (post-mixer-gain, the same signal that feeds both the live
+  mix and a recording), `byp_mono` (post-gain/pre-pan), and the final
+  `out[0]` (everything: volume, reverb, delay, filter, click) for
+  Master. See `audio_engine.h` for the 8 globals (4 levels + 4
+  clip-holds) this needs, same cross-file-global convention
+  `g_audio_suspended` already established.
+- **Instant attack, slow (300ms) release — not a symmetric one-pole
+  follower.** The first pass used the same `0.3*|x| + 0.7*prev` shape
+  `LooperLayer`'s own `meter_` already had, which seemed reasonable
+  since it's the established convention here — but that decays to ~1%
+  within ~13 samples (~0.27ms @ 48kHz) either direction, invisible on a
+  ~30Hz OLED redraw for anything that isn't a continuous tone. Grains'
+  own output is exactly that kind of bursty/gappy signal (discrete
+  grains separated by silence, depending on Fill/Gap) -- a real,
+  reported symptom ("even with high volume on Dexed and Grains, the
+  meters don't seem to display much") traced to the bar having already
+  decayed back to nothing between grain onsets, long before the next
+  redraw ever read it. Fixed everywhere (all 4 new meters AND
+  `LooperLayer`'s own `meter_`/`clip_hold_`, for consistency -- Layers
+  just didn't show the flaw as obviously, since loop playback is
+  usually continuous audio) with a real peak-meter shape instead:
+  `kMeterReleaseSeconds` (0.3s) is the same ballpark a hardware VU meter
+  uses, `level = max(level, |sample|)` on the way up (always shows the
+  true peak immediately) with an exponential release on the way down.
+- **Clip indicator is a hold, not an instant flag** — `kClipThreshold`
+  (1.0, same meaning for every channel: "pushing past nominal
+  full-scale," well under the loop-recording path's actual ±1.5 hard
+  clamp, so it's an early warning, not just a post-mortem) latches
+  `kClipHoldSeconds` (0.5s) of hold time once crossed, the same "peak
+  hold LED" idiom real mixing consoles use — needed because the OLED
+  doesn't redraw fast enough to reliably catch a one-sample transient
+  otherwise. `LooperLayer`'s own `clip_hold_` uses the identical
+  threshold/hold shape, kept as a separate constant rather than shared
+  since each one reads a different signal.
+- **Drawn as a filled cap at the top of the bar's own outline**
+  (`DrawMixerVBar()`'s `clip_lit` parameter) rather than a separate
+  element — costs no extra screen space on either page, and is drawn
+  last so it's never hidden under the level fill.
+- **Overview grid now shows Peak, not Volume** — deliberately: this grid
+  answers "what's loud/clipping right now," and a fader-position bar
+  would just duplicate the Detail page's own Vol bar. Settings (Volume)
+  and live signal (Peak) are now a clean split across the two pages.
+- **Detail page groups 2 channels per screen, not 4** — changed from the
+  original 4-wide layout specifically to make room for a real 3rd bar
+  (Peak, with the clip cap) alongside the existing Vol/Rev pair, rather
+  than cramming a tiny indicator into already-tight space. Rotating
+  through channels works exactly as before (one channel at a time); only
+  how many neighbors are visible around the selected one changed.
+- **Grains/Dexed's own bars switched to a PRE-limiter tap, not
+  `gran_l`/`dexed_l`** — a second real bug, found by ear: both bars
+  still looked permanently quiet even while genuinely driving each
+  engine hard ("the bars still hardly move up ... even with lots of
+  volume"). `gran_l`/`dexed_l` are the fully-finished per-channel
+  output -- post-`tanhf()` (mathematically bounded to (-1,1) no matter
+  how hard the input is driving it), post-`output_level_` (often well
+  under unity, see `GranularEngine`/`DexedSynth`'s own comments), AND
+  post-pan (halved again at dead center). Three attenuation stages
+  stacked between "the engine is working hard" and what that bar could
+  ever show. `GranularEngine::GetPreLimiterLevel01()`/
+  `DexedSynth::GetPreLimiterLevel01()` (and their `IsLimiting()` clip
+  counterparts, same root cause -- see *Dexed FM voice summing / chord
+  headroom* below) read the signal immediately before `tanhf()`
+  instead, inside each engine's own `Process()`. `Ui::MixerGetLevel01()`/
+  `MixerIsClipping()` read these two directly for channels 4/5 now;
+  Bypass/Master have no internal limiter of their own, so those two
+  keep the original post-chain check. The old `g_grains_level`/
+  `g_dexed_level` globals are still computed (the scope/meter loops
+  that feed them need to run either way) but no longer drawn.
+
+**Rotate picks the channel, not the page** — unlike every other
+Dexed/Granular-style screen, `Screen::Mixer` has no sub-pages of its own;
+the encoder's usual "cycle this screen's pages" job is repurposed to
+step through one continuous, endlessly-wrapping sequence of 9 channel
+stops plus a final Scope stop (a live oscilloscope of the actual
+post-fader master mix, captured in `main.cpp` right after the master
+filter/click/master-volume stage — the real final signal, not any one
+instrument's own output), then wraps back to channel 0. This was a
+deliberate design constraint, not an oversight: encoder rotate means
+"next page" on every other screen in this project with zero exceptions,
+so when Mixer needed a way to move between several channels *and* had no
+"next page" job of its own left to give the encoder, repurposing rotate
+for exactly this one screen was the least-surprising option, rather than
+inventing a second, competing "rotate" gesture.
+
+**Each of the 8 non-Master channels** shows a Detail page with real
+Volume/Pan/Reverb-Send vertical bars: Button 1 tap maps the knobs to
+Volume+Pan, Button 2 tap maps them to Reverb Send — the same
+Button-1/Button-2-toggle-which-pair idiom already used elsewhere (Grains'
+merged Grain/ADSR/Mix pages). DXD (Dexed) used to be the one exception
+among those (now 8), back when Dexed had no Pan control of its own (see
+*Dexed* above for the real user report that changed that) -- it now
+behaves identically to every other non-Master channel, ESB (Ensemble)
+included from the day it was added.
+**Master** (the 9th channel) has no toggle at all — Knob 1 is Volume,
+Knob 2 is Reverb Size, always, since there's no per-channel Pan/Send
+concept for the master bus itself.
+
+**A genuine knob-pickup exception, and why**: `KnobContext::MixerVolPan`/
+`MixerReverb` are each shared across all 8 non-Master channels (branching
+internally on `mixer_position_`, the same "one context, branch on which
+target" idiom `KnobContext::LayerStatus` already uses for
+`cursor_layer_`). Unlike `LayerStatus`, though, `mixer_position_` can
+change *while this exact KnobContext value stays the same* (rotating
+between two Volume+Pan channels doesn't change which enum value
+`CurrentKnobContext()` returns) — so the automatic "re-arm pickup on
+context change" logic every other rotate-driven index in this project
+relies on never fires here on its own. `HandleEncoder()`'s own rotate
+handling explicitly re-runs the pickup reset/reseed by hand on every
+channel change as a deliberate, documented exception to that otherwise-
+universal rule.
+
+## SD card management (Global:SdMgmt)
+
+*The Captures and Kits boxes now browse numbered bank folders rather than
+numbered slots — see* Sample banks *below. Its controls and the Captures
+box's Sampler/Grains split are described under* Shared browse convention
+*below.*
+
+Lets you browse every real user-save category on the card — currently
+**8**: Performances, Grains Presets, Dexed Presets, Ensemble Presets,
+and SampleSynth's own Captures, Kits, Voice User presets, and Drum User
+presets — and Duplicate or Delete individual files directly from the
+Pod, no computer needed. Grew from an original 4 (Performances/Grains/
+Ensemble/SampleSynth-Captures) on direct request to cover "user saves
+and captures from all engines"; deliberately narrowed to that exact
+scope rather than every real folder on the card — SampleSynth's own
+Sounds (`SAMPLES/SOUNDS/`, including its category subfolders) and the
+OP-1 pack-import staging folders were explicitly excluded, the former
+for needing its own category-then-file browse design the other 7
+categories' flat numbered lists don't, the latter because raw import
+inbox material is exactly the kind of thing a person would rather just
+clean up by hand on a computer than manage here.
+
+Reuses the exact same cached slot-list arrays and dirty-flag/
+`Refresh*()` functions those save pages already scan and cache for 5 of
+the 8 (Performances/Grains/Dexed/Ensemble/SampleSynth-Kits reuse their
+own page's existing cache; the 2 SampleSynth User-preset categories get
+their own small `RefreshSampleSynthVoiceUserSlots()`/
+`RefreshSampleSynthDrumUserSlots()`, written to fully replicate each
+one's existing shared-dirty-flag contract — including the Kit name
+cache and each page's own cursor clamp — not just the bare `List*()`
+call, since a cheaper partial refresh would have left the SampleSynth
+Preset page's own name cache stale the next time it was opened after a
+Delete/Duplicate run from here) — no duplicate directory-scanning logic
+anywhere.
+
+The folder picker outgrew a flat list once it reached 8 entries (even
+`TomThumbDrawText()`'s own tiny font, already needed once this hit 4,
+would have needed a scroll window or illegibly cramped rows at 8) — it's
+now a 4x2 grid instead, one 32x18px box per category, flush edge-to-edge
+(adjoining borders simply double up into one shared line, same look as
+a plain spreadsheet grid). The selected box fills solid with its label
+punched out in the display's "off" color so it reads as dark-on-light;
+every other box just gets an outline. `SdMgmtFolder`'s own declared
+order IS the grid's row-major cell order (0-3 top row, 4-7 bottom row)
+— reordering the enum moves which box something draws in, safe to do
+freely since `sd_mgmt_folder_` is never persisted (always boots back to
+Performances).
+
+Each box has its own short label (`SdMgmtFolderShortLabel()`: `PERF`/
+`GRAINS`/`DEXED`/`ENSM`/`CAPT`/`KITS`/`SMPVO`/`SMPDR`) — the same
+vocabulary now reused everywhere a bare slot number is shown on any
+engine's own page too (see *Slot-number display prefixes* below), kept
+deliberately distinct from `SdMgmtFolderName()`'s own longer names
+("Sampler Kits", "SMPVO User", etc.), which stay for the "now browsing
+X:" header once drilled into a box — the grid's own tiny cells have no
+room for those.
+
+Dexed Presets closes what used to be a real, open gap here:
+`DeleteDexedPreset()`/`DuplicateDexedPreset()` already existed in
+`PerformanceStore` with the identical shape (Dexed's own Preset page
+already used them), but `SdMgmtFolder` had never actually been extended
+to add a stop for it. SampleSynth's Kits/Voice-User/Drum-User presets
+needed real new backend work, by contrast — `List*()`/`NextFree*Slot()`
+already existed for all three (built alongside the User-preset save/
+load system itself, see *Splitting SampleSynth...* above), but no
+`Delete*()`/`Duplicate*()` pair did. Added following the exact template
+`DeleteGranularPreset()`/`DuplicateGranularPreset()` already set —
+reusing the same shared `DeleteFileGeneric()`/`CopyFileChunked()`/
+`CompactSlotsAfterDelete()` helpers every other category's own pair
+already calls, since none of the three (Kits/Voice-User/Drum-User) has
+a factory tier to protect, the same "every slot is user content" shape
+Granular's own pair already has.
+
+A real, easy-to-miss correctness issue surfaced while wiring the longer
+new folder names (see *SD card folder renaming* below) into these same
+functions: several existing path buffers (`char fname[24]` and similar,
+sized for the old short codes like `DEXP`/`SAMP`) were too small for
+paths like `SAMPLES/VOICE PRESETS/PRES099.DAT` — `snprintf()` would
+have silently *truncated* the filename rather than overflow anything,
+which is its own quiet kind of corruption (a truncated path either
+resolves to the wrong file or simply fails to open, not a crash).
+Caught by computing the real worst-case length for every renamed path
+and widening every buffer that builds one (`PERFORMANCES/PERF099.DAT`
+→ 32, `SAMPLES/DRUM KITS/KIT099.DAT` → 36, the two `SAMPLES/*
+PRESETS/PRES099.DAT` paths → 40) before ever running the new code on
+real hardware.
+
+- **Duplicate** (Button 1 held 800ms): byte-for-byte chunked copy into
+  the next free slot in that category (`CopyFileChunked()`, shared by
+  every category at the `PerformanceStore` level) — `FA_CREATE_NEW`,
+  not `FA_CREATE_ALWAYS`, so an
+  unexpected filename collision fails loudly instead of silently
+  overwriting something; any failure partway through deletes the partial
+  destination file rather than leaving a corrupt copy behind.
+- **Delete** (Button 2 held `kSdMgmtDeleteHoldMs` = 1500ms — longer than
+  every other hold-to-confirm gesture in this project, since unlike
+  Overwrite/New (which can just be re-saved/re-loaded), delete has no
+  undo): removes the file, then **closes the gap it leaves behind** —
+  every higher-numbered file still on the card in that same category
+  (and any other pre-existing gaps above it) shifts down to the lowest
+  free number below it, converging back to contiguous numbering from 1
+  (or from the first user slot, for Dexed Presets' factory-reserved
+  range) regardless of deletion order. Without this, `NextFree*Slot()`'s
+  own "lowest free slot" scan would silently reuse the low number a
+  delete just freed on the very next Save New, while other, higher-
+  numbered saves sat stranded above it with a permanent gap in between.
+  If the file that was deleted (or one that got shifted) happens to be
+  the one currently loaded on its own save/load page, that page's own
+  "Now: N" tracking is updated in the same pass to follow it to its new
+  slot (or to "unsaved"/"custom" if it was the one actually deleted) —
+  passed through as an in/out pointer to `DeleteSlot()`/
+  `DeleteDexedPreset()`/`DeleteGranularPreset()` rather
+  than guessed at from the caller side, since only the delete function
+  itself knows exactly how far each surviving file actually moved.
+
+## Shared browse convention (Preset / User pages)
+
+Every engine (Dexed, Grains, Ensemble, SMPVO/SMPDR), `Global:Perf` and
+`Global:SdMgmt` now browse and save the same way, so nothing needs
+re-learning between them. It replaced an older per-page "Files/New Load
+chooser" (a two- or three-line Files / Import / Load New pick, then a
+tap-to-preview, hold-to-commit list), which had grown different extra
+levels on each page.
+
+Each engine has two pages:
+
+- **Preset** — load only: the engine's built-in sounds plus, for Grains
+  and SMPVO, saved captures. B2 opens the browser at a folder list.
+  **Folder lists, at any depth:** K1 scrolls, B2 opens, B1 goes back.
+  **Inside a folder:** K2 scrolls and K1 is left alone, so Back lands on
+  the same folder (K1 is an absolute knob, so the highlighted folder is
+  simply wherever K1 points). A **B2 tap loads** and stays in the folder,
+  so the next sound is one K2 turn and a tap away. No hold; the old
+  preview/commit split is gone because loading never overwrites anything
+  on the card.
+- **User** — your own saves. B1 = Save: K1 picks Overwrite / Save New
+  (Overwrite only once one of your own saves is loaded; loading a Preset
+  page sound forces Save New, so a library sound can't be overwritten),
+  and **holding** B2 800ms confirms — saving keeps its hold because it
+  can overwrite. B2 = Load: a list that starts with **New** (a blank
+  sound; Dexed's New is its first factory patch), K2 scrolls, a tap
+  loads and stays.
+
+Per engine:
+
+| Engine | Preset page | User page | Extra |
+|---|---|---|---|
+| Dexed | Roms / Dexed / Imports → folders → presets | `DEXED/` saves not in an import folder | Import page: K2 scrolls `DEXED IMPORT/` .syx, hold B2 imports (becomes a folder under Imports) |
+| Grains | Starter (`GRAINS/PRESETS/`, any `.DAT` listed by file name) / Captured n (`GRAINS/CAPTUREDn/CAPnnn.DAT`, 32 per folder) | `GRAINS/PRESnnn.DAT` | Trim page: hold B2 saves the trimmed capture into the next free Captured slot |
+| Ensemble | the 8 factory presets (no folder level) | `ENSEMBLE/` saves | — |
+| SMPVO / SMPDR | Sounds n / Captured n, or Kits n / Breaks n | Voice / Drum user presets | Trim (SMPVO): hold B2 saves a capture |
+
+Every browser uses the same layout: a Tom Thumb header naming the level
+(e.g. "Roms+Dexed+Imports", or the open folder's name and size), then
+the one highlighted entry in the normal font. `> ` in front of an entry
+marks what's loaded right now.
+
+**Grains captures on the Preset page.** Captures you keep are a library
+of raw sounds, while User saves are usually edited (reverb added, grains
+shaped), so captures live on the Preset page next to the starters.
+Starters moved from `GRAINS/PRES001-009.DAT` to readable names in
+`GRAINS/PRESETS/` (e.g. `Bell Shimmer.DAT`) — same GRNP file format, now
+listed by file name. `PerformanceStore::SaveGranularPreset()`/
+`LoadGranularPreset()` were split into slot wrappers over path-based
+`SaveGranularPresetFile()`/`LoadGranularPresetFile()` so the numbered
+user saves and the named library files share one reader/writer.
+
+**Unsaved-changes marker.** A Tom Thumb `*` after the page title
+(`DrawPageTitle()`) whenever the sound differs from the last load, save
+or New. Each engine builds an `EditSnapshot` — its preset fields appended
+one by one (never `memcmp` of a whole struct, which would compare padding
+bytes) — and compares it to a baseline taken by `Mark*Clean()` on every
+load/save/New. Grains also counts its trim points, and a fresh capture
+(Direct Record, From Layer or Import) sets the marker until it's saved
+anywhere. Dexed's snapshot is the 156-byte patch plus its 9 extra
+fields, which is why `EditSnapshot` holds 256 bytes. `Global:Perf` has
+no marker: "changed since save" for recorded layers isn't the same kind
+of comparison.
+
+Page titles were shortened to `Dxd:` and `Gran:` so the longest page
+names ("Dxd:Feedback", "Gran:Capture") still leave room for the `*`
+before the beat indicator.
+
+**Global:SdMgmt** follows the same rules: K1 scrolls the 4x2 box grid
+and any folder list, B2 opens; in an item list K2 scrolls, B1 is Back
+(hold = Duplicate) and B2 held 1500ms deletes. The CAPT box opens to a
+**Sampler / Grains** choice, then that engine's Captured banks, then the
+files (`DeleteGranularCapture()`/`DuplicateGranularCapture()` mirror the
+Sampler's own pair, including closing the numbering gap after a delete).
+The folder-level cursor (`sd_mgmt_list_cursor_`) and item cursor
+(`sd_mgmt_cursor_`) are separate so K1 and K2 never fight over one index.
+
+**Global:Perf** (renamed from Global:File) is a User page for
+performances: B1 Save, B2 Load from New + PERF list, tap loads and stays.
+Loading a performance replaces every layer's audio, but it's still a tap
+like every other load, for consistency.
+
+## Save/load
+
+`PerformanceStore` saves/loads a whole performance (all 4 layers' audio
+plus tempo/global/per-layer settings) as one flat binary file per slot,
+`PERF/PERF001.DAT` .. `PERF/PERF099.DAT`, via Global:Perf — kept in its
+own subfolder for the same reason WAV exports get their own (see below):
+a tidier SD root, and it keeps `ListSlots()`/`NextFreeSlot()`'s directory
+scan scoped to just that folder. The on-disk layout has a
+version tag (`kFileVersion` in `performance_store.cpp`, currently **14**)
+that gets bumped whenever a field is added or removed — a save from an
+older firmware version is normally rejected cleanly on load (shown as a
+short error on the File page) rather than being misread, so a firmware
+update can mean older saves need re-saving under the new version.
+**11 → 12 → 13 → 14 is a backward-compatible chain, not a hard
+cutoff**: `Load()`/`LoadPrefs()` accept all four versions, reading only
+as much of the file as that version actually wrote and defaulting
+whatever comes after. 11 → 12 added the Dattorro reverb's 6 new
+parameters (`Decay` itself needed no new field, since it's the same
+`reverb_size01` the Size knob already wrote under every version back to
+7); 12 → 13 added the Dexed/Grains MIDI channel fields; 13 → 14 added
+Ensemble's own MIDI channel field (see *MIDI* above) — all three
+default to Omni for anything older than their own introducing version,
+so a v11 file loads the reverb, Dexed/Grains, *and* Ensemble defaults in
+one pass, not three separate upgrade steps. Every version older than 11
+is still a hard, clean reject, same as always; reviving those would need
+several historical `FileHeader` layouts reconstructed from git history,
+which hasn't been done. `ExportWav()` only needs the reverb fields,
+never any MIDI channel — routing has no effect on audio already
+recorded, so that call site was left untouched by either the 12 → 13 or
+13 → 14 bump. Dexed Presets (`DEXP/PRESnnn.DAT`), Ensemble Presets
+(`ENSP/PRESnnn.DAT`, parameters only — no audio, same shape as Dexed's
+own), and Grains Presets (`GRNP/PRESnnn.DAT`, audio-inclusive — see
+*Grains* above) are each their own separate on-disk format with their
+own independent numbering, not part of a performance file's own version
+tag.
+
+### Audio suspended during save
+
+Every SD write that can run long (`TriggerSave()`, `TriggerSaveGranularPreset()`,
+`TriggerSaveDexedPreset()`) sets `g_audio_suspended = true` for the
+duration, same as `TriggerLoad()`/`TriggerExport()` already did — while
+set, `AudioCallback()` skips every layer/Dexed/Ensemble/Grains/reverb/
+delay/filter and just outputs silence. This was added after a real hardware bug:
+saves (Performance and Grains Preset both) intermittently failed with
+`Fail:close9` (FatFs `FR_INVALID_OBJECT`, the file handle itself turning
+up invalid right at the final `f_close()`, after every actual write had
+already succeeded). Several other causes were suspected and ruled out
+first — a Grains preset struct change, SD filesystem corruption, card
+hot-swap — before tracing it to the audio ISR running at full cost,
+unsuspended, for the entire write, contending with the SD card's own
+SDMMC DMA transfer. Load/Export already avoided this for correctness
+reasons (consistent layer/tempo state while restoring); Save needed the
+same guard purely to stop it from racing the DMA, since Save only reads
+layer state and never mutates it.
+
+### Removing the chunk loop: ~15s → ~1.8s for a 20MB Performance load
+
+`Save()`/`Load()`/`SaveGranularPreset()`/`LoadGranularPreset()` used to
+stream their own raw audio to/from the SD card in small chunks
+(`kChunkSamples`, 4096 samples/call, same constant `ExportWav()`/
+`ImportWav()`'s own per-block render pipeline still uses), on the
+assumption that chunking was needed to keep progress updates responsive
+and avoid some unmeasured "per-call SD overhead." A real hardware
+report ("it takes about 30 seconds to load a performance") led to
+actually timing it: a 20MB Performance load measured at **~15s**,
+working out to only ~1.3MB/s effective throughput — far below what the
+SDMMC bus itself should sustain even at `FAST` (50MHz/4-bit). Raising
+the SD card's own clock further, to `VERY_FAST` (100MHz, the fastest
+`SdmmcHandler::Speed` offers), made no felt difference at all,
+confirming the bottleneck was never bus clock. The real cause,
+isolated by comparing two chunk sizes on real hardware: ~10.5ms of
+**fixed overhead per `f_read()`/`f_write()` call** (DMA setup/
+teardown), not bandwidth — the true sustained throughput, once that
+fixed cost is subtracted out, measured at a believable ~12.7MB/s for
+`FAST`.
+
+These four functions, unlike `ExportWav()`/`ImportWav()`'s own
+per-block pipeline, read/write directly into/from the caller's already-
+existing SDRAM buffer with no intermediate scratch buffer at all — so,
+unlike that pipeline (which genuinely needs a same-sized buffer per
+unit of chunk size, and stays on the original small `kChunkSamples`),
+raising or removing their chunk size costs nothing extra in memory.
+Bumping the chunk 16x (4096 → 65536 samples/call) alone cut the same
+20MB load to ~2.46s. Chunking here was also never protecting real-time
+audio continuity either — `g_audio_suspended` already blocks the whole
+operation (see above), so `AudioCallback()` never runs concurrently
+with it regardless of chunk size. With nothing left chunking was
+actually buying beyond progress-bar granularity, these four functions
+now do **one `f_write()`/`f_read()` per channel**, no chunk loop at
+all — landing the same 20MB load at **~1.83s**, roughly an 8x
+improvement over the original ~15s, confirmed clean on repeated
+Performance/Grains saves and loads.
+
+**A real bug this surfaced**: `TriggerLoadGranularPreset()` turned out
+to be missing its own `g_audio_suspended` guard. At the time this was
+believed to be the *one* load/save function in `ui.cpp` still missing
+it — a later, more thorough audit (see *A fuller audit* below) found
+that claim was wrong; it just happened to be the one that had already
+failed loudly enough on real hardware to get noticed and fixed first.
+The old small chunking had apparently kept the audio-ISR-vs-SDMMC-DMA
+contention window narrow enough to avoid visibly tripping it; removing
+the chunk loop widened a Grains preset load into one long, uninterrupted
+transfer, wide enough to reliably fail with `AUD0:1` (FatFs
+`FR_DISK_ERR`) on real hardware. A narrower fix was tried first —
+detaching just the granular engine from the buffer being overwritten
+(`GranularEngine::SetSource(nullptr, nullptr, 0)` for the duration,
+restoring the real source afterward) — on the theory that the race was
+specifically `GranularEngine::Process()` reading `src_l_`/`src_r_`
+while the SD DMA transfer rewrote them. Real hardware testing disproved
+this directly: the failure persisted identically with the engine fully
+detached, ruling out a buffer-specific race and confirming the same
+general contention class as the original "close9" bug. Fixed instead
+with the same full `g_audio_suspended` wrap every analogous function
+already uses — yes, this does silence Dexed and the Looper layers too
+for the ~1-2s a Grains load now takes, but real hardware testing showed
+that's genuinely not avoidable here, not an unnecessarily blunt hammer.
+
+### A fuller audit: more unguarded SD calls than the claim above suggested
+
+Direct question asked after the SD-speed optimization work above:
+whether import/capture/Performance-save-load are genuinely "heavy, OK
+for audio to stop for" while a Dexed/Ensemble/SampleSynth-Sound-or-Kit
+save/load is "light enough that it shouldn't need to." Rather than
+answer from memory, every `g_audio_suspended = true` site in `ui.cpp`
+was greped and mapped to its enclosing function, then every save/load/
+import/capture-sounding function *without* a hit was read in full to
+confirm whether it actually touches the SD card unguarded.
+
+The claim one section above ("Granular's load was the *one* missing
+guard") turned out to be stale and wrong by the time this ran:
+`TriggerLoadDexedPreset()` and `TriggerLoadEnsemblePreset()` had no
+guard at all (confirmed by reading both in full), and neither did the
+tiny struct-read at the top of the new `TriggerLoadSampleSynthVoiceUser
+Preset()`/`TriggerLoadSampleSynthDrumUserPreset()` (the heavier Kit/
+Sound reload each one triggers right after *is* separately guarded
+inside `LoadSampleSynthKitBySlot()`/`LoadSampleSynthFileIntoEngine()`,
+so only the small preset-file read itself was exposed). Three more,
+genuinely heavier functions were also found completely unguarded:
+`TriggerDexedSyxImport()` (reads one `.syx` then writes up to **32
+separate** `SaveDexedPreset()` files in a loop — the single heaviest
+unguarded call found, up to 33 real SD transactions with zero
+suspension), `TriggerSaveSampleSynthCapture()` (writes a trimmed
+Capture/Trim selection to SD), and `TriggerSampleSynthImport()` (the
+single-file Import page's own `ImportWav()` read).
+
+The physics explains why the user's own "heavy vs. light" framing is
+directionally reasonable but not the real safety boundary: the DMA-
+contention bug this project's own `g_audio_suspended` guard exists for
+(see *Audio suspended during save* above) is triggered by *any*
+concurrent `f_read()`/`f_write()` call while the audio ISR keeps
+running, not by how much data moves — the measured ~10.5ms fixed
+per-call overhead (see *Removing the chunk loop* above) is paid
+whether the payload is a 200-byte Dexed patch or a 20MB Performance.
+What actually scales with "heaviness" is the *number* of calls back to
+back (a Kit load's up to 24, a `.syx` bulk import's up to 33) and any
+CPU-bound decode/resample time sharing the same window — not whether an
+operation conceptually feels like "a sound" vs. "a project." An
+unguarded light call isn't safe-by-design, it's just a smaller,
+currently-untriggered instance of the same risk class Performance Save
+originally hit.
+
+On direct instruction, only the two genuinely heavy-but-unguarded gaps
+got fixed — `TriggerDexedSyxImport()`, `TriggerSaveSampleSynthCapture()`,
+and `TriggerSampleSynthImport()` all now wrap their SD work in
+`g_audio_suspended` the same way every other real write/import in this
+project already does. `TriggerLoadDexedPreset()`/
+`TriggerLoadEnsemblePreset()` were deliberately left unguarded — "very
+light," per that direct instruction — a conscious, requested trade-off
+rather than an oversight, now that the trade-off itself has been
+surfaced and named rather than left implicit.
+
+### Save-file "bubbles"
+
+A performance deals **only** with the looper (audio + tempo/global/
+per-layer settings) — it does not embed Dexed's or Grains' sound at all,
+even though an earlier instrument (Pad Synth) once had its own sound
+embedded this way (`kFileVersion` 7 added it, version 10 removed it
+again). Each instrument's presets live entirely in their
+own independent save/load system instead, with no cross-embedding into a
+performance file — every instrument's saves stay in its own separate
+"bubble," performances included. This was a deliberate architecture
+change made partway through this project's history, not specific to any
+one instrument: it applies equally to every instrument that's ever had
+its own preset system. The
+practical effect: switching or tweaking any instrument's loaded sound
+never touches a saved performance, and loading an old performance never
+drags along whatever synth patch happened to be active when it was
+saved — the two are fully decoupled. `PerformanceStore::Save()`/`Load()`
+no longer take or return any instrument data at all as a result; each
+engine's own `TriggerSave*Preset()`/`TriggerLoad*Preset()` pair is
+completely separate and unaffected by performance Save/Load.
+
+"New" (the first entry of Global:Perf's Load list — see *Shared browse
+convention* above) only wipes each layer's recorded
+*audio* (`LooperLayer::Clear()`) — every global and per-layer setting is
+left exactly as it was. It's deliberately not the same as applying the
+startup default (see below); those are two different, independent
+actions. Delete/Duplicate for Performances and Grains Presets live on
+`Global:SdMgmt` instead (see *SD card management* above, including its
+own note on Dexed Presets not being covered there yet), not on these
+individual save/load pages.
+
+## Startup defaults
+
+Global:Tempo's Button2, held 800ms (`Ui::TriggerSaveDefaults()`), saves
+the current *global* settings only — BPM, Bars, Master Volume, Metronome
+on/off + volume, Master Filter mode/cutoff/resonance, Reverb Size, and
+Bypass — as a single small `PREFS.DAT` in the SD root. Deliberately no
+per-layer settings (volume/pan/filter/effect/reverb send) — those
+stay whatever they were, same as every other per-layer control.
+
+`PREFS.DAT` reuses `PerformanceStore`'s existing `FileHeader` struct
+as-is (same fields a full performance save already has, just written
+without any layers/audio following it) rather than a second parallel
+format, distinguished only by its own magic (`"PREF"` vs `"OURO"`) so it
+can never be cross-loaded with a real performance save by mistake.
+
+Applied once, automatically, at boot (`Ui::ApplyStartupDefaults()`,
+called from `main()` right after `Ui::Init()`) — if no `PREFS.DAT`
+exists yet (fresh SD card, or nothing's been saved), this silently
+no-ops and the firmware's own hardcoded defaults stand; not an error
+worth surfacing anywhere. It's *not* applied when starting a New
+performance from Global:Perf — "New" there keeps every current setting
+exactly as-is (see Save/load below), the startup default only ever
+matters at power-on.
+
+## WAV export
+
+`PerformanceStore::ExportWav()` renders the current in-memory performance
+to a standard stereo 16-bit PCM WAV file on the SD card. Two independent
+output modes, both on Global:Export, both kept out of `PERF/` so they're
+invisible to `ListSlots()`/`NextFreeSlot()`:
+
+- **Button 1 ("Studio")** — full-quality native 48kHz (the Pod's actual
+  audio rate), written to `WAV/EXPnnn.wav`. General purpose.
+- **Button 2 ("CD")** — the same render, but resampled to 44100 Hz and
+  written to `custom/EXPnnn.wav` instead. That folder name is required,
+  not cosmetic: it's what a **MicroDexed Touch** (a Teensy 4.1-based FM
+  synth with its own second SD card slot) scans for user sample content,
+  at its native 44.1kHz — so the same card can go straight from this
+  looper into MicroDexed's second slot and be picked up immediately, no
+  copying needed. This mode exists because a straight 48kHz file plays
+  back audibly slow and pitched down on that device (confirmed on real
+  hardware): 44100/48000 reduces to an exact **147/160** ratio, so
+  `Resampler48to44_1` (in `performance_store.cpp`, right after
+  `kMaxExportLayers`) tracks phase with plain integer arithmetic instead
+  of a float accumulator — zero long-term drift no matter how long the
+  loop is, and the exact output frame count for a given input frame
+  count (needed for the WAV header's `data_size`, written before the
+  render loop even starts) is a closed-form calculation
+  (`Resampler48to44_1::OutputFrames()`), not something requiring a dry
+  run first. The DSP chain itself — master filter, shared reverb — always
+  keeps running at the true native 48kHz regardless of mode; only the
+  final quantized output samples are resampled, right after the master
+  filter and before the makeup-gain/16-bit conversion step. Each mode has
+  its own independent `EXPnnn` numbering sequence.
+
+Unlike Save, neither mode ever overwrites anything (always the next free
+number in its own folder), so there's no hold-to-confirm gesture on
+either button.
+
+- **Exactly one full loop length** (`TempoClock::GetLoopLengthSamples()`),
+  always starting from the true downbeat regardless of where playback
+  happened to be when Export was triggered — every layer's `play_pos_` is
+  snapshotted, forced to 0 for the render, then restored afterward (even
+  if the render fails partway through).
+- **The real, live effects chain** — filter, character effect, and
+  reverb per layer, plus the master filter — not a dry sum. This means
+  the export calls each layer's actual `Process()` an extra time from the
+  main loop (with `g_audio_suspended` held for the whole operation, same
+  as `TriggerLoad()`, so it doesn't race the real audio ISR touching the
+  same objects). Reverb is handled the same way live playback does it: a
+  local `DattorroReverb` mirroring `main.cpp`'s shared bus, fed by every
+  layer's Send-scaled signal summed together and all 7 of its live
+  parameters (not just Decay), rather than a separate instance per layer.
+- **Master volume and the metronome click are excluded.** Master volume
+  is a monitor/output-level control, not mix content — including it would
+  mean the exported file's loudness depended on wherever that knob
+  happened to be sitting, including all the way down. The master filter
+  *is* included (it's a real mix-shaping tool), via a fresh local `Svf`
+  rather than main.cpp's live one, since a filter's only state is
+  short-term signal history — primed with a throwaway first pass over the
+  loop before the real render so it isn't starting cold. Project
+  vari-speed is the one live-performance control treated the *opposite*
+  way from master volume: it's deliberately baked into the export as-is
+  (see *Vari-speed and scrub* above) rather than excluded.
+- **Peak-normalized, not just clamped.** That same throwaway first pass
+  doubles as a peak scan (it computes the exact same signal the real pass
+  will write, so this is free); the real pass then applies a flat makeup
+  gain so the loudest sample in the loop lands just under full scale,
+  capped so near-silent content doesn't get boosted into audible noise.
+  Without this, a loop that never got near clipping during normal
+  playback would export using only a fraction of the 16-bit range and
+  sound noticeably quiet no matter how loud it's played back.
+- **Refuses to run** while any layer is `Recording` or `ArmedCountIn`
+  (the Recording write path only checks `state_`, not real input, so
+  running it against silent dummy input would overwrite an in-progress
+  take), or if nothing's been recorded yet.
+
+## Known limitations & assumptions
+
+A few things that are intentional, not bugs:
+
+- **No input routing selector** — see *Input front-end* above; per-layer
+  Gain is the actual fix for a quiet source.
+- **Bypass sums to mono**: the dry monitor mix (Home, Button 2) sums both
+  input channels together and sends that to both outputs, rather than
+  keeping them independent — the Pod has one physical stereo-TRS input
+  jack, and a plain mono instrument cable into it only excites one ADC
+  channel (the other's ring contact is unconnected), so a straight
+  per-channel passthrough left the signal audible on only one side.
+  Recording still captures each ADC channel independently, so a
+  genuinely stereo source still records in true stereo.
+- **No tempo/pitch-independent time-stretching**: changing BPM never
+  retroactively affects already-recorded audio.
+- **Waveform display is a downsampled cache, not the raw buffer**: each
+  layer keeps 63 peak values (one per display column), updated
+  incrementally per-sample while recording/overdubbing rather than
+  rescanned from the (up to ~33s) audio buffer on every redraw. Peaks
+  only ever rise within a take (max-hold), never fall, even if an
+  overdub happens to reduce net amplitude somewhere — a deliberate
+  simplification, not a bug.
+- **Save files are version-locked**: see *Save/load* above (with one
+  exception now — see the 11→12 backward-compatible bump there).
+- **Reverb parameters aren't smoothed against live knob changes**: see
+  *Dattorro plate reverb* above — turning `DecayDiffusion` or any of
+  the other 6 parameters while the tank has real energy in it can click
+  or glitch audibly. Matches the original library's own design (every
+  `Set*` call there is an instant assignment too), not introduced by
+  this port, and not yet fixed.
+- **`Decay`'s stability near 100% is unverified**: unlike `ReverbSc`'s
+  own documented "becomes infinite at 1.0" ceiling for `SetFeedback()`,
+  the Dattorro library has no equivalent documented safe bound for
+  `Decay`. Works fine at the ranges tested so far; the very top of the
+  knob's range hasn't been deliberately stress-tested.
+- **Export is one stereo mixdown, not per-track stems**: all 4 layers'
+  post-effects signal is summed into a single file (either export mode)
+  — there's no way to export each layer as its own file.
+- **Undo is a single global slot, not per-layer history**: see *Undo
+  last overdub* above — overdubbing layer A then B then C then D in
+  sequence leaves only D's last overdub recoverable, not all four. A
+  true per-layer version would need 4 separate backup buffers instead
+  of 1 (roughly 4x the SDRAM this feature currently costs) — a real,
+  deliberate choice, not a currently-affordable one.
+- **Bypass's mix Volume/Pan don't persist**: like Master Volume and
+  vari-speed, they're live-performance controls that always reset to
+  their defaults on boot and after Load — not part of a saved
+  performance, and not covered by Startup Defaults either.
+- **SampleSynth Sounds aren't covered by `Global:SdMgmt`**: every other
+  real user-save category is (8 now — see *SD card management* above),
+  but Sounds live under category subfolders (`SAMPLES/SOUNDS/`,
+  `PIANO`, `MELLOTRON3`, etc.) rather than one flat numbered list, which
+  needs its own category-then-file browse design none of the other 8
+  needed — deliberately deferred rather than built in a hurry. Manage
+  those directly on a computer for now. The OP-1 pack-import staging
+  folders (`DRUM PACK IMPORT/`/`SOUND PACK IMPORT/`) aren't covered
+  either, by design — see that section's own reasoning above.
+- **Deleting a Dexed preset can leave a stale Import-folder manifest
+  record**: whether done from `Global:SdMgmt` (now wired in) or by
+  deleting the file directly on a computer, removing a preset that's
+  covered by a recorded SysEx Import folder (see *SysEx import* above)
+  leaves that folder's own manifest record pointing at a slot range with
+  a hole in it, since the manifest doesn't verify each slot still exists
+  on delete. Ensemble has no import feature, so this specific risk
+  doesn't apply there.
+- **No SD card hot-swapping while powered on**: the SD socket is
+  hand-wired with no card-detect pin (see *Hardware* above), so the
+  firmware has no way to know a card was physically pulled and
+  reinserted while the Pod stays on — `PerformanceStore::Remount()`
+  (triggered automatically on Home→Global, and manually via the "Retry"
+  button when Global:Perf/Export show "No SD card") re-runs `f_mount()`,
+  which recovers a merely-stale mount, but not a card that was actually
+  swapped live: the low-level SDMMC peripheral can be left in a state a
+  plain re-`Init()` doesn't cleanly recover from (a proper fix needs a
+  full `HAL_SD_DeInit()`/re-`Init()` cycle, which broke the *boot-time*
+  mount when tried and was reverted rather than risk it further without
+  more careful testing). Power off before swapping cards, then power
+  back on — every boot-time mount in testing has been reliable.
+
+## Files
+
+- `main.cpp` — hardware init, audio callback, main loop, MIDI polling
+- `looper_layer.h/.cpp` — per-layer state machine, filter/effects/
+  reverb, waveform cache, audio
+- `tempo_clock.h/.cpp` — BPM/bars/metronome/count-in engine
+- `msfa/` — the vendored real DX7 emulation core (Google, Apache-2.0),
+  unmodified except two small, clearly-marked additive introspection
+  helpers on `FmCore` (`get_carrier_operators()`'s outbus-based fix, and
+  the new `get_operator_routing()` — see *Dexed* above)
+- `dexed_synth.h/.cpp` — the Dexed instrument built around msfa (see
+  *Dexed* above)
+- `dexed_sysex.h/.cpp` — this project's own clean-room packed↔unpacked
+  DX7 SysEx converter, written from the public 1993 Yamaha MIDI SysEx
+  spec (see *Dexed* above for why msfa itself doesn't include one) --
+  used both to unpack the embedded factory banks below AND, later, for
+  real user SysEx import (see *SysEx import* under *Dexed* above)
+- `dexed_factory_data.h/.cpp` — the 3129 embedded factory presets (see
+  *Dexed* above), stored packed and unpacked on demand
+- `ensemble_synth.h/.cpp` — the Ensemble instrument, built around the
+  vendored `daisysp::OscillatorBank` (see *Ensemble* above)
+- `ensemble_factory_data.h/.cpp` — the 8 embedded factory presets (see
+  *Ensemble* above) — pure parameter numbers, no audio, same reasoning
+  as Dexed's own factory bank
+- `granular_engine.h/.cpp` — the Grains instrument (see *Grains* above)
+- `ui.h/.cpp` — encoder/button/knob handling + OLED menu rendering, for
+  every screen (Home/Layer/Global/Dexed/Ensemble/Granular/Mixer)
+- `ui_graphics.h/.cpp` — 1-bit bitmaps for the power-on splash and the
+  Global engine/Looper page graphics, plus `DrawBitmap()`.
+- `font_tomthumb.h/.cpp` — the tiny proportional font used in the
+  footer rows (see `README.md`'s Thanks section for credit)
+- `performance_store.h/.cpp` — SD card save/load (performances, Dexed
+  Presets, Ensemble Presets, Grains Presets), WAV export, and SD Mgmt's
+  Duplicate/Delete. Performance on-disk format is at `kFileVersion = 14`
+  (see *Save/load* above; bumped from 5→6 when Pitch's fields were
+  removed — see *Pitch removal* below — up through Pad Synth's sound
+  being embedded at version 7, then removed again at version 10 once the
+  save-file "bubbles" principle was adopted — see *Save-file "bubbles"*
+  above — then 11→12 adding the Dattorro reverb's 6 new parameters,
+  12→13 adding the Dexed/Grains MIDI channels, and 13→14 adding
+  Ensemble's own MIDI channel, all backward-compatible bumps, chained
+  together).
+- `dattorro_reverb.h/.cpp` — the shared reverb bus (see *Dattorro plate
+  reverb* above)
+- `audio_engine.h` — `g_audio_suspended`, a flag that makes the audio
+  callback output silence without touching any layer/tempo state, so
+  `PerformanceStore::Load()` (which restores layers one at a time,
+  streaming each from SD) can't leave layers starting at different
+  sample offsets just because the audio ISR kept running mid-restore
+- `itcm.h` — `DSY_ITCM_TEXT`, a project-local macro placing tagged
+  functions in ITCM RAM — see *Boot process* below
+- `STM32H750IB_qspi_custom.lds` — this project's linker script, a copy of
+  libDaisy's own QSPI script plus the `.itcm_text` output section the
+  macro above needs
+- `Makefile` — source list for the build, `APP_TYPE`/`LDSCRIPT` overrides
+  for the bootloader/QSPI build (see below)
+
+## Compiler optimization flags
+
+`src/Makefile`'s `OPT` was `-Os` originally (justified by flash space
+that's no longer tight — see *Boot process* below), raised to `-O2`
+then `-O3` in an earlier session, each measured as a real win on
+hardware via the Global:Mixer CPU meter, not assumed. Two more levers
+exist past `-O3` itself, both added and measured this session, neither
+enabled by default by any `-O` level:
+
+**`-ffast-math`**: `-O2`/`-O3` only change inlining/unrolling
+heuristics within strict IEEE float semantics. This whole audio path
+is float-math-bound DSP (FM synthesis, granular, reverb, filters), so
+relaxing that (allowing reassociation, faster reciprocal/division,
+assuming no NaN/Inf) is a real, separate lever, not just more of the
+same knob. Measured on hardware: idle 8%→6%, reverb 32%→30%,
+reverb+delay+Dexed 44%→42% — a consistent ~2pt reduction across every
+scenario tested. Real trade-off, not a free win like `-O2`/`-O3` were:
+output is no longer strict IEEE-compliant floating point (common and
+generally safe for audio DSP, but a genuine semantic change) —
+confirmed clean by ear afterward across Dexed, Grains, and reverb/delay
+tails under real playing, not just measured.
+
+**`-flto`** (link-time optimization): every other flag here optimizes
+each `.cpp` file in isolation — the compiler working on
+`dexed_synth.cpp` has zero visibility into `dx7note.cpp`/
+`fm_core.cpp`/`env.cpp`/etc. even though it calls into all of them
+every audio block, so those stay real function calls (no inlining, no
+cross-file constant propagation) no matter how aggressive the per-file
+flags get. `-flto` defers final optimization to the link step, once
+every object file is being combined, so the compiler can see and
+optimize across those boundaries too — real potential upside
+specifically because this project's hot audio path (the whole msfa DX7
+core alone is 11 separate `.cpp` files) is this fragmented. Needs the
+flag on both `CFLAGS` (so each object file carries LTO info) and
+`LDFLAGS` (so the final link actually performs the merge) — `$(OPT)`
+added to `LDFLAGS` too, since GCC's LTO re-optimizes at link time using
+whatever `-O` level the *link* command itself gets, not whatever was
+used per-file originally. The simple baselines barely moved further
+(idle 6%, reverb 29-30%, reverb+delay+Dexed 41% — expected, not much
+cross-file call overhead to inline away there), but the heaviest real
+scenario tested (4 active layers, reverb, fast Dexed playing) dropped
+from 85-90% peak to **72% peak** — a substantial win concentrated
+exactly where the theory predicts it should be, since that scenario
+has the most cross-file call graph (Dexed's 11-file msfa core, Looper,
+reverb) active at once. Real trade-off: noticeably longer build times,
+a modest code-size increase (QSPI flash usage ticked up from more
+aggressive inlining), and whole-program visibility can occasionally
+surface latent bugs that happened to work under separate compilation —
+confirmed real once, not just theoretical: enabling LTO surfaced a
+genuine pre-existing `-Wformat` bug (a `%d` format specifier fed an
+`unsigned long` argument, in since-removed temporary load-timing
+instrumentation) that `-O3` alone had never caught. Confirmed clean by
+ear afterward, same as `-ffast-math` above.
+
+## Boot process: bootloader + QSPI flash
+
+Internal FLASH (128KB) was nearly full, with no room for future audio
+features. As of v1.6.0 this firmware instead boots via the separate Daisy
+bootloader and executes directly from the Pod's 8MB external QSPI flash
+chip (`APP_TYPE = BOOT_QSPI` in `src/Makefile`) — genuine execute-in-place,
+not a copy-to-RAM step. The bootloader itself (a prebuilt binary,
+`libDaisy/core/dsy_bootloader_v6_4-intdfu-2000ms.bin`, installed once via
+`make program-boot`) runs first on every power-on, checks briefly for a
+pending update (a `.bin` on the SD card, or a short USB-DFU window), and
+otherwise boots straight into the QSPI-resident app — no button-holding
+for normal use, just a slightly longer boot. See `README.md`'s *Building
+and flashing* for the practical steps, including the SD-card auto-flash
+method (copy `main.bin` to the card's root, power-cycle — sidesteps the
+bootloader's brief ~2 second DFU window entirely).
+
+**Why this needed real measurement, not just flipping the flag**: QSPI
+execute-in-place is more cache-dependent than internal flash (Electrosmith's
+own stated caveat). Measured on real hardware with a DWT cycle counter at
+this firmware's worst-case DSP load (all 4 layers active, a character
+effect on one, shared reverb running), plain `BOOT_QSPI` raised the audio
+callback's worst-case timing from under 50% of budget (the original
+internal-flash build) to 69%. Rather than accept that regression, the
+real-time call graph (`AudioCallback()`, `LooperLayer::Process()`,
+`TempoClock::Process()`/`RenderClick()`, and the DSP `Process()` methods in
+the vendored `DaisySP`/`DaisySP-LGPL` submodules) is hand-placed in
+**ITCM** (a 64KB zero-contention instruction RAM every Daisy linker script
+declares but none use) via the `DSY_ITCM_TEXT` macro (`itcm.h`) and a
+custom `.itcm_text` section in `STM32H750IB_qspi_custom.lds`. This
+recovered most, but not all, of the regression (64% worst-case) — the
+remaining gap traced to `PitchShifter`'s own internal `DelayLine`/`Phasor`
+helper calls, which weren't (and, being template/inline code, couldn't
+cleanly be) pulled into the same ITCM placement.
+
+Since the Pitch feature was removed for unrelated reasons (see below) and
+took its cost with it, worst-case CPU under `BOOT_QSPI` + ITCM measured
+**45%** for the 4-layer looper alone — better than the original
+internal-flash baseline, with the QSPI chip's ~8MB now available for
+future features (the original motivation for this migration).
+
+That 45% predates Pad Synth, Fm Synth, and Grains. The measurements below
+(worst-case ~94% with Pad Synth, and Fm Synth's own ~52-63% story
+including two real ITCM/QSPI placement bugs found and fixed) describe
+**Pad Synth and Fm Synth specifically, both since removed** and replaced
+outright by Dexed (see *Dexed* above for why a real DX7 clone made both
+of those from-scratch approximations redundant at once) — kept here as
+project history, since the *class* of bug they surfaced (inline/header-
+defined functions silently landing in slow QSPI instead of ITCM once
+they grow past whatever threshold the compiler stops inlining them
+below, the same class of regression as `PitchShifter`'s own gap just
+above) is a real, recurring risk worth remembering regardless of which
+instrument next runs into it. Dexed's own worst-case CPU cost alongside
+the looper and Grains has not yet been separately measured and recorded
+here — a real gap in this document, not a claim that it's fine.
+
+With both Pad Synth and Grains added (and voice counts tuned against
+real measurements rather than paper estimates), the **genuine worst case
+with everything running at once** — full 4-layer loop + reverb, 6-voice
+Pad Synth, and Grains, all simultaneously active — measured **~94%**.
+The per-engine on/off toggles (see *Per-engine on/off* above) are a
+real, immediate mitigation if a given performance's actual worst case
+turns out tighter than that in practice.
+
+Fm Synth (mutually exclusive with Pad at the time — see *Per-engine
+on/off* above) had its own separate worst-case story: two real ITCM/QSPI
+code-placement bugs were found and fixed, plus a voice count trade from
+8 down to 6. With those fixes in, real hardware measurement showed
+**~52-57% Fm-alone** (idle vs. actively playing) and **~63% with 3 loop
+layers actively playing back alongside it** — confirmed on hardware as
+"much better" after being genuinely sluggish before the fix.
+
+**A genuinely new linker-level detail worth knowing if extending this**:
+the custom `.itcm_text` section has a load address (LMA) in QSPI flash but
+a run address (VMA) in ITCM RAM, the same relationship `.data` has between
+QSPI and SRAM — but the stock startup code's copy-down loop only knows
+about `.data`'s symbols, not this new section. `main()` does its own
+`memcpy()` from linker-provided `_sitcm_text`/`_eitcm_text`/`_siitcm_text`
+symbols, as the very first statement, before anything ITCM-tagged can
+possibly run.
+
+## Pitch removal
+
+The per-layer Pitch effect (±12 semitones, DaisySP's `PitchShifter`) was
+removed in v1.6.0. It turned out to be the single most expensive effect in
+the signal chain (see above) for a creative use case vari-speed already
+covers more cheaply and, in most feedback, more usefully — tape-style
+pitch/tempo change across the whole performance rather than a per-layer
+delay-line shift with its own audible latency and warble trade-offs (the
+old Fast/Med/Smooth delay presets existed specifically to manage that
+latency). Removing it recovered real CPU headroom (see above) without
+losing a capability nothing was actively relying on. `kFileVersion` bumped
+5 → 6 for `LayerHeader`'s dropped fields — a save from v1.5.0 or earlier
+fails to load cleanly under v1.6.0+ (shown as a version-mismatch error on
+the File page) rather than being misread.
+
+## OP-1 `.aif` pack import (SampleSynth)
+
+SampleSynth shipped with 21 hardcoded "Sounds" category folders and a
+"Starter Kits" Kit category, all referencing real OP-1 sample-pack
+content that can't legally be bundled with this repo. Rather than ship
+with nothing, this adds a one-time Import step: drop raw OP-1 `.aif`
+packs (from [op1fun](https://op1.fun/) or the OP-1 pack builder) into
+`SampleKit/`/`SampleSound/` at the SD card's root, and
+`SampleSynthParamPage::Import` batch-converts them into real Kits/
+Sounds using the pack's own real splice/pitch metadata — after which
+they behave exactly like any other Kit/Sound already in this codebase.
+Deliberately a wholly separate page from `SampleSynthParamPage::
+Capture`'s own `-2` Import source (that one pulls a single `.wav` from
+Grains' shared `IMPORT/` folder into the Capture buffer for manual
+Trim/Tune; this one goes straight from a finished OP-1 patch to a
+finished Kit/Sound, no Trim/Tune step, since a drum pack's pre-sliced,
+pre-mapped pads have no single buffer to trim, and a sampler pack
+already carries its own precise pitch) — confirmed directly with the
+user after an initial plan to fold it into Capture was rejected for
+exactly that reason.
+
+**AIFF/AIFF-C decoding.** Scoped from directly inspecting real files
+downloaded from op1fun, not from memory of the format: `FORM`/`COMM`/
+`SSND` chunks, big-endian fields, chunks padded to even length, an
+80-bit IEEE-extended sample rate in `COMM` (decoded via the standard
+sign/exponent/mantissa bit layout, verified against real data to equal
+exactly 44100 Hz). A hand-rolled JSON field reader (not a general
+parser, matching this file's own existing "targeted binary/text
+reader" style) locates the `APPL`/`"op-1"` chunk and reads `type`,
+`start`/`end` (drum), `base_freq` (sampler). Some real op1fun files
+turned out to be **AIFF-C**, not plain AIFF — confirmed by hex-dumping
+one that kept failing import with no useful error: `FORM` type `AIFC`,
+with an extended `COMM` chunk (2 extra fields past the base 18 bytes:
+a 4-byte compression-type ID, then a Pascal string) and a compression
+type of `sowt` (little-endian PCM) rather than AIFF's always-big-endian.
+Fixed by accepting both `AIFF` and `AIFC` form types and switching
+sample byte order on the declared compression type (`sowt` → little-
+endian, `NONE`/plain `AIFF` → big-endian unchanged); any other real
+compressed codec is rejected as out of scope, same reasoning every
+other unsupported-format case in this importer already uses.
+
+**The real splice-decode bug.** The first implementation assumed
+`start`/`end` were a fraction of the *file's own* decoded length
+(`value / 4294967295.0 * total_len`). This was wrong, and only looked
+plausible because the two real drum test packs both happen to sit
+close to the OP-1's own 12-second drum-sample ceiling, making "fraction
+of this file's length" and "fraction of the real fixed reference"
+nearly the same number by coincidence. Cross-checked against
+`padenot/libop1` (a real, working, MIT-licensed OP-1 AIFF encoder/
+decoder, cloned and read directly rather than guessed at): its own
+`frame_to_op1_time()` encodes a frame index against a **fixed 12-
+second/44100Hz reference** (`0x7FFFFFFE / (44100*2*12)`, integer-
+truncated — matched exactly rather than redone as a cleaner float
+ratio, since real exported files are already baked against that exact
+truncated value), independent of any particular file's own duration.
+Re-deriving a real pack's 3 real slices with the fixed-reference
+formula landed the last slice's end within ~250 frames (~5.7ms) of the
+file's own true length — i.e. the 3 slices span the whole recording
+back-to-back, exactly what a break chopped into 3 parts should do. The
+old formula instead packed all 3 into the first ~49% of the file and
+silently discarded the rest — the real cause of imported drum content
+sounding cut short/full of gaps, not a resampling or source-quality
+issue as first suspected. A slot is padding (not a real slice) when
+its `(start,end)` pair exactly repeats the immediately preceding one —
+confirmed against real data that the first occurrence of a repeated
+pair is still real, every one after it is filler.
+
+**Sampler pitch.** `base_freq` (Hz) converts to a MIDI root note via
+the standard `69 + 12*log2(freq/440)`. Independently cross-checked
+against `schollz/teoperator` (another real OP-1 tool, cloned and read
+directly): its own embedded example data contains the exact same
+`261.6253662109375` value found in a real downloaded file, confirming
+both the field's meaning and the conversion. A file with no `op-1`
+chunk at all (a plain recording someone included in a pack) falls back
+to `ParseNoteNameFromFilename()` on the source filename, defaulting to
+C4 if that finds nothing either.
+
+**One-shot playback was gated by note-off, and shouldn't have been.**
+`SampleSynth::NoteOn()` already treats non-chromatic (drum) slots as
+fixed-pitch regardless of which key triggered them, same as a real
+drum pad; `NoteOff()` still unconditionally called `ForceRelease()` on
+every slot type, including those. With the default ~18ms release time,
+any normal brief MIDI tap (completely ordinary for programming a drum
+hit) released the voice almost the instant it started, truncating
+anything longer than a very short one-shot to a near-silent snippet —
+confirmed as the actual cause of imported drum-break slices sounding
+"cut short," not a slicing bug. Fixed by making one-shot slots ignore
+note-off's hold duration entirely (`NoteOn()`'s gate forces true for
+them; `NoteOff()` skips `ForceRelease()` for them) and instead free
+themselves once `read_pos` reaches the sample's own natural end.
+
+That end is usually not a zero-crossing, though — a real op-1 break
+slice is cut wherever the *next* hit begins, not wherever the signal
+happens to be quiet, so stopping dead there clicks. `OneShotFadeWindow()`
+forces a short fade (~40ms, `kOneShotTailFadeSamples`) into the last
+part of playback — but capped at *half the slice's own length*, not a
+flat duration: an earlier version used the flat duration unconditionally,
+which meant a slice shorter than the fade window had `remaining < window`
+true from its very first sample, so short hits played back already
+attenuated from the start, sometimes to near silence — found on real
+hardware ("some splices are not working now... cutting off time also
+cuts some samples all together"), not a coincidence.
+
+**Mono/Choke** (`SampleSynthPresetData::mono_choke`) — when on, a new
+one-shot pad chokes (fades out, via the same window above, rather than
+cutting abruptly) every other currently-ringing one-shot voice instead
+of layering over it. Off by default, matching every kit saved before
+this existed and the correct behavior for a real drum kit's
+independent kick/snare/hihat pads (which should keep overlapping
+freely) — but `ImportAifDrumPack()` turns it on specifically for its
+own fresh imports, since every pad in an OP-1 drum pack is a sequential
+slice of *one* continuous recording, not an independent sound, so two
+of them ringing at once is never musically intended. User-toggleable
+per kit afterward (`SampleSynthParamPage::Mix`, Button 1 — that page's
+own Button1/Button2 were both otherwise unused). Persisting the new
+field required the same version-tolerant read `kDexedPresetFileVersion`
+already established for its own v2→v3 bump: `kSampleSynthKitFileVersion`
+bumped 2→3, with `kSampleSynthKitDataV2Size` (an `offsetof()` up to the
+new field) marking how many bytes a v2 file actually has on disk, so
+existing kits (KIT001-011) keep loading unaffected with the new field
+simply defaulting to off.
+
+**The real root cause of a persistent, pitch-scaling crackle was a
+hardware SD-read bug, not a decode or DSP-quality issue.** This took
+several wrong turns before landing on real proof, each one worth
+recording since they're exactly the kind of plausible-but-wrong
+explanation this class of bug produces:
+- First suspected: simple linear interpolation during pitch-shifted
+  playback (a known, real artifact class). Upgraded `RenderVoice()`
+  from 2-point linear to the same Catmull-Rom cubic kernel already
+  proven for the import-time resampler — a real improvement, but didn't
+  fix the reported crackle.
+- Next suspected: the source content's own sharp waveform edges (a
+  real synth's PWM/oscillator character does produce dense, genuinely
+  sharp transitions, confirmed by direct analysis of the decoded PCM).
+  Ruled out by the user's own controlled test: pitch-shifting the raw
+  file on a computer (a different, offline algorithm) produced no
+  audible click at all, meaning the content itself isn't inherently
+  unlistenable when pitch-shifted — something in this specific
+  real-time path was.
+- Next suspected (and wrongly "confirmed" once): a periodic defect at
+  the `kChunkSamples`=4096-frame SD-read chunk boundary. A first,
+  flawed self-comparison test (checking local prediction-error at an
+  *estimated* boundary position, a few samples off from the true one)
+  showed elevated anomalies there and was reported as confirmed —
+  then retracted once redone properly: the *precise* boundary position
+  (tracked via a faithful resampler simulation, not estimated by
+  formula) showed no elevation at all, matching ordinary random
+  positions almost exactly. A real lesson in not trusting a same-file
+  self-comparison without a genuine, independent ground truth.
+- The real proof: comparing the actual firmware-exported `.wav` against
+  **two independent references** — macOS's own trusted `afconvert`
+  decode of the identical source file, and a pure-software Python
+  simulation that faithfully replicates the exact chunked-read
+  structure with no real hardware/DMA/SD card involved at all. The
+  simulation came back completely clean (proving the decode/resample
+  *algorithm* is correct), while the real firmware output showed
+  severe (tens of thousands of int16 units), *consistently periodic*
+  corruption recurring every ~4455-4456 samples — which converts back
+  to almost exactly 4096 input frames, i.e. once per SD-read chunk.
+  That combination (algorithm provably clean in isolation, real
+  hardware output corrupted at a period tied to the chunk size) is
+  what actually nails this as a real SD-read/chunking artifact rather
+  than anything in the decode math — most likely a FatFs/cache/DMA-
+  alignment interaction specific to reading from this file's own
+  (non-sector-aligned) byte offset, though the exact low-level
+  mechanism inside FatFs/the SD driver was never chased down further
+  than that, since a direct fix was available without it.
+- **The fix**: rather than chase the exact low-level mechanism, remove
+  the condition it depends on. `ImportAif()`/`ImportWav()` now use a
+  separate `kAudioDecodeChunkSamples` (600,000 — comfortably past the
+  OP-1's own ~529,200-frame/12-second recording ceiling) instead of the
+  shared `kChunkSamples` (4096, left untouched since it's also used by
+  several of `ExportWav()`'s own real-time-adjacent scratch buffers,
+  which should not grow for this). Every realistic single file now
+  decodes in one `f_read()`, so the chunk boundary this bug lived at
+  simply doesn't exist for it any more. Cost: ~6.8MB more SDRAM for the
+  two bigger `raw_buf` buffers (89.4% used after, comfortably under).
+- This also, independently, explained part of the earlier "click at
+  the end of each drum hit" investigation: `ImportAifDrumPack()`
+  decodes a whole source file in one `ImportAif()` call before
+  slicing it, so a long file crossing ~100+ chunk boundaries had that
+  many chances for this corruption to land at or near a slice edge,
+  stacking on top of the separate, genuine "cut isn't at a zero-
+  crossing" issue the tail fade above addresses. Fixing the chunk bug
+  doesn't make the tail fade redundant — they're two independent real
+  issues, one hardware-level corruption and one an inherent property
+  of how OP-1 break slices are cut — but it likely explains why the
+  tail-fade fix alone kept helping without ever fully eliminating it.
+
+**Progress bar granularity.** The Import page's own progress callback
+was originally called once per *file*, not once per step within a
+file — for a multi-slice drum pack (up to 24 separate SD writes) this
+meant the bar sat still for however long that file took, then jumped,
+looking like it "didn't come up straight away." Fixed two ways: the
+shared `Ui::OnSaveLoadProgress()` throttle now always draws the first
+and last frame of any sequence (previously only throttled by a call
+counter that could skip every frame of a short batch), and
+`ImportAifDrumPack()` takes an optional per-slot progress callback
+(rescaled into that file's own share of the overall bar via
+`Ui::OnSampleSynthImportFileProgress()` and matching
+`g_progress_file_base01_`/`_span01_` globals, same "static state read
+by a plain `ProgressFn`" shape `g_progress_disp` already uses) so a
+22-slice kit's own import now visibly increments 22 times, not once.
+
+### Setup page: Break Divide and a general Tune, for already-loaded content
+
+A real gap Capture/Trim/Tune can't fill: that whole group only ever
+operates on a fresh capture's slot 0 (`OnEnterSampleSynthCaptureGroup()`
+wipes every other slot the moment you rotate in from anywhere else, by
+design) -- there was no way to retune or re-chop a Kit or Sound once
+it's already loaded via Preset/User/Import. Direct request: "we need
+the tune screen to work for imported samples too." Decided, after
+discussion, to leave Capture/Trim/Tune exactly as-is (it's correctly
+scoped to captured audio) and add a new, separate page instead --
+`SampleSynthParamPage::Setup`, inserted right after Mix in the normal
+rotate sequence (not button-only/special-cased -- every other
+"alternate view" in this codebase, like Env's AD/SR toggle or FX's
+Reverb/Delay toggle, is an in-page flag, not a real page jump, but
+Setup genuinely needed its own Knob1/Knob2 context, so a real page is
+the honest shape here). Mono/Choke's own toggle moved here from Mix
+(Button1) -- Mix's own buttons go back to unused.
+
+**Why Break Divide is cheap.** `Ui::TriggerLoadSampleSynthKit()` loads
+every pad a Kit's manifest references into one shared arena
+(`sample_synth_arena_l_/r_`), back-to-back in original order, via a
+plain bump-allocator -- and `SampleSynth::SampleSlot` just stores a raw
+`buf_l`/`buf_r` pointer + `len` into that arena, no per-pad copy. Since
+a real OP-1 break's slices are already confirmed (above) to sit back-
+to-back with no gaps, the kit's *entire* combined recording is already
+sitting in RAM as one contiguous span the moment that load loop
+finishes. Re-chopping it into N equal pieces is therefore pure
+arithmetic over already-loaded memory (`Ui::ApplySampleSynthBreakDivide()`)
+-- no re-import, no extra SD writes, fully reversible. The ORIGINAL
+per-pad manifest and combined length are cached separately
+(`sample_synth_kit_real_slots_`/`_real_pad_len_`/`_real_pad_count_`/
+`_real_total_len_`) specifically so Setup's own Button2 confirm --
+which can run long after the initial load -- always recomputes fresh
+from the real layout rather than from whatever the arena currently
+holds, so flipping Slices back and forth repeatedly never compounds or
+drifts. Knob2 only ever shows a *pending* count (0-16, default-
+proposed 16) until Button2 is held 800ms to actually splice it --
+deliberately gated the same as every other hold-to-confirm batch
+action here, since unlike a plain scalar knob this is a real
+structural change to the kit's own pad layout. 0 means off: restore
+the kit's real, originally-imported per-pad mapping.
+
+Scope was explicitly widened past real OP-1 breaks on direct request
+("available on every [kit] as it would be hard for the device to
+distinguish") -- there's no reliable signal separating a genuine
+break import from a hand-assembled Kit of unrelated one-shots, so
+Break Divide is offered everywhere; results are only musically
+coherent on the former. Mono/Choke was explicitly kept independent --
+Break Divide does **not** force it on, left as the user's own call.
+
+**Tune needed a genuinely new engine mechanism, not just UI wiring.**
+A one-shot (`chromatic=false`) `SampleSlot` already always plays back
+at native pitch -- `NoteOn()`'s own `read_inc` hardcoded `1.f` for that
+case, by design, since a drum pad shouldn't retune itself based on
+which key triggered it. There is also no existing way to transpose a
+*whole* Kit at once (only per-pad `root_note`, which one-shot content
+doesn't even use). Added `SampleSlot::pitch_offset_semis` (new field)
+and a `SampleSynth::SetSlotPitchOffsetSemis()` live setter -- a flat,
+note-independent shift, folded additively into `read_inc` for BOTH the
+chromatic and one-shot cases:
+`powf(2, ((note-root)+pitch_offset_semis)/12)` chromatic,
+`powf(2, pitch_offset_semis/12)` one-shot. At the default offset of 0
+this is bit-for-bit identical to the old formula either way
+(`powf(2,0)==1`), so every existing kit/sound is unaffected until
+Setup's Tune is actually touched. Folding it in additively like this
+(rather than a separate `SetSlotRootNote()` that moves `root_note`
+itself) was a deliberate simplification: it needs no cached "original
+root_note" to compute a relative shift from each time the knob moves,
+since it's just one more term in an already-additive exponent -- the
+first version of this plan had a separate root-note setter and that
+caching requirement; dropped once the simpler unification was spotted.
+Applied live, the instant Knob1 moves, to every currently active slot
+(`SlotHasSample()`) -- same "+-24 semitones, dead center = 0" range/
+quantization as the existing Capture/Tune page.
+
+**Neither Tune nor Slices persist with a Kit, and that's correct, not
+a shortcut.** `SampleSynthParamPage::Preset` is explicitly LOAD-ONLY --
+"Button2 is the only way into BrowsingLoad itself... no 'Save' to
+reveal" (that page's own existing comment) -- and `SaveSampleSynthKit()`
+is, in fact, only ever called from `ImportAifDrumPack()` at import
+time, never from any user-facing action. So Mono/Choke, Pan, Level,
+and every other "per-kit" control already only ever live as session
+state, reset from the kit file's own saved defaults on every reload --
+Setup's Tune/Slices just follow that exact same, already-established
+convention (`Ui::sample_synth_setup_tune_semis_`/
+`_applied_slices_`/`_pending_slices_`, reset by
+`OnSampleSynthContentLoaded()` on every fresh Kit/Sound load). An
+earlier pass of this work actually added `break_divide_count`/
+`break_tune_semis` fields to `SampleSynthPresetData` itself, with a
+version-tolerant v3->v4 file bump mirroring `mono_choke`'s own v2->v3
+one -- reverted once it became clear nothing could ever actually write
+a non-default value into a kit file for that bump to protect, since no
+Save path exists. Building a real Save-Kit feature to make the setting
+persist was explicitly out of scope -- not asked for, and a materially
+bigger change than what was requested.
+
+**Two real bugs found once this got played with on real hardware.**
+First, reported as "loaded break, then sliced into 16, then sliced
+into 8... remaining 8 play the slots from when it was split to 16":
+`ApplySampleSynthBreakDivide()`'s own clearing sweep only ran from the
+new count up to `max(original pad count, new divide count)`, not
+accounting for a PREVIOUS, larger split -- re-splitting 16 down to 8
+only reloads slots `[0,8)`, so stopping the sweep there left slots 8-15
+still holding their old 16-way content untouched. Fixed by sweeping
+unconditionally all the way to `SampleSynth::kMaxSampleSlots` (cheap --
+`ClearSlot()` is a plain struct reset) rather than trying to track a
+tighter bound across repeated splits. Second, independently:
+`ApplySampleSynthBreakDivide()` was reassigning slot buffers without
+first calling `ResetAllVoices()`, unlike `TriggerLoadSampleSynthKit()`
+which does this deliberately -- a voice still sounding mid-split keeps
+referencing its slot by index, not content, so remapping that slot out
+from under it would briefly render whatever new audio now lives there
+until its next retrigger. Added the same `ResetAllVoices()` call Kit-
+load already makes, for the same reason.
+
+### Splitting SampleSynth into SMPVO (voice) and SMPDR (drum)
+
+*Superseded in v3.6.6: SMPVO and SMPDR are now two engines that play
+together -- see "Sampler split: two engines in the same memory" near the
+end. This section records why it started as one engine.*
+
+Direct request, discussed at length before any code changed: one
+engine/screen trying to serve both melodic Sounds (Capture/Trim/Tune)
+and multi-pad drum Kits (Setup's own Break Divide) had grown into two
+genuinely different instruments sharing a UI. Split into two Global-
+menu entries/screens, **SMPVO** and **SMPDR** -- confirmed through
+discussion they're mutually exclusive (enabling one disables the
+other), which reframed this from "two engines" to "one engine, two
+faces."
+
+**Why not two independent engines.** Seriously considered first --
+worked out the real memory cost rather than guessing. The actual
+`SampleSynth` C++ object is only 1,552 bytes (confirmed via
+`arm-none-eabi-nm --size-sort -S build/main.elf`, not estimated), its
+scope buffer 4,096 more -- duplicating those would only move SRAM from
+95.83% to 96.91%, trivial. The real cost is the 8MB Kit-loading arena
+and 2.3MB capture buffer, both in external SDRAM (already 89.44% used,
+~6.76MB free) -- duplicating those overflows SDRAM to ~104.8%, past
+100%, a hard link failure, not a tight-but-survivable squeeze. One
+shared engine/arena/capture-buffer/voice-pool was the only option that
+actually fits, which is also exactly consistent with the two faces
+being mutually exclusive in the first place.
+
+**Mechanically, this is almost entirely a `Ui`-layer concept.**
+`main.cpp`'s own wiring, the Mixer page (channel 7 stays one Level/Pan
+either way), and `SampleSynth`'s own `Process()` needed no changes at
+all. `Screen::SampleSynth` stayed ONE screen (not split into two, as
+an earlier draft of this plan proposed) -- `GlobalPage::SampleSynth`
+became `GlobalPage::SampleSynthVoice`/`SampleSynthDrum`, each its own
+Button1-toggle entry point with an interlock (enabling one forces the
+other's own enabled flag off), both landing on the same screen with a
+new `sample_synth_mode_` (`Ui::SampleSynthMode::Voice`/`Drum`) flag
+deciding the title prefix ("SMPVO:"/"SMPDR:"), which pages are
+reachable, and which of Preset/Import's two lists (Sounds vs Kits)
+shows -- reusing the EXISTING `SampleSynthParamPage` enum and
+`DrawSampleSynthScreen()`/`ApplyKnobs()`/button-handler functions
+unchanged for every page both faces share (Filter/Env/Mix/FX/MIDI/
+Import/Preset/User). `Ui::IsSampleSynthPageValidForMode()` gates the
+encoder's own page-rotate skip-loop (Setup is Drum-only, Capture/Trim/
+Tune are Voice-only) -- deliberately steps by `+-1` regardless of the
+real encoder delta's own magnitude, so a fast spin can't get stuck
+cycling through only a fixed subset of pages if the delta and page
+count ever shared a common factor.
+
+**New engine mechanism: chromatic Mono/Poly.** SMPVO's Tune page
+needed a monophonic mode for melodic content, and this engine had none
+-- it's always been purely polyphonic for chromatic slots. Added
+`SampleSynth::chromatic_mono_` + `SetChromaticMono()`, a deliberately
+different mechanism from the existing `mono_choke_` (one-shot/drum
+pads choking with a fade window) -- classic "last note wins": in
+`NoteOn()`, when the matched slot is chromatic and this is on, every
+OTHER voice currently holding a chromatic note gets the SAME
+`ForceRelease()`-then-clear-`held_note` sequence a real `NoteOff()`
+already uses. Worth recording as a near-miss: the first version just
+cleared `held_note` without `ForceRelease()` first, which is exactly
+the confirmed-on-hardware stuck-note bug class `NoteOff()`'s own
+existing comment warns about (the ADSR gate `Process()` samples would
+still read true for one more block) -- caught on self-review before
+it ever got flashed, by reading `NoteOff()`'s real implementation
+instead of assuming `held_note = -1` alone was enough.
+
+**The Tune page redesign and Cap/Imp banks.** Direct request: K1/B1
+stay Tune/Mono-Poly for the captured WAV (unchanged); K2/B2 become an
+independent Tune/Mono-Poly for whatever's loaded via Import/Preset/
+User. This surfaced a real conflict: Tune's existing Button1 already
+did something (toggle chromatic on/off for the capture). Resolved by
+direct confirmation that captures are now always chromatic within
+SMPVO (every other melodic path already was), so that toggle was
+removed outright rather than relocated. Since Capture and an Imported
+Sound are mutually exclusive in the live engine (loading one still
+clears the other) but each needs settings that don't bleed into the
+other, added two `SampleSynthPresetData` snapshots
+(`sample_synth_cap_bank_`/`_imp_bank_`) plus a third
+(`sample_synth_drum_bank_`) for Drum's own Filter/Env/Mix/FX, so
+switching Voice<->Drum doesn't bleed those either -- a lazy snapshot-
+on-switch in the new `SwitchSampleSynthMode()`, not a live mirror on
+every knob tick, so the existing Filter/Env/Mix/FX `ApplyKnobs()` cases
+needed zero changes.
+
+**What actually gets remembered vs. reloaded across a switch.** A
+Kit (Drum) and an Imported Sound (Voice) both live in the one shared
+Kit-loading arena, so "remembering" means remembering the slot number/
+filename (`sample_synth_drum_kit_slot_`, `sample_synth_voice_sound_
+name_`/`_category_` -- deliberately separate from `sample_synth_
+loaded_kit_slot_`/`sample_synth_loaded_sound_name_`, which just reflect
+whatever's CURRENTLY resident and get stomped by the other face's own
+loads) and re-running the existing `LoadSampleSynthKitBySlot()`
+(extracted from `TriggerLoadSampleSynthKit()` so `SwitchSampleSynthMode()`
+can call it directly by slot, no browse-cursor involved) or
+`LoadSampleSynthFileIntoEngine()` -- a brief SD reload, same delay any
+Kit/Sound load already has. A captured-but-unsaved WAV needs no SD
+read at all: its own buffer is never touched by Drum mode, so
+re-entering Voice just reapplies slot 0 via the existing
+`ApplySampleSynthTrim()` (which already respects whatever Trim range/
+root_note was last set, not just the full untrimmed capture).
+
+**Five real bugs found playing with the split on real hardware,** each
+reported and fixed in turn:
+1. *"Enable doesn't load until you drill in."* The Button1 enable
+   toggle only flipped `sample_synth_voice_enabled_`/`_drum_enabled_`
+   -- `SwitchSampleSynthMode()` was only ever called from the encoder-
+   click entry point. Fixed by calling it from the enable toggle too.
+2. *"Split lost on a Drum<->Voice round trip."* Re-loading a Kit (which
+   happens every time you switch back into Drum) resets Setup's own
+   Break Divide/Tune to off/0, same as any fresh Kit load always has
+   -- `SwitchSampleSynthMode()` now snapshots `sample_synth_setup_
+   applied_slices_`/`_tune_semis_` into `sample_synth_drum_remembered_
+   slices_`/`_tune_semis_` on the way out and re-applies them via
+   `ApplySampleSynthBreakDivide()` right after the Kit reloads on the
+   way back in.
+3. *Favorites bleeding across engines* (fixed, then had to be
+   partially undone -- see below).
+4. *Wrong starting page.* `FX` is valid on both faces, so it silently
+   carried the raw shared `sample_synth_param_page_` straight across
+   -- switching to Voice from Drum's own FX page landed on Voice's FX
+   page too. First fix (force Filter on every switch) was itself
+   corrected per direct follow-up ("didn't want it to always reset to
+   Filter, only on startup") to two independent remembered-page fields
+   (`sample_synth_voice_last_page_`/`_drum_last_page_`, both Filter by
+   default) -- each face now keeps its own browsing position across
+   switches, only defaulting to Filter the first time it's ever
+   visited.
+5. *Silence after drilling in.* Drilling into a screen only switched
+   content, never the enabled flags -- if you'd explicitly disabled
+   the face you were leaving first, neither flag ended up true and
+   nothing played despite content being loaded. Fixed by having the
+   encoder-click entry point also enable that face (interlocked, same
+   as the Button1 toggle) and call `AllNotesOff()`.
+
+**Favorites replaced with real per-face User presets.** The old
+`PerformanceStore::SampleSynthFavorite` only ever bookmarked a
+reference (`category`+`filename`, confirmed "no preset params...
+this is still 'audition a sound,' not 'recall a configuration'") --
+loading one swapped the audio but left Filter/Env/Mix/FX/Tune/Mono-
+Poly as whatever happened to already be live. Direct request: replace
+it with a real save/load system, one per face, that captures the full
+settings too -- "including splice for drums."
+
+Two new lightweight structs (`SampleSynthVoiceUserPreset`/
+`SampleSynthDrumUserPreset`, `performance_store.h`) -- a reference
+(Sound filename+category, or a Kit's own slot number) plus a full
+`SampleSynthPresetData` snapshot, and for Drum specifically
+`break_divide_count`/`break_tune_semis` too (otherwise pure live/
+session state, never saved with the Kit itself). Saving never
+duplicates or re-slices audio -- loading replays the exact same
+already-built machinery everything else here uses
+(`LoadSampleSynthFileIntoEngine()`/`ApplyPreset()`/
+`SetChromaticMono()`/`SetSlotPitchOffsetSemis()` for Voice;
+`LoadSampleSynthKitBySlot()`/`ApplyPreset()`/
+`ApplySampleSynthBreakDivide()` for Drum, the identical sequence
+`SwitchSampleSynthMode()`'s own restore paths already use). The User
+page itself became a real Save/Load page (modeled directly on
+Ensemble's own flat-list Preset page, `ui.cpp:982-1034` -- no factory
+range or "New" chooser needed here, so it's the simpler version of
+that same `SaveLoadMode` idiom), replacing the old single Button1=
+bookmark action.
+
+This also meant re-examining the Drum-side `User` exclusion from bug
+#3 above: the FIRST fix (excluding `User` entirely from
+`IsSampleSynthPageValidForMode()`'s Drum case) was the right call for
+the OLD bookmark-only Favorites (Sound-only, no business being
+reachable from Drum at all) but became wrong the moment User turned
+into a real per-face preset system -- Drum needed its OWN User page
+back, showing Kit-based presets, never Voice's Sound-based ones. Same
+shape as how Preset itself was never excluded either, just shows a
+different list per face.
+
+**Legacy Presets removed from the distributable branch.** The original
+21-category Sounds list and "Starter Kits" Kit category were kept,
+off by default, as `SampleSynthParamPage::LegacyPreset` (toggled by an
+intentional, documented exception to this screen's then encoder-click-
+= pause-all rule) specifically so the person who built this
+firmware could still reach their own personal packs without that
+content being part of what anyone else who clones the repo gets. On
+request, that page was removed entirely from the `user-sample` branch
+(pure deletion — the page, its own state, its category tables, every
+switch case that referenced it; no licensed content was ever tracked
+in git, so this was purely a code change) — a `personal-legacy-sounds`
+branch, forked from the commit right before the removal, keeps it for
+personal use going forward. The two branches otherwise share the
+identical OP-1 import feature and every fix described above.
+
+## SD card folder renaming
+
+*The `SAMPLES/` layout described here (`SOUNDS/`, `CAPTURED1`/`2`,
+`DRUM KITS/`) was later replaced by numbered banks — see* Sample banks
+*below.*
+
+Direct report: the card's own folder names were "not named or organised
+in a logical way" — cryptic 4-letter engine codes (`DEXP`, `ENSP`,
+`GRNP`, `PERF`) sitting alongside full-word folders (`SAMPLES`,
+`IMPORT`, `custom`), no consistent rule either way, and one real,
+confirmed source of confusion: SampleSynth's drum Kits lived in `SAMP/`
+— a folder sitting right next to `SAMPLES/` at the SD root, one full of
+nicely organized subfolders (`CAPTURED1`/`CAPTURED2`/`SOUNDS`), the
+other just bare `KIT001.DAT` files with nothing legible about what they
+were. Confirmed `_USE_LFN 1` is already enabled in this project's FatFs
+config (up to 255-character names) before proposing anything, so
+nothing was ever forcing the old 8.3-style abbreviations.
+
+Renamed throughout (`performance_store.h`/`.cpp`'s own `*Filename()`
+helpers and every literal `f_mkdir()`/`f_opendir()` call):
+
+| Old | New |
+|---|---|
+| `PERF/` | `PERFORMANCES/` |
+| `DEXP/` | `DEXED/` |
+| `ENSP/` | `ENSEMBLE/` |
+| `GRNP/` | `GRAINS/` |
+| `SAMP/` | `SAMPLES/DRUM KITS/` |
+| `SVU/` | `SAMPLES/VOICE PRESETS/` |
+| `SDU/` | `SAMPLES/DRUM PRESETS/` |
+| `WAV/` | `EXPORTS/` |
+| `custom/` | unchanged — required verbatim, see below |
+| `IMPORT/` | `GRAINS IMPORT/` |
+| `DXIMPORT/` | `DEXED IMPORT/` |
+| `SampleKit/` | `DRUM PACK IMPORT/` |
+| `SampleSound/` | `SOUND PACK IMPORT/` |
+
+`custom/` is the one folder name left untouched on purpose — not
+cosmetic, MicroDexed Touch itself scans its own SD card for a folder
+with exactly that name (see *WAV export* above), so renaming it would
+silently break the existing "export straight into MicroDexed's second
+slot" workflow. `SAMP`/`SVU`/`SDU` moved from being siblings of
+`SAMPLES/` at the SD root to real subfolders *of* `SAMPLES/` — the fix
+for the actual reported confusion, folding Kits/Voice-User-presets/
+Drum-User-presets in alongside Captures/Sounds instead of inventing yet
+another top-level folder.
+
+A real, caught-before-flashing bug from this: several path-building
+buffers across `performance_store.cpp` (declared `char fname[24]`/
+`[20]`, sized for the old short codes) were too small for the new
+longer paths — see *SD card management*'s own note above on the exact
+sizes this needed, the same issue found independently while wiring the
+3 new SampleSynth Delete/Duplicate pairs into these same renamed paths.
+
+**Migration**: since this is a single personal device, not firmware
+shipped onto other people's already-populated cards, the fix was a
+one-time manual `mv`/`mkdir` pass run directly on the mounted card
+(matching the renamed constants the new firmware build now expects) —
+no migration code written into the firmware itself, which would have
+meant permanently carrying both the old and new folder names forever
+for a transition that only ever needed to happen once. One stray
+leftover file was found and removed during the move: `SAMP/FAVS.DAT`,
+the old Favorites bookmark format's own file (see *Favorites replaced
+with real per-face User presets* above) — nothing in the firmware has
+read that format since User presets replaced it, so it was dead weight
+rather than data worth preserving. `sdcard-template/` (the starter-card
+folder set handed to a fresh install) was renamed to match, plus gained
+template folders for `SAMPLES/DRUM KITS/`, `SAMPLES/VOICE PRESETS/`,
+and `SAMPLES/DRUM PRESETS/` (previously not pre-made at all, since
+none of those three existed as their own folders before this session).
+
+## Slot-number display prefixes
+
+Direct follow-up request: make a bare slot number on screen (e.g. a
+Performance's "Now: 3") identifiable by which engine it belongs to
+without needing surrounding context, "so they can be more easily
+identified by the user." Confirmed before building anything that this
+needed zero filename changes — the on-disk file for a save has never
+been shown on the Pod's own screen anyway, only the bare slot number
+is, so a prefix is purely a display-text change.
+
+Research pass first (not guessed at): every on-screen site showing a
+bare slot number was found and read, which surfaced that two categories
+already show something strictly better than a bare number — Dexed
+shows the DX7 patch's own embedded name (falling back to a number only
+for pre-name-field saves with blank name bytes), and SampleSynth Kits
+show their own stored `name` field (`"3:Snaps Kit"`) — while
+**Performances, Grains Presets, Ensemble user presets, and both
+SampleSynth User-preset categories are bare-number-only everywhere**,
+across roughly 20 separate `snprintf()` call sites (each engine's own
+"Now:", its own browse list, and its own "Loaded N"/"Copied to N"
+status line are all separate call sites, not one shared function).
+
+Scope deliberately narrowed to where a prefix actually resolves
+ambiguity, not applied to literally every site: on each engine's own
+dedicated page, the screen title already names the engine, so
+"DEXED12" there would just be redundant screen-space cost for no real
+benefit — and would actively regress Dexed/Kits' own better existing
+name display back down to a generic number in cases where a name
+*is* available. The place a prefix earns its keep is `Global:SdMgmt`,
+whose own "Deleted N"/"Copied to N" confirmation line (see *SD card
+management* above) spans all 8 categories at once and gives you a bare
+number with no category attached if you glance at it in isolation.
+
+Implemented by reusing `SdMgmtFolderShortLabel()`'s existing `PERF`/
+`GRAINS`/`DEXED`/`ENSM`/`SMPVO`/`SMPDR` vocabulary everywhere a prefix
+was added — one shared convention rather than inventing a second one —
+on: the 5 bare-number-only categories' own "Now:"/"Load:"/"Loaded N"
+sites; Dexed's two genuine bare-number fallback sites (the pre-name-
+field-save case, left otherwise untouched everywhere its real embedded
+name already shows); and `Global:SdMgmt`'s own "Deleted N"/"Copied to
+N" line, which pulls the short label dynamically from whichever
+category is currently selected (`SdMgmtFolderShortLabel(sd_mgmt_
+folder_)`) rather than being 8 separate hardcoded strings. SampleSynth
+Kits/Sounds and Captures were left untouched — they already show a
+real name or filename, never a bare number, so there was nothing to
+prefix.
+
+## Sample banks: numbered folders, one folder per kit
+
+The request: SD cards are huge, so Sounds and Captures shouldn't stop at
+one folder's worth, and Drum content needed real structure — "we can't
+have these loose kit samples in one place, each kit needs their own
+folder", with breaks kept apart from kits.
+
+**What it replaced.** Sounds were one flat `SAMPLES/SOUNDS/` folder whose
+browser listed at most 64 files (anything past that was silently
+invisible); Captures were exactly two folders, `CAPTURED1`/`CAPTURED2`
+(64 total, then "Captured full"); Kits were numbered `KIT001-099.DAT`
+manifests in `SAMPLES/DRUM KITS/`, with every imported slice dumped
+loose into `SAMPLES/` as `K001_00.wav`… And a real bug fell out of the
+numbering: deleting a kit compacts the numbers above it, so every Drum
+User preset pointing at a later kit silently switched to a different one.
+
+**Layout now** (`PerformanceStore::SampleBank`):
+```
+SAMPLES/SOUNDS1, SOUNDS2, …     .wav files            (Voice)
+SAMPLES/CAPTURED1, …            CAPnnn.wav            (Voice)
+SAMPLES/MULTISMP1, …/<name>/    note-named .wav files (Voice)
+SAMPLES/KITS1, …/<kit name>/    [KIT.DAT] 01.wav …    (Drum)
+SAMPLES/BREAKS1, …/<name>/      same as a kit         (Drum)
+```
+- Banks hold up to 32 items (`kSampleBankCapacity`), up to 99 per type.
+  `FindSampleBankWithSpace()` returns the lowest bank with room and
+  creates the next number once all are full — saves, captures and
+  imports all go through it. Every folder is numbered from 1, renaming
+  `SOUNDS` to `SOUNDS1` (an explicit choice, cheapest while nothing was
+  released; Voice User presets saved with category `SOUNDS` are mapped to
+  `SOUNDS1` on load).
+- A kit is identified by its folder (`kit_ref`, e.g. `KITS1/lofi2-4071`),
+  never a number, so deletes can't renumber anything. Folders are named
+  after the pack, made unique with " 2", " 3"…, and trimmed of trailing
+  spaces/dots (FAT strips those, which would leave `kit_ref` pointing at
+  nothing). Pad filenames in `KIT.DAT` are relative to the kit's folder.
+  `SampleSynthDrumUserPreset` stores `kit_ref` (file version 2; v1
+  presets referenced numbered kits and are a clean reject).
+- Both faces' Preset page browse bank first, then item ("Sounds 2",
+  "Kits 1", …), so no list ever needs more than one bank's worth. SdMgmt's
+  Captures and Kits boxes do the same (Button2 tap opens a bank); deleting
+  a kit removes its whole folder, duplicating copies it as "<name> 2".
+  SdMgmt keeps its own bank/item arrays rather than sharing the Preset
+  browser's, so neither view can leave the other on a stale list.
+
+**Kit or Break** (superseded — see *Import folders decide Kit or Break* below). Slice count can't tell them apart — the user's own
+example: break packs come with 1, 3 or more slices. Typical slice length
+can. Measured on the real packs: kits had median slices of 0.1–0.4 s;
+`rare-drums-one-4500` (3 slices, 2.9–4.6 s) and `Amenbreak` (one 7 s
+slice) were breaks. Rule: **median slice ≥ 1 s → Break**
+(`kSampleBreakMinMedianSeconds`) — one 4/4 bar is 1 s even at 240 BPM,
+and the median stops a single long crash in a kit tipping it. The 1 s
+cut-off (rather than a suggested 0.6 s that would also catch half-bar
+chops) was the user's call. A break already chopped into single hits is
+indistinguishable from a kit by length, so `BREAK PACK IMPORT/` forces
+Break; the user's two evenly-chopped `patch` packs went there. A plain
+recording with no op-1 drum data now imports as one whole-file slice,
+classified the same way, instead of "Not a drum pack".
+
+**Import.** One press used to handle at most 32 files per folder, and a
+failed file was never moved, so it was retried every press and could
+block everything behind it. Now `TriggerSampleSynthPackImport()` re-lists
+until nothing unprocessed is left; a failure is retried once straight
+away (the user had seen files skip and then import on a second press),
+then left in place for the next press, with `ListAifFiles()`'s
+`skip_first` stepping past it. `.aiff` is accepted alongside `.aif` — a
+real `.aiff` pack had simply never been listed. A slice that won't write
+after three tries fails the whole pack and removes its folder, rather
+than saving a kit with a hole in it.
+
+### The SD driver was shifting unaligned DMA transfers
+
+Testing the new import, `patch (1)` (16 equal slices) always came out
+with 15 pads, every pad after the 8th one key too low — identically on
+every run, with no error. Correlating each written pad against the
+source showed slice 8 missing and everything else exact. The firmware's
+own `ParseOp1Json()` and slicing code, compiled on the Mac and fed the
+same file, found all 16 — so the device was *reading different bytes*.
+
+The cause is in libDaisy's `sd_diskio.c`. FatFs passes the caller's own
+buffer straight to the driver for whole-sector transfers, at
+`buff + (bytes taken by the partial first sector)`. The SDMMC's internal
+DMA ignores the low two bits of its address, so an unaligned
+destination lands shifted: the sector is written up to 3 bytes early.
+`ReadOp1AifInfo()`'s `json_buf` sat at `0x2404540C`; the direct sector
+started at `json_buf + 462 = 0x240455DA`, 2 bytes off. `end[8]`
+("894813259") straddled that boundary, lost two digits to the shifted
+sector, parsed as 8948159 — less than its start — and was dropped as an
+empty slice; everything after it was merely shifted and still parsed.
+The cache maintenance libDaisy does is correct; alignment was the gap.
+ST's own `sd_diskio_dma_template.c` handles it with a scratch buffer
+(`ENABLE_SCRATCH_BUFFER`); libDaisy's version left that out.
+
+Fix (in the project's libDaisy fork): `SD_read()`/`SD_write()` keep the
+direct multi-sector path for 4-byte-aligned buffers and send unaligned
+ones one sector at a time through a 32-byte-aligned scratch sector. This
+was never specific to import — any `f_read()`/`f_write()` of 512+ bytes
+starting at an awkward file offset could be hit, depending only on where
+the data sat. It had already cost `lofi2-4071` a slice (21 pads; 22
+after the fix). After a full re-import, every pad and Sound was checked
+window by window against its source: all match.
+
+Cost: SRAM 95.4% → 96.9% (SdMgmt's own item list and two kit-folder
+name buffers), one 512-byte scratch sector in libDaisy.
+
+### Import folders decide Kit or Break
+
+The length rule above kept guessing wrong. `patch (3)` — an 8.9 s break
+cut into equal 0.37 s slices — came in as a Kit, while PO-33 kit hits
+run 0.03–0.32 s and an 808 or crash easily passes 0.5 s, so no
+threshold separates a finely chopped break from a kit. A tried
+alternative, "equal-length slices means Break", would have filed
+`Amenbreakkit` (a chopped amen, kept as a kit) as a Break. So nothing is
+classified any more: `DRUM PACK IMPORT/KITS/` and `/BREAKS/` decide, each
+with its own `Done/`; `BREAK PACK IMPORT/` is retired, and loose files in
+the old places are only counted, with a "move them" note.
+
+The Import pages became one per face. SMPDR first picks Kits or Breaks
+(K1, B2 opens, B1 back); both faces then pick a destination with K1: a
+new bank (the default), or any existing bank of that type with room for
+the *whole* import, shown with its free slots. `SetImportDestination()`
+feeds the choice into `FindSampleBankWithSpace()`, whose rule changed
+too: prefer → import destination → the *highest* bank if it has room →
+a new one above it. Older banks, including user-made ones and ones with
+gaps from deletions, are never refilled behind the user's back.
+
+Imported Kits are now poly — `mono_choke` was set for every OP-1 pack
+because the importer was written for break packs; only Breaks get it now.
+OP-1 drum files always carry 24 start/end slots, unused ones repeating an
+earlier region; any slot repeating *any* earlier one is skipped (the old
+check only compared neighbours and let `arcade` through with a 20th pad).
+
+`MoveToImportDoneFolder()` failed whenever `Done/` already held the same
+name (`f_rename()` won't overwrite), leaving the file waiting so every
+press imported it again — `arcade` was imported four times before this
+was noticed. It now keeps both as `name (2)`, `(3)`, …
+
+### Folder kits and kit memory
+
+A Kits/Breaks folder with no `KIT.DAT` loads as a kit
+(`BuildSampleSynthKitFromFolder()`): its WAVs in name order, one fixed-
+pitch pad per key from C2, up to 24, Choke on in a Breaks bank. Nothing
+is written — settings are saved by SMPDR's User page, which stores the
+folder reference anyway — so the folder stays exactly as the user made it.
+The 24-pad cap stays (the user's call; it's wired into the engine,
+`KIT.DAT` and Setup).
+
+Kits ran out of memory: `R&M-1` (14 EP-133 one-shots, 27 s) played only
+10 pads, because the arena held 20.8 s and the loader silently cleared
+every pad past the end — and cut the last one that partly fitted. SDRAM
+was 94% full, so the space came from `ImportAif()` and `ImportWav()`
+sharing one decode buffer (`g_decode_raw_buf`; they never run at once),
+freeing 2.3 MB: the arena went to 1,600,000 samples (~33 s), SDRAM 97.6%.
+A pad that would be cut short is now skipped instead, later shorter pads
+can still fit, and the status says "Loaded 10, 4 no room". Mono pads are
+still stored as stereo; packing them would roughly double mono capacity,
+but Break Divide treats the kit as one continuous stereo span, so that's
+left for when 33 s isn't enough.
+
+WAVs at any rate from 8 to 192 kHz now load — the reader had a whitelist
+of standard rates, so EP-133 exports (46,875 Hz) were rejected though the
+resampler handles any ratio (here 125:128). `WAVE_FORMAT_EXTENSIBLE`
+headers (0xFFFE, common for 24-bit DAW exports) are read through to the
+real format code in their SubFormat GUID.
+
+### Multi-sample banks (MULTISMPn)
+
+Multi-samples were `.snd` manifests in a Sounds bank pointing into
+`SAMPLES/ZONES/<name>/`, made only by an older importer — nothing in the
+firmware wrote them any more, and a user couldn't make one by hand. Now
+`SampleBank::Multi` banks hold one folder per instrument, a WAV per
+sampled note (`BuildMultiSampleZones()`): each file's note comes from its
+name, zones are sorted and each reaches halfway to its neighbours, the
+outer two to the keyboard's ends. Same limits as a kit (24 zones, the
+shared ~33 s arena); files with no note, a repeated note or past 24 are
+counted as skipped.
+
+`ParseNoteNameFromFilename()` was widened for it: the note may follow a
+space, `_` or `-` (tried last, so `C-1` still reads as octave −1), and may
+carry a velocity-layer suffix — Salamander's `A0v10`, FreePats' `C4vH`.
+Tested on the Mac against the real function with a set of real names.
+
+Old `.snd` sounds convert once (`MigrateSndSoundsToMulti()`), on the first
+Sounds or Multi bank listing after a mount: each becomes a Multi folder,
+its zone WAVs moved in (renamed `<name> <note>.wav` only where their own
+name doesn't state the zone's root), the manifest deleted, its
+`ZONES/<name>` folder removed — only ever under `ZONES/`, since an old
+manifest could point elsewhere — and SMPVO User presets repointed. SMPVO's
+Preset page gained a level, Sounds / Captured / Multi, before the banks;
+SdMgmt's SMPIMP gained Sounds / Multi under Voice, mirroring Kits /
+Breaks under Drum.
+
+## Reverb: a crackle under held notes
+
+With the reverb send up, held notes and chords on Dexed and the Sampler
+had a faint crackle that went away at send 0. The tank's decay-diffusion
+allpass is modulated, as in Dattorro's design, but the `verb.c` port
+moved its delay in whole-sample jumps — one sample every 2048 (~43 ms),
+16 steps out and 16 back. Each jump is a step in the waveform; transients
+mask it, steady tones don't, and inside the feedback loop it recirculates
+into a crackle. The same 0–16-sample triangle now moves continuously and
+is read with linear interpolation (`ProcessAllPassMod()`). Offline, the
+real reverb code fed a steady 2 kHz tone: 31 sharp spikes in 4 s before,
+none after; the tail's character is unchanged.
+
+## Dexed: release levels above 99
+
+Some web `.syx` banks (and a dozen factory voices) store an envelope
+release level (L4) above the DX7's 99. The envelope converts that to a
+target louder than full, so the release *rises* and the note never ends —
+VRC110A's EP.SawBel did exactly that. `SetPatch()` treats L4 > 99 as 0.
+
+More bytes are held to range on the way in (`SafePatchByte()`, used by
+`SetPatch()` and `SetPatchByte()`), because the engine uses them as a
+table index, a shift or a depth: algorithm (`& 31`), feedback (`& 7`), the
+eight pitch EG rates and levels, and LFO delay, PMD and AMD (at most 99).
+A single-voice `.syx` is copied in raw and a bank unpack passes the pitch
+EG and LFO bytes through unmasked, so a junk
+byte there read past the algorithm table (and wrote a whole quantum over
+the engine's own memory), shifted by a negative amount (feedback, LFO
+delay), read past the pitch EG tables, or overflowed the LFO depth maths
+(PMD/AMD past 99; AMD's pulled an operator's level below zero). LFO speed
+past 99 is only a faster LFO and is left alone. Checked by fuzzing 3000
+random junk patches on the host with UBSan. The factory banks have 127 in
+some of these: 30 voices' pitch EG (which read past its table) and
+7 voices' PMD (which overflowed), and those now play at 99. Every other
+byte is safe at any value and is left as stored.
+
+## Dexed: voice mixing cost
+
+Each sounding voice's 64-sample quantum is saturated with one `__SSAT`
+and summed into `stage_f_` still in Q24 units; `Render()` applies
+`kQ24Scale`, `kHeadroomScale`, Level and Pan in one multiply per channel.
+A released voice found silent by `VoiceIsIdle()` is marked unplayed, so
+later blocks skip it on the first test instead of reading six envelopes
+again every block until its slot's next note.
+
+## Dexed: a key struck again while it still sounds
+
+Reported as clicks re-striking a chord much softer with the sustain pedal
+down (RHODES 8, then BRASS 1). The voice still playing that key -- held,
+under the pedal, or releasing -- goes on into its own release, and the
+new strike takes a fresh voice (`FindVoiceForNote()`, `sounding_note`), as
+Dexed does. How the fresh voice starts depends on OSC KEY SYNC:
+
+- **On:** phase 0, as the patch asks (its attack is voiced for that,
+  often with heavy feedback).
+- **Off:** in step with the old voice (`Dx7Note::transferPhase()`), so
+  the two same-pitch sines add instead of suddenly cancelling.
+
+Tried first, each clicking somewhere:
+
+- Restarting the same voice from zero under a 5 ms fade (the original):
+  a sharp dip in level.
+- A fresh voice at whatever phase it had: on RHODES 8 the old and new
+  low sines met at a random phase -- a sudden add or cancel.
+- Restarting the same voice from its current level, DX7-style: clean on
+  the Rhodes, but a full-volume modulator burst on slow, feedback-heavy
+  sounds (RECORDER), and with OSC KEY SYNC on the sync zeroed a sounding
+  voice (BRASS 1, a hard click even on one note).
+- Fresh voice in step with the old one for every patch: harsher attacks
+  on 42 key-sync sounds.
+
+Measured on the host over every 10th factory sound (313), a very soft
+re-strike under the pedal against the same chord struck from silence:
+median +14 dB before, +1 dB now; 127 sounds better by more than 3 dB, 15
+worse. Of those 15, 11 are within 3-4 dB and show no spike against the
+held chord; four (PIANO 25, DG-HPNO 3, CHORUS 3 twice) are key-sync sounds
+where the old and new notes can still meet out of phase -- avoiding that
+would mean cutting the old note, the original dip. Playing without
+re-strikes is bit-identical to before. The user confirmed BRASS 1 and
+RHODES 8 by ear.
+
+## CPU optimisation (v3.5.0)
+
+The request came with generic instructions to vectorise everything with
+CMSIS-DSP. On a Cortex-M7 that mostly doesn't pay: it has no floating-point
+SIMD (its SIMD is 8/16-bit integer only), so `arm_add_f32`/`arm_mult_f32`
+are unrolled scalar loops much like `-O3` already emits, and splitting a
+fused loop into several CMSIS passes adds memory traffic. Feedback paths
+(filters, envelopes, reverb, delay) can't be vectorised at all. So the
+work was driven by measurement instead.
+
+**Measuring first.** `profiler.h` times each stage of the audio callback
+with the DWT cycle counter — Grains, Dexed, Ensemble, Sampler, Looper,
+Delay, Reverb, and the remainder — as average/peak share of a block's
+budget; `Global:Mixer`'s Button1 shows it. Starting point, all engines
+playing over four looping layers: ~85% average, peaks over 100%, audio
+breaking up and the display freezing (the UI only runs in time the audio
+leaves over).
+
+What actually cost the time, and the fixes:
+
+| Finding | Fix | Effect |
+|---|---|---|
+| Looper filters recomputed coefficients (tanf, powf, divisions) every sample, per channel | Once per block | Looper with filters+effects 58% → 28% |
+| Looper effect setters (Drive, LFO rates…) ran every sample | Once per block (`ApplyEffectParams()`) | (included above) |
+| Every stage read/wrote the codec's DMA buffers, which libDaisy maps non-cacheable | Copy in/out once per block via DTCM buffers; `__restrict` + per-block constants in the looper | Looper plain 19% → 15% |
+| A library `tanhf` in every engine's limiter, per sample | `FastTanh()`: 7/6 rational, within 1e-4 (-80 dB) | Engines ~3 points each while playing |
+| Core at 400 MHz (libDaisy's default) | `hw.Init(true)`: 480 MHz; SD and SDRAM run from PLL2, unaffected | Everything ×0.83 |
+| Grains: per-sample bounds/clamps in every grain, ~30 grains per note | Precomputed safe span, check-free inner loop, also for release fades | Grains peak 25 → 13; bit-identical over 20,000 random grains |
+| Idle engines ran their full chain (chorus, filters, limiter) on silence | Skip `Process()` when no voice sounds and the last block was silent (so tails finish) | Idle engines ~18% → ~1% total |
+| Dexed rendered every voice from boot: the silent pre-warm patch's envelope never ends | Unplayed voices count as idle | Dexed idle 7% → 0 |
+| AutoWah: 3 powf + cosf per sample per channel (+17% on one layer) | `LayerAutowah`: one `FastExp2` expression, short Taylor cosine | +17% → +5%, within -83 dB |
+| Tremolo: sinf per sample | `LayerTremolo` with `FastSinTurns()` | +4% → +2% |
+| Phaser: four PhaserEngines, all identical | `LayerPhaser` computes one, ×2 | +7% → +1–2%, 270 KB SDRAM saved |
+
+Result: the same everything-playing test peaks in the mid-80s %, idle
+engines cost almost nothing, and the display stays live.
+
+Two oddities found along the way. DaisySP's Phaser takes each engine's
+starting LFO direction from uninitialised memory (its objects live in
+SDRAM, which nothing clears), so the old phaser could sound different
+from one boot to the next; the new one is deterministic (the user kept
+it after listening). And the per-layer effects aren't equally heavy:
+AutoWah is still the most expensive (+5% per layer), then Chorus and
+Flanger (+3%), Tremolo and Drive (+2%), Phaser and Bitcrush (+1–2%).
+
+Every replacement was compared against the original code on the Mac
+before flashing (bit-identical where noted, otherwise the maximum
+difference given above).
+
+## Mix pages: one layout, Gain on every engine
+
+The engines' Mix pages had drifted apart: Ensemble had Level/Pan plus a
+Gain, Dexed had Reverb Send and Level (its Pan only on `Global:Mixer`),
+the Sampler had Level/Pan and nothing on its buttons, and Grains had
+three bars (Grain, Scan, Reverb) with no scope. None showed a level.
+
+Now they share Ensemble's layout. `DrawMixPageScope()` draws the scope
+narrowed to 58 columns on the left and the engine's `Global:Mixer` Peak
+bar on the right (`MeterBar01(MixerGetLevel01(ch))` with the
+`MixerIsClipping()` cap), so no new metering runs in the audio path. B1
+puts the knobs on Level/Pan, B2 on Gain. Reverb Send left the Mix pages:
+every engine's FX page and `Global:Mixer` already have it. Grains keeps
+its own variant: scope on the left half, Grain/Scan/Out bars on the
+right, B1 = Grain/Scan, B2 = Pan/Gain; its overall Level stays on
+`Global:Mixer`.
+
+**Gain.** Same control as Ensemble's: 0 to +12 dB (`powf(4, v01)`,
+cached by the setter), multiplied in just before each engine's
+pre-limiter tap, so the meter and clip cap show its effect and
+`FastTanh()` catches anything pushed past full scale. It can't drive the
+codec beyond full scale: each engine's limiter bounds its own output and
+`MasterSoftLimit()` bounds the sum. Where it's saved:
+
+- **Dexed:** `DexedPresetData::gain01`, preset file v4. v2 and v3 files
+  still load, with Gain at 0 dB; factory presets load at 0 dB.
+- **SMPVO/SMPDR:** `gain01` on the User preset structs (voice v2, drum
+  v3, older versions load at 0 dB), not on `SampleSynthPresetData`,
+  because that struct is written into `KIT.DAT` and kits are load-only.
+  Loading a kit or sound on its own leaves Gain where it is.
+- **Grains:** not saved at first, like its Level and Pan; see the next
+  section for how that changed.
+
+Gain is part of the Dexed and Sampler unsaved-change snapshots, so the
+title's `*` appears when it moves.
+
+**Global pages.** `Global:Bypass` keeps its Reverb/Delay sends; its
+status line moved to Tom Thumb and it gained a scope (`g_bypass_scope_l`,
+written per sample in main.cpp: the monitored signal as heard, zeros
+while Bypass is off) and the Bypass meter. The shared FX pages (Filter,
+Reverb, RevTone, RevDiff, Dly-Rev, Delay, DlyTone) draw the final mix
+scope (`master_scope_buf_`, the same one as Mixer:Master), with Filter's
+mode and Delay's sync state as Tom Thumb status lines. `Global:Delay`'s
+Sync is now a pair like the other paged toggles: B1 = Off, B2 = On, and
+the status line always says which.
+
+## User presets keep the whole engine
+
+A User preset now brings back everything on that engine's pages. Three
+things were missing: the MIDI channel (it lived in the Performance file),
+the mod wheel target on Dexed and Ensemble (saved nowhere, so it reset
+at every power-on), and Grains' Level, Pan, Gain and Delay send (treated
+as session values, unlike every other engine).
+
+**MIDI channel.** A channel describes how you play a sound, not the
+looper, so it moved out of performances and into each engine's User
+presets: `midi_channel` on `DexedPresetData`, `EnsemblePresetData`,
+`GranularPresetData`, and the SMPVO/SMPDR user preset structs (the
+Sampler's one channel is shared by both faces, so either face's preset
+can set it). The engine's `CapturePreset()` never fills it in; the Ui
+does, on a User save only. `-2` means "not stored", and
+`Ui::ApplyPresetMidiChannel()` leaves the current channel alone for it,
+which covers factory sounds, Dexed `.syx` imports, Grains library
+captures and every file saved before this change. Without that, loading
+an old preset would quietly put its engine back on Omni. Loading happens
+on a B2 tap, never while scrolling a list, so the channel can't change
+under you mid-browse.
+
+The Performance header keeps its four channel fields (v13-v15) so the
+format doesn't change; `Save()` writes them as Omni and `Load()` no
+longer reads them. Startup defaults (`SavePrefs()`) still store all four
+channels, so power-on lands on your usual routing.
+
+**Mod wheel target.** `mod_wheel_target` on the Dexed and Ensemble
+preset data, `-1` = not stored (factory and older files), handled in the
+engine's own `ApplyPreset()` through a new `SetModWheelTarget()`.
+
+**Grains mix.** `output_level01`, `pan01`, `gain01` and `delay_send01`
+joined `GranularPresetData`, negative = not stored. Grains preset files
+used to reject every older version; v11 is the first to accept the one
+before it, because the audio follows the settings block directly, so a
+v10 file is just a shorter block (`kGranularPresetDataV10Size`). The
+starter presets on the card are v10 and keep the current mix when
+loaded.
+
+**File versions.** Dexed v5 (v2-v4 load; now v6, see *Dexed Advanced* below), Ensemble v3 (v1-v2), Grains
+v11 (v10), SMPVO user v3 (v1-v2), SMPDR user v4 (v2-v3). Every new field
+is appended, so each older version is an `offsetof()` prefix of the new
+struct. The channel and wheel target are in the unsaved-change
+snapshots, so changing either shows the title's `*`.
+
+## Global:Snap: every synth engine in one file
+
+`Global:Snap` (before `Global:Perf`) saves and recalls all four synth
+engines together, in `SNAPSHOTS/SNAPnnn.DAT`. It builds on the User
+preset work above: a snapshot is essentially each engine's own preset
+data (with its MIDI channel filled in) plus:
+
+- each engine's on/off state and which Sampler face is showing;
+- each engine's loaded-slot tracking, so its User page carries on from
+  the same preset afterwards;
+- the names the grid shows, frozen at save time, so browsing needs no
+  lookups;
+- the Grains audio, appended after the settings like a Grains preset.
+  That makes an unsaved Grains capture recoverable. The Sampler instead
+  references its Sound or Kit, like its own User presets, because kits
+  are folders of samples. A Voice capture never saved as a Sound has no
+  file, so only its settings come back.
+
+**File layout.** A header (`"SNAP"`, version, section count, audio
+length), then eight sections (six until Dexed A/B added two, see
+*Dexed A/B* below), each a `uint32` byte size followed by that
+struct's raw bytes (`SynthSnapshot::Info`, then the Grains, Dexed,
+Ensemble, SMPVO and SMPDR preset structs), then the audio. All of those
+structs only ever grow by appending, so the loader reads
+`min(saved size, sizeof)` into a default-constructed struct and skips
+the rest. An engine gaining a field later doesn't need a snapshot
+version bump, and a newer file still loads on older firmware.
+
+**Loading** reuses each engine's own load path: `ApplyPreset()`,
+`ApplyPresetMidiChannel()`, `MarkXxxClean()`. The SMPVO/SMPDR User
+preset load steps moved into `ApplySampleSynthVoiceUserPreset()` and
+`ApplySampleSynthDrumUserPreset()` so both callers share them. Every
+engine gets `AllNotesOff()` first. If a referenced Kit is missing, the
+other engines still load and the status line says so.
+
+**Browsing** reads only the settings sections (`LoadSynthSnapshot()`
+with no audio buffer), once per highlighted slot, into a static, and
+the grid draws from that instead of the live state. The grid is one
+Tom Thumb row per engine at baselines 16-44 (Grains, DXD-A, DXD-B,
+Ensemble, Sampler): an on/off dot, the engine, the sound (18
+characters), and the channel right-aligned. Five rows only fit once the
+"Synth engine snapshots" heading went; the snapshot number and the
+save/load messages moved to the knob row, as K2's label, since K2 is
+what scrolls them.
+
+Saving matches `Global:Perf`: B1 reveals Overwrite / Save New on K1,
+and an 800 ms B2 hold confirms. Overwrite targets `snap_loaded_slot_`,
+the snapshot last loaded or saved. A B2 release after that hold is
+ignored, so it doesn't fall through and open the list.
+
+**In SD Mgmt.** The grid was already full at eight boxes, so the PERF box
+became **GLOBAL**: opening it offers Performances or Snapshots first
+(`sd_mgmt_global_kind_`, the same choose-then-list shape as the SMPDR
+box's Kits/Breaks), then the usual list with hold-B1 Duplicate and
+hold-B2 Delete. `DeleteSynthSnapshot()` closes the gap like every other
+slot folder and keeps `snap_loaded_slot_` pointing at the right file;
+`DuplicateSynthSnapshot()` uses the chunked copy, since a snapshot can
+carry Grains audio. Status lines name items by `SdMgmtItemPrefix()`
+(PERF3/SNAP3) rather than the box label.
+
+## Dexed: numbered names for repeat saves
+
+A Dexed User save takes its name from the patch (bytes 145-154), so
+saving the same voice twice gave two identical entries in the User list
+and SD Mgmt. `Ui::NumberDexedSaveName()` runs inside the save's audio
+suspend: it reads every other User save's name (not factory or imported
+voices, which have their own groups, and not the slot being
+overwritten), and on a clash renames the save "NAME 2", "NAME 3"... with
+NAME cut short to fit 10 characters. Saving again from a numbered copy
+("BASS 2" when "BASS" also exists) counts on from the base name rather
+than making "BASS 2 2". The new name is also written into the live
+patch, so the snapshot taken after the save matches. The status line
+shows "Saved as NAME 2" when this happens.
+
+## Global:Looper: Default On/Off
+
+B1 on `Global:Looper` turns the looper on or off live; B2 now sets
+whether it starts enabled at power-on, shown as `DEFAULT:ON` /
+`DEFAULT:OFF` on the right of the Enabled/Disabled line (see *Splash
+screen and Global page graphics* below). Someone who only uses the synths can leave it
+off for the CPU without switching it off after every boot.
+
+It lives in its own `LOOPER.DAT` (magic, version, one flag), written the
+moment B2 is pressed, rather than in `PREFS.DAT`: that file reuses the
+performance `FileHeader`, so a new field would change the performance
+format too, and it's only written by the Tempo page's hold-to-save,
+which would make this a two-step setting. `ApplyStartupDefaults()` reads
+it before `LoadPrefs()` (which returns early on a card without
+PREFS.DAT). Starting disabled needs none of B1's tempo/play-position
+resets, since nothing has played yet. No file means the old behaviour:
+on.
+
+## Splash screen and Global page graphics
+
+**Global entry pages.** `Global:Looper`, `Grains`, `Dexed`, `Ensmbl`,
+`SMPVO` and `SMPDR` all draw through one helper,
+`Ui::DrawGlobalEntryPage()`, so they share a layout:
+
+- `ENABLED` / `DISABLED` in Tom Thumb on the top line (baseline 16). The
+  Looper adds `DEFAULT:ON`/`DEFAULT:OFF` on the right of the same line,
+  replaced by its save error ("Save failed", "No SD card") when there is
+  one.
+- A 48×20 graphic centred in rows 18–37: tape reels (Looper), a play head
+  with grains thrown off behind it (Grains), a DX7-style algorithm with
+  an A or B badge (DXD-A, DXD-B), registration tabs (Ensemble), nine drawbars on a rail (Organ: filled
+  for Hammond's brown/black bars, outlined for the white ones), a one-octave keyboard (SMPVO)
+  and a 4×2 pad grid (SMPDR). `Global:Export` uses the same slot for a
+  waveform with an arrow into an SD card, with "EXPORT WAV FILE" (or
+  "NO SD CARD") on the top line and the last export's result at
+  baseline 44, though it isn't an entry page.
+- `PUSH ENC TO OPEN` centred at baseline 44. `Global:Mixer` uses the same
+  wording (it said `PUSH ENC TO ENTER`).
+- The footer as before: B1 Toggle On/Off, and B2 Default on the Looper.
+
+The graphic is drawn solid whether the engine is on or off. A dotted
+"disabled" version was mocked up first, but it broke the thin curves
+(reels, grains) into noise at this size, and the top line already says
+which state it is in.
+
+**Splash.** The PZD logo with GROOVEBOX letter-spaced underneath, as one
+128×64 bitmap. `main()` calls `Ui::DrawSplash()` straight after
+`display.Init()`, so it is up before the SD card mounts and before
+`Ui::Init()`. The engines' own `Init()` calls run before the display is
+set up, so it can't appear any earlier than that. `Ui::Update()` then
+keeps it on screen until `kSplashMs` (1500 ms) after it appeared,
+updating only the LEDs. Audio and MIDI start as normal underneath, so
+only the screen waits. A B1, B2 or encoder release ends it early, and
+that release is swallowed so it doesn't also act on Home. Knobs don't
+skip it, because their readings can jitter at power-on.
+
+**Where the pixels come from.** `ui_graphics.cpp` is generated, not drawn
+by hand. The page graphics were designed in a host-side mockup that
+draws with the firmware's own Tom Thumb and Font_6x8 code. The splash's
+GROOVEBOX is Font_6x8 at 6 px extra letter spacing. Its logo started as
+the PZD artwork scaled to 108 px wide and thresholded to 1 bit, but
+scaling left the strokes uneven (6–10 px) and the curves lumpy, so it is
+now drawn pixel by pixel at the same size and position: every stroke
+7 px, diagonals at 45° (10 px across), gaps between letters 4–5 px. The
+P's rounded corners follow a hand-drawn reference (outer corner steps
+8, 6, 4, 3, 2, 1, 1, 0 from the edge; inner corners 2, 1 top and bottom),
+and the D uses a larger arc of the same kind (12, 9, 7, 5, 4, 3, 2, 2, 1, 1)
+so it keeps the original's rounder bowl. Everything is
+row-major, MSB = leftmost pixel, `(w + 7) / 8` bytes per row. That comes
+to 7 × 120 bytes plus 1024 for the splash, about 1.8 KB of flash.
+
+## Dexed A/B: two engines, one bus
+
+Dexed is two identical engines, DXD-A (`dexed` in `main.cpp`) and DXD-B
+(`dexed_b`), each with its own Global page. Both are `DexedSynth`, so
+DXD-B has everything A has, Advanced included. The aim was the DX5/TX816
+idea: two patches layered on one keyboard, or split across it.
+
+**What's per engine and what's shared.** `DexedSynth` kept the voices,
+patch, LFO, controllers, OP switches, mod wheel target and Voices. What
+used to be its output stage moved into a new `DexedBus`: bus filter,
+wavefolder, Gain, the soft limiter, Level, Pan and the reverb/delay
+sends, plus the limiter meters. Each engine's `Render()` *adds* its
+voices into `dexed_l/r` at its own Level and Pan; `DexedBus::Process()`
+then finishes the sum in place. One filter and fold for the pair rather
+than one each is the CPU reason for sharing, and it's the musical model
+too: two sounds through one channel strip. The engine's Mix/FX/Filter/
+Fold setters still exist and forward to the bus through `bus_`, so the
+UI and `CapturePreset()` didn't change shape.
+
+**The single-engine sound is unchanged.** An engine's Pan is a balance
+(both sides at unity in the centre), not equal-power, and its Level is
+unity at 100%. The bus applies the equal-power Pan after the limiter, as
+before. So one engine at its defaults feeds the bus exactly the sample
+the old `Process()` worked on. When every running engine is centred, the
+two channels are identical and the bus takes a mono path: one filter,
+one fold, one `FastTanh` — the old chain. Only an engine panned off
+centre runs `filter_r_` too; on that switch it copies `filter_l_`'s
+state so a resonant filter doesn't click.
+
+**Presets and the bus.** A preset carries both halves (patch and Mix/
+Filter/Fold). `ApplyPreset(p, apply_bus)` loads the bus half only while
+the other engine is off (`Ui::DexedApplyBus()`). Otherwise picking B's
+patch, including any factory patch with its default Mix, would reset
+what A plays through. With one engine on, nothing changed.
+
+**UI state.** `dexed_` is the edited engine; `SelectDexedEngine()` swaps
+it on entry from `Global:DXD-A`/`DXD-B` and parks the per-engine fields
+(loaded slot, unsaved baseline) for the other one. Browse cursors stay
+shared. Page titles read `DXD-A:`/`DXD-B:`.
+
+**Voices.** 16 for an engine alone, at most `kDexedPairVoices` (24)
+between the two. `DexedVoiceRoom()` is what an engine may take given the
+other; the MIDI page's K2 stops there. `ApplyDexedVoiceCeiling(keep)`
+trims the other engine after one is switched on or loaded, so the engine
+already playing keeps its voices. Each `DexedSynth` still has 20 slots
+(16 + 4 fade); DXD-B costs about 16 KB of DTCM (89 of 128 KB used).
+
+**Mix page.** Four bars at x = 16/48/80/112: DXD-A and DXD-B (engine
+Level/Pan), BUS (bus Level/Pan) and OUT (the live meter with clip latch,
+`MixerGetLevel01(5)`, the same as Global:Mixer's DXD channel). B1 steps
+`dexed_mix_sel_` A → B → Bus; each has its own knob context
+(`DexedMixA`/`DexedMixB`/`DexedMix`) so the pickups follow the
+selection. B2 toggles the bus Gain. Bars are 13 px wide so bar, label
+and pan slider share one centre column.
+
+**MIDI.** `dexed_midi_lock_` (default on) makes
+`GetDexedBMidiChannel()` return A's channel. Unlocked, B uses
+`dexed_b_midi_channel_`, which starts as a copy of A's; the MIDI page's
+K1, preset saves and preset loads all go through `DexedActiveChannel()`,
+the edited engine's channel.
+
+**Split.** `main.cpp` routes notes through `DexedRoutedNoteOn/Off()`. In
+Split, A takes keys below `dexed_split_note_` and B the rest; each
+engine's octave shift (`dexed_octave_`) applies in Layer or Split.
+`g_dexed_sent[engine][key]` records the note actually sent, so NoteOff
+releases what NoteOn started even if the split or an octave changed
+while the key was held. The page draws a 32-white-key keyboard (C1–F5)
+with zone lines and a split marker; the split point is limited to those
+keys.
+
+**Snapshots.** Two sections appended after the six: `DexedPair`
+(B on, B slot and name, A/B Level and Pan, lock and B channel, split and
+octaves) and DXD-B's `DexedPresetData`. A file without them reads back
+with `present == 0`, which loads as the old single Dexed: B off, Layer,
+locked, both centred. B's preset is applied with `apply_bus = false`,
+since the bus came with A's. Older firmware skips the two sections.
+
+**Panic.** Unrelated to the bus but added alongside it: three encoder
+clicks within `kPanicWindowMs` (900 ms) set a request that `main.cpp`
+turns into `AllNotesOff()` on every engine (and clears
+`g_dexed_sent`). The first click notes `screen_`, and the third restores
+it and is swallowed, so the two clicks that navigated are undone.
+"ALL NOTES OFF" draws over the page for `kPanicShowMs`.
+
+## Dexed Advanced: the full DX7 voice
+
+The Advanced screen had drifted from the DX7: F FINE and OSC MODE
+couldn't be reached, keyboard level scaling was missing, the envelope
+stages were relabelled Attack/Decay/Sustain/Release, and none of the
+voice-wide settings beyond the Vibrato page were editable. It now covers
+every parameter in the 156-byte patch, named with the DX7's own words,
+while the main Dexed screen stays the quick, simple set of controls.
+
+**Pages.** `DexedOpParamPage` has ten operator pages (Button 1 picks the
+operator) and six voice pages from `PitchEgRate` on
+(`IsDexedVoicePage()`; Button 1 does nothing there). The page order and
+knob mapping are in the README table. Each page is one or two plain
+patch bytes, so instead of a hand-written case per page in three places
+(pickup seeding, `ApplyKnobs()`, and before that the draw),
+`Ui::DexedEditBytesFor(ctx)` returns `{offset, max}` for each knob and
+both the pickup seed (`value / max`) and the knob write (`round(k *
+max)`) use it. Button 2 toggles live in `OnDexedOperatorButton2()`.
+Toggles that switch which pair the knobs edit (R1/R2 ↔ R3/R4, L CURVE ↔
+BREAK POINT) are separate `KnobContext`s, so pickup re-arms on its own;
+toggles that change a value (OSC MODE, LFO WAVE, the key syncs, OP
+ON/OFF) don't need to.
+
+**Engine gaps fixed along the way.** Three patch settings were stored
+but never played:
+
+- TRANSPOSE (byte 144): `NoteOn()` now plays `TransposedNote(note)`
+  while `held_note` keeps the key pressed, so `NoteOff()` still matches.
+  Held voices are updated with the transposed note too. This changes
+  the pitch of any factory or imported patch whose transpose isn't C3,
+  which is now correct DX7 behaviour.
+- OSC KEY SYNC (byte 136): `oscSync()` on every key when set, as Dexed
+  does.
+- LFO KEY SYNC and LFO DELAY: `lfo_.keydown()` on every key, so the LFO
+  phase resets (when synced) and the delay restarts per note. Before,
+  the delay only ever ran once after boot.
+
+`SetPatchByte()` now re-runs `lfo_.reset()` for any of bytes 137-142,
+not just SPEED, so DELAY, WAVE and KEY SYNC changes take effect live.
+
+**OP ON/OFF.** The engine already had `Controllers::opSwitch`, honoured
+by `Dx7Note::compute()` (a muted operator's envelope keeps running, so
+turning it back on mid-note is seamless). `DexedSynth::SetOpSwitch()`/
+`GetOpSwitch()` expose it, and `DexedPresetData::op_switch` saves it.
+The DX7 doesn't store this switch in a patch, but here it is part of a
+User preset by request; `-1` = not stored, which loads all six on, so
+factory patches, `.syx` imports and older saves behave like a DX7.
+Dexed preset files are v6 (v2-v5 still load; v5 is an `offsetof()`
+prefix ending before `op_switch`). Snapshots include it automatically
+through the Dexed section, and older snapshots load all on. It's in the
+unsaved-change snapshot, so toggling it shows the `*`.
+
+**Envelope graph.** `DrawDx7EnvelopeShape()` was redrawn to match the
+DX7's own diagram. A rate is a speed, not a time, so each segment's
+width is the level distance it travels times `2^((50 - rate) / 16)`
+(a full move at rate 50 is about 28 px). The line starts at L4, joins
+the level points with straight slopes, holds L3 until a dotted `OFF`
+line at a fixed 72% of the width, then R4 falls to L4. If slow rates
+would run past the `OFF` line, segments 1-3 (and R4 with them) are
+scaled down together so their proportions stay true. Highlights come in
+as bitmasks: the rates being edited get their slope number reversed
+out of a small filled box (every line stays 1 px -- a thick line was
+invisible on short or flat slopes), the levels being edited get filled
+squares. Button 2's label draws `1/2` and `3/4` at fixed spots with a
+reserved asterisk slot after each, so only the `*` moves. Every level is a 7x7 square with its Tom Thumb number
+(L4 at both ends) and every slope carries its number, placed above the
+slope on the side away from the line (left of a rising slope, right of a
+falling one, below when there's no room above). Each slope is at least
+13 px wide so squares never overlap; only the width above that is scaled
+to fit. PITCH EG adds a dotted line at 50.
+
+**Level scaling graph.** `DrawLevelScalingGraph()` calls msfa's own
+`ScaleLevel()` for each pixel's key (A-1 to C8), so the curve is exactly
+what the engine applies, around a dotted no-change line with BREAK POINT
+marked by note name (Yamaha naming, middle C = C3).
+
+**Feedback through 2-3 operators (algorithms 4 and 6).** On a DX7,
+algorithm 4's feedback runs OP6 -> OP5 -> OP4 and back into OP6, and
+algorithm 6's OP6 -> OP5 and back. The tables mark this (FB_IN+FB_OUT on
+OP6, FB_OUT alone on the loop's last operator), but upstream msfa (and
+desktop Dexed) only ever fed OP6 back onto itself, so 4 sounded exactly
+like 3 and 6 like 5. A loop can't be rendered one operator per 64-sample
+block, since every sample of OP6 needs the previous sample of the last
+operator, so `EngineMsfa::render()` now spots the loop and renders the
+whole chain in `compute_fb_chain()`, one sample at a time through all
+2-3 operators, like the DX7 itself. The feedback term is the same
+two-sample average `compute_fb()` uses, scaled by FEEDBACK, and each
+operator modulates the next exactly as `compute()` does. Gain ramps,
+phase advance and the level threshold match the normal path, so OP
+ON/OFF still mutes a loop operator. Patches on algorithm 4 or 6 now
+sound different from before -- closer to a real DX7.
+
+**ALGORITHM moved here.** Advanced's first page sets ALGORITHM on K1
+(1-32, `DexedEditBytesFor()` byte 134); the main Dexed Algo page is now
+view-only (no knob, no Button 1/2 cycling), so the sound-design control
+lives in one place and the main page stays a quick look at the routing.
+
+**Algorithm diagram changes.** Columns are still assigned in
+processing order (OP6 first), but `cx` is mirrored, so OP1's chain is on
+the left like the DX7's own diagrams. Feedback over more than one
+operator is now drawn: `FmOperatorRouting::fb_out` marks an operator
+with FB_OUT but not FB_IN, and the diagram draws a vertical line beside
+the loop, from the receiving operator (FB_IN) down to the last sender,
+with "FB" centred on it (algorithm 4 spans OP6-OP4, algorithm 6 spans
+OP6-OP5). Single-operator feedback keeps its plain "FB" tag. Rows now
+count up from the bottom: every carrier sits on one row just above the
+OUT line, and each modulator one row above the highest operator it
+feeds, so carriers always line up. Button 1 on
+the operator pages now steps OP1 -> OP6 (`dexed_op_index_` starts at 5
+and counts down); the old OP6-first order only came from the array
+layout.
+
+**New = INIT VOICE.** The User page's New used to load factory preset 0
+(Brass 1, the boot sound). It now loads `DexedSynth::GetInitVoice()`,
+the DX7's INIT VOICE: algorithm 1, OP1 alone at level 99, all rates 99,
+L1-L3 99 and L4 0, ratio 1.00, BREAK POINT C3, PITCH EG flat at 50, LFO
+SPEED 35 with KEY SYNC on, P MOD SENS 3, OSC KEY SYNC on, TRANSPOSE C3.
+The Pod's own extras go neutral (filter open, fold off, Brightness and
+Env Speed centred, wheel on Pitch, all operators on); Level, Pan, Gain,
+the sends and the MIDI channel stay as they were, since they're about
+where the sound sits rather than the sound. Nothing stored is loaded,
+so `dexed_loaded_preset_slot_` is 0 and `DexedSlotName(0)` shows the
+live patch name (INIT VOICE) instead of "(custom)". Boot still loads
+Brass 1, and Ensemble and Grains New are unchanged.
+
+## Organ: a second EnsembleSynth, and a faster Ensemble
+
+**Why one class, two instances.** The Organ started as a Sine mode of the
+Ensemble, then became its own engine so both can play at once (strings on
+one channel, organ on another) and the pages don't change meaning with a
+mode. It is still an `EnsembleSynth`: `organ.SetOrgan(true)` before
+`Init()` swaps the divide-down bank for nine sine drawbars and the Organ
+factory bank; envelope, chorus, filter, Gain, Mix, FX, Voices and MIDI
+are shared code. The UI does what Dexed A/B does: `ensemble_engines_[2]`,
+`ensemble_` points at the one the pages edit, and `SelectEnsembleEngine()`
+swaps the loaded slot and unsaved baseline with a parked pair and points
+the preset functions at `ENSEMBLE/` or `ORGAN/`
+(`PerformanceStore::SetEnsemblePresetFolder()`). Which Global page you
+click in from picks the engine; Global:Snap, the Mixer and SdMgmt always
+name an engine explicitly.
+
+**Memory.** Each `EnsembleSynth` is about 23 KB, almost all of it the
+chorus delay lines. DTCM had ~24 KB left, so the Organ lives in ordinary
+SRAM (it is cheap enough not to need DTCM). SRAM then overflowed by
+708 bytes; the six scope rings (4 KB each, written once a sample, read
+by the screen) moved to SDRAM and are zeroed after `hw.Init()`, since
+SDRAM .bss isn't cleared at boot. The sine table and the two mixed-wave
+buffers (12 KB) are DTCM globals, used only by the Organ.
+
+**Drawbars and phase.** The nine drawbars are whole-number multiples of
+the 16' pitch: x1, 3, 2, 4, 6, 8, 10, 12, 16 in Hammond order (16',
+5 1/3', 8', 4', 2 2/3', 2', 1 3/5', 1 1/3', 1'). Each voice keeps one
+`uint32_t` phase at half the 16' pitch, which wraps by itself with no
+compare; a drawbar's phase is that times `sine_mult` (twice its
+multiple). Because every drawbar is a product of the same counter they
+stay locked through notes and pitch bends, and running at half the 16'
+pitch keeps a harmonic folded back twice (x5 -> 2.5 -> 1.25) a whole
+number. Fold-back halves a partial while it is above 0.45 x the sample
+rate, as a tonewheel organ's top octave does, instead of aliasing; a
+partial still too high is dropped. Presets keep the seven 8'..1' levels
+in `drawbar_levels[]` and add `organ_low_drawbars[2]` (16', 5 1/3').
+
+**Getting the CPU down.** Measured as peak CPU with 8 notes held (the
+Ensemble's divide-down bank was 16% on the same test):
+
+| Organ version | Peak CPU |
+|---|---|
+| A table lookup per drawbar, 7 float phases per voice | 32% |
+| One integer phase per voice, sine table in DTCM | 25% |
+| Registration pre-mixed into one wave | 9% |
+
+Every voice plays the same registration, so the drawbars are mixed into
+one 16'-cycle wave (`BuildSineWave()`, 1024 points) and each voice reads
+it once per sample. Only voices whose drawbars fold back (the top notes)
+sum their drawbars one by one. A drawbar change only sets
+`sine_wave_dirty_`: the audio callback rebuilds into the idle buffer and
+crossfades old -> new across that block. Rebuilding from the knob code
+crackled -- it raced the audio and swapped the wave in one step.
+
+Then both engines were reworked together. Voices now render one at a time
+across the whole block into `g_ensemble_mix` (state stays in registers,
+idle voices are skipped once per block), and each voice's `Adsr` runs at
+sample rate / 8 (`Init(sr, kEnvStep)`) with a linear ramp between steps.
+At 10 voices the Ensemble went from 21% to 15% and the Organ from 13%
+to 8%; at 16 voices they measure 22% and 10%.
+
+**Clicks.** A note started on a silent voice resets its phase to 0,
+where every drawbar's sine crosses zero together, so the attack fades in
+instead of starting mid-cycle (it popped on low notes). A voice still
+sounding keeps its phase, since a jump would click instead.
+
+**Voices.** Both engines have 16 slots; `SetMaxVoices()` (MIDI page K2,
+default 10) limits which ones new notes take, like Dexed's, and is saved
+in User presets and snapshots (`max_voices`, -1 = not stored).
+
+**Percussion and key click (Organ only).** Percussion is a decaying sine
+at the 4' or 2 2/3' drawbar's multiple -- reusing that drawbar's folded
+`sine_mult` -- added before the envelope multiply, peaking at three full
+drawbars at Volume 100%. Like a tonewheel organ it has one envelope for
+the whole keyboard (`perc_env_`): `NoteOn()` restarts it only when no
+other key is held, and every sounding voice carries it. Process()
+precomputes its value at each envelope step of the block (decaying by
+`perc_coef_`, -60 dB over 0.15-1.5 s) and each voice ramps between them.
+The first version gave each voice its own envelope, started only if no
+other key was held -- so a struck chord pinged on just its first note,
+and at half today's level it was barely audible. Key click is ~3 ms (144
+samples) of LCG noise through a one-pole lowpass, fading out, added after
+the envelope so a slow attack can't hide it. Both are preset fields
+(`perc_on`, `perc_third`, `perc_decay01`, `perc_level01`, `click01`).
+
+**Elsewhere.**
+- Ensemble preset file v4 (`max_voices`, `organ_low_drawbars`, the
+  percussion/click fields); v1-v3 files read as prefixes, as before.
+- Snapshots gain a ninth section, `SynthSnapshot::Organ` (present, on,
+  slot, name, then the preset last so it can keep growing); older files
+  read `present` 0 and leave the Organ off.
+- Mixer: ORG is channel 7 (SMP, BYP, MAS move to 8-10); the overview
+  bars went from 8 to 7 px so 11 channels fit at a 12 px pitch.
+- Global:Snap and Global:MIDI show six rows at 6 px (baselines 15-45).
+- The Organ is processed after the Ensemble and added into
+  `ensemble_l/r` once the Ensemble/Organ scope has been captured, so
+  every mix and capture point carries it without listing it again; the
+  Mixer's meters read each engine's own pre-limiter level.
+- Sustain, pitch bend, mod wheel and panic route to it like the others
+  (`kSusOrgan`).
+- Its startup MIDI channel was saved in `PREFS2.DAT` by Global:Tempo's
+  Default hold; since v3.6.6 every engine's channel is saved by
+  Global:MIDI instead (see the Sampler split section).
+- SdMgmt's ENS/ORG box asks Ensemble or Organ first (`sd_mgmt_ens_kind_`),
+  then selects that engine so list, duplicate and delete use its folder.
+
+## Ensemble audit (Ensemble and Organ)
+
+- **Note off order.** `NoteOff()`, `AllNotesOff()` and `SetMaxVoices()`
+  clear `held_note` before `Adsr::ForceRelease()`. The other order let an
+  audio interrupt between the two see a fresh gate edge on a released
+  envelope and swell back up for one envelope step.
+- **Pitch bend reaches release tails.** Each voice keeps `pitch_note`, and
+  `SetPitchBend14bit()` re-pitches every voice still sounding, not only
+  held keys -- as Dexed and other synths do. Each voice's `SetVoiceFreq()`
+  is IRQ-guarded, since the Organ's `sine_mult[]`/`sine_folded` change
+  together.
+- **Block clamp** (`kMaxBlock`) moved above the percussion step array it
+  sizes (latent; blocks are 64).
+- **OscillatorBank gains** (DaisySP fork): `recalc_gain_` was never
+  cleared, so every voice redid its four saw gains every sample -- which
+  also hid that the test read `recalc_` after clearing it. Now done only
+  on a gain, pitch or registration change.
+- **Chorus depth** is set only while the glide is still moving;
+  `Chorus::SetLfoDepth()` is in flash, and was called every sample with
+  the same value once settled.
+
+Checked on the host against the previous build: every Ensemble and Organ
+factory preset, with registration, chorus, mod wheel, bend, filter, high
+notes and an instant on/off, is bit-identical (with tails left to finish
+between presets -- a tail still sounding now bends, as intended).
+
+## Sampler split: two engines in the same memory (v3.6.6)
+
+**Why.** With a sequencer planned, a drum track and a melodic sampler
+track have to play at once, each on its own MIDI channel. The original
+"one engine, two faces" design (above) couldn't: switching faces swapped
+settings and reloaded the other face's audio from SD into the one arena.
+
+**Memory -- 16-bit arenas.** Two float arenas at the old 33 s each would
+need 25.6 MB of SDRAM; only ~1.8 MB was free. Both faces really need the
+length: EP-133 kits run past 20 s, and the factory Upright Piano
+multisample (a Voice sound) is 28.9 s. So loaded Kits/Sounds are now
+stored as 16-bit PCM: `g_sample_synth_arena[4][1,600,000]` (Voice L/R,
+Drum L/R), 12.8 MB -- the same as the one float arena it replaces.
+Source files are 16-bit, so nothing audible is lost.
+- `SampleSynth::LoadSlot16()` sets `pcm_l/pcm_r` instead of
+  `buf_l/buf_r`; the slot's `L()/R()` read either, so captures (their
+  own float buffer) still work unchanged. Only two engine reads exist
+  (the Catmull-Rom voice read and the Trim preview).
+- `PerformanceStore::ImportWav16()` shares `ImportWav()`'s body through a
+  small `WavSink` (float or clamped int16 out, peak/scale for the
+  downward normalize), so the decoder isn't duplicated (its `static`
+  FIL/resampler state would have cost SRAM twice).
+- The pack importer still needs a float scratch of 1.6 M samples per
+  channel: it borrows the whole block as two float buffers (rows 0-1 and
+  2-3). It empties every arena-backed slot of both engines first and
+  `ReloadSampleFace()`s both afterwards; a Voice capture lives in its
+  own buffer and survives.
+
+**UI -- the Organ's pattern.** `sample_synth_engines_[2]` (main.cpp's
+`sample_synth` and `sample_drum`, both DTCM, ~1.5 KB each);
+`sample_synth_` and `sample_synth_arena_l_/r_` point at the face that's
+showing, so the ~120 existing page call sites are unchanged.
+`SelectSampleFace()` repoints them and swaps the per-face state that
+used to describe "what's in the engine" (loaded kit/sound names, Break
+Divide's pad cache and Setup values) with a parked `SampleFaceState`;
+`SwitchSampleSynthMode()` adds the browsing resets on top. Snapshots and
+reloads use `SelectSampleFace()` so flipping faces internally doesn't
+bump you out of a list. The old per-face preset banks and "remembered
+slices" are gone -- nothing reloads on a switch any more.
+
+**Elsewhere.**
+- Both faces have their own on/off (no interlock), and entering one no
+  longer switches it on -- Button1 does, like every other engine.
+- MIDI: SMPDR has its own channel (default Ch10), sustain engine
+  `kSusSmpdr`, pitch bend and mod wheel.
+- Power-on MIDI channels moved off Global:Tempo: every engine defaults to
+  Ch1 (SMPDR Ch10), and Global:MIDI's B2 hold saves all seven to
+  `MIDICH.DAT` (magic `MIDC`, a count then the channels in column order,
+  so a future engine reads as "keep the default"). Tempo's Hold=Default
+  still writes `PREFS.DAT`'s four channel fields (the format is the
+  performance header's) as Ch1 but never reads them; `PREFS2.DAT`, which
+  only held the Organ's and SMPDR's channels, is no longer used. B1 on
+  Global:MIDI now toggles Sus-Pedal Norm/Rev, so each button has one job.
+- Snapshots gain a tenth section, `SamplerPair` (`present`, drum name):
+  `present` 1 means both `sampler_voice` and `sampler_drum` hold a face.
+  An older file has only the face `info.sampler_drum` names, so only
+  that one is restored.
+- Mixer: VOI (8) and DRM (9); BYP and MAS move to 10-11. Each face's Mix
+  page meter reads its own channel. Prof gains `kOrgan` and `kSmpDrum`
+  (the Organ used to be counted in the Ensemble's figure).
+- Kit/multisample loads pause 50 ms before each retry and re-mount the
+  card before the last one (`SampleLoadRetryPause()`): on hardware a
+  7 s break failed all three back-to-back tries with `FR_DISK_ERR`, then
+  loaded fine moments later. Splitting the one big read wasn't an option
+  -- chunk boundaries corrupt samples (see `kAudioDecodeChunkSamples`).
+- Memory after: SDRAM unchanged (97.2%), DTCM 81%, SRAM 96.6%. `RAM_D2`
+  (256 KB) is still entirely unused -- the obvious home for sequencer data.
+
+**Global pages redrawn.**
+- Order: Mixer first (where Global opens), Tempo second.
+- Global:Mixer: 12 channels in one row left 3-letter names touching, so
+  it's 2 rows of 6, each name centred over a 19x5 horizontal meter
+  (`DrawMixerHBar()`, clip cap at the right end).
+- Global:Snap and Global:MIDI: one 18 px column per engine (7 x 18 =
+  126). Snap writes each sound name sideways down its column
+  (`TomThumbDrawTextVertical()`, rotated 90 degrees clockwise, 4 px per letter --
+  about 6 letters, against 4 stacked upright); a longer name holds 1 s,
+  scrolls a pixel every 60 ms, holds 1 s and restarts, restarting when
+  the snapshot shown changes. MIDI channels moved off Snap (Global:MIDI
+  has them).
+- Global:Tempo: a 19x20 metronome drawn in 1 px lines like the Global
+  icons (`DrawMetronome()`), the arm leaning left/right on alternate
+  beats while Metro is on and upright while off, ON/OFF centred under
+  its pivot; BPM in Font_11x18; a pad per beat; a pad per bar up to
+  `MaxBarsForBpm()` (pitch shrinks to fit 16) -- loop bars outlined,
+  the current one filled, the rest dotted; LOCKED or the save result at
+  top right.
+- CPU view: 10 stages in two columns under AVG/PK. The average ends 1 px
+  before a fixed "/" and the peak starts 1 px after it, so the slash is
+  always midway; headings centre over two-digit numbers.
+
+## D2 SRAM: the 256 KB libDaisy leaves unused (v3.6.7)
+
+libDaisy's linker script declares `RAM_D2` (0x30008000, 256 KB, after the
+32 KB `.sram1_bss` DMA block) but gives it no output section, so stock
+projects never use it. With AXI SRAM at 96.6%, the project's linker copy
+(`STM32H750IB_qspi_custom.lds`) adds a `.d2_bss` (NOLOAD) section and
+`itcm.h` a `DSY_D2_BSS` macro.
+- **Zeroing.** NOLOAD isn't cleared at boot, so `ZeroD2Bss()` (main.cpp,
+  constructor priority 101, like `ZeroDtcmBss()`) memsets it first. It
+  also sets the three `RCC_AHB2ENR_D2SRAMnEN` bits, which libDaisy only
+  sets under `DATA_IN_D2_SRAM`; access works without them (they mark the
+  RAM as the CPU's for low-power modes), but that's the documented way.
+- **Speed.** Outside the MPU's uncached 32 KB DMA block it's ordinary
+  write-back cached memory: as fast as AXI SRAM on a cache hit, slower on
+  a miss (reached over the D1-D2 bridge). It never makes anything faster
+  -- it's for space. Keep per-sample state (reverb lines, looper layers,
+  engines) in DTCM/AXI.
+- **DMA.** SDMMC1's internal DMA can't reach D2 SRAM, so nothing FatFs
+  reads or writes directly (FIL/DIR objects, read/write buffers) may go
+  there; data that's copied in and out (decoded presets, name lists) can.
+- **First users:** four UI scratch buffers (Dexed slot scan, save-name
+  check, SysEx bulk-import presets, sampler pack-import names), ~20 KB --
+  AXI SRAM 96.6% -> 92.7%. The planned sequencer's pattern data is the
+  main intended user.
+
+
+## MIDI sequencer, scenes and song
+
+Eight MIDI tracks (Home's M1–M8, after the four audio tracks), each
+playing one of the seven engines, with patterns, chains, 16 scenes and a
+64-step song. The rule throughout: **a MIDI track behaves like an audio
+layer** — the same B1 gestures and labels (Hold=Rec, Pause/Hold=Rec,
+Cancel, Stop), count-in, one-pass recording, and LEDs.
+
+### Threads and time
+- `MidiSequencer` (`sequencer.h/.cpp`) runs in main.cpp's **control
+  interrupt** (TIM5, ~2 kHz), the same context that dispatches live MIDI, so a sequenced
+  NoteOn can never interrupt a live one halfway through an engine's voice
+  allocation. The UI only writes plain settings and raises `Request*()`
+  flags (plus a 16-entry grid-edit queue); `Tick()` acts on them.
+- **96 PPQN.** The audio callback publishes the loop position in ticks
+  (`g_seq_tick`), the loop length and whether the clock runs; `Tick()`
+  derives each track's position from it. A track shorter than the loop
+  repeats inside it; a longer one counts loop wraps (`loop_count_`).
+  Track length is 1/4, 1/2, 1, 2 or 4× the loop, capped at 16 bars.
+- **Recording** arms through the tempo clock's count-in, exactly like a
+  layer (`g_seq_record_starts` counts finished count-ins). A note played
+  up to 1/16 early during the count-in is moved onto the downbeat
+  (`kPreRollTicks`) rather than lost. A take is stored shifted back by
+  the pattern's transpose, so it plays as played.
+- **Starting from the top.** The clock starting (the looper switched on, a
+  Performance loaded) leaves every track at `prev_pos = -1`, which plays
+  from tick 0 including the notes there. A length change normally means
+  "start fresh from here", skipping the notes at the playhead -- but not
+  for a track starting from its top, or a loaded Performance with a
+  different Bars/BPM lost its first chord. Chains restart from their first
+  step with the looper (they keep their own clock, which otherwise picked
+  up mid-step). While `Ui::TriggerLoad()` runs, `g_seq_hold` makes the
+  suspended audio callback publish the clock as stopped, so the sequencer
+  sees a clean stop and start rather than a jump from the old
+  Performance's position to bar 1. The synth sounds (`ApplySynthSnapshot()`)
+  and delay are applied before it resumes: applying them stops every
+  engine's notes and can read a kit off the card, which with the clock
+  already running cut into bar 1. The two sample loaders it calls
+  (`LoadSampleSynthKitByRef()`, `LoadSampleSynthFileIntoEngine()`) suspend
+  the audio themselves, so they put `g_audio_suspended` back as they found
+  it rather than always resuming.
+- **Quantise, swing, rolls and transpose** never touch the recorded
+  notes: `Rebuild()` makes a playback copy (`play_events_`) whenever any
+  of them changes, and releases what's sounding first so no note-off is
+  left behind.
+
+### Patterns and chains
+- **8 patterns per track.** The one playing lives in `events_` (D2 SRAM,
+  fast enough at the control rate); the other seven wait in a caller-owned SDRAM
+  store (8 tracks × 8 × 1024 events × 8 bytes = 512 KB) with their
+  settings in `PatternMeta`. `SwitchPattern()` parks the playing one and
+  copies the next in; a queued switch happens where the playing pattern
+  wraps, or at once if the track isn't playing.
+- **Transpose is per pattern**, set through a request (`req_tp_`) so the
+  UI never writes a waiting pattern's settings while `Tick()` might be
+  switching it in.
+- **A chain has its own clock.** Patterns in a chain can have different
+  lengths, so a chain step can't be found from the loop position: each
+  step runs its pattern's length from where the last ended (`step_start`,
+  in the never-wrapping `clock_`). A chain starts with the loop
+  (`chain_sync`) and starts over when it's done. A pattern chosen on its
+  own ends it; a recording holds it on its pattern.
+
+### Scenes: switching on the downbeat
+- `TempoTick::loop_start` marks bar 1 beat 1 of the loop, sample-exact.
+  (The tempo clock's raw bar counter runs one ahead — see `ResetPhase()`
+  — so it's `downbeat && bar_in_loop_ == 1 % bars_`.)
+- **Layers** take a scene's play/pause and volume on that very sample
+  (`LooperLayer::QueueScene()`, applied inside `Process()`); the volume
+  lands from the next block (≤1 ms).
+- **MIDI tracks** take theirs in `Tick()` at the loop wrap
+  (`RequestScene()` → `ApplyScene()`): each switches pattern or chain,
+  pauses or plays, and `loop_count_` resets so tracks longer than the
+  loop start from their top together. Notes due between the wrap and the
+  tick are played from 0 (`from_top`). A track that's recording or
+  counting in is left alone.
+- With the looper off there's no loop start, so a launch applies at once.
+- Scene edits on the playing scene are applied live (pattern requests,
+  `ApplySceneNow()`); "everything off" (the end of a song, an empty scene
+  in a song) pauses but keeps volumes — passing a negative volume.
+
+### Song
+- The song engine is in the UI (`UpdateSong()`, main loop): it counts
+  loop starts (`g_loop_starts`, from the audio callback) and, during a
+  step's last loop, launches the next step's scene, which then switches
+  on the downbeat as above. Main-loop latency doesn't matter — anything
+  within the loop is early enough.
+- **Song record** appends a step whenever a launched scene takes effect,
+  with the loops the previous one played; stopping counts the loop under
+  way once it's past half.
+- Repeats are capped at 32: with a 4-bar loop at 120 BPM that's over
+  4 minutes per step, and it gives K2 three times the travel per value of
+  the 99 first planned.
+
+### Exporting while the audio runs
+**The SD card must not be written while audio runs.** Writes during the
+audio callback silently lost sectors — the file kept whatever the card
+held there before (fragments of a deleted `.syx` showed up as noise
+bursts in an early export). So every write sets `g_audio_suspended`,
+which freezes everything: clock, sequencer, voices, effect tails.
+- **Audio+MIDI Loop** captures the master (after master volume, before
+  the click; the soft limiter is applied as it's stored) into the
+  looper's undo buffers, lent
+  out with `LooperLayer::BlockUndoBackup()` — two segments of 16-bit
+  stereo, about 38 s — then writes them with the audio suspended.
+- **Song** uses the same capture, but the file is opened first and
+  filled a chunk at a time: when the memory is within a second of full
+  (`kFlushMargin`) the callback raises `flush_req`, the UI suspends the
+  audio, writes and empties the buffer, and resumes. Because everything
+  freezes, the file has no gap. The outputs are muted throughout. After
+  the song's end it records until the master meter has been quiet for
+  0.25 s (at most 10 s), so tails fade out.
+
+### Printing
+A track (or all of them) prints into a layer by routing the engines it
+plays into that layer's input (`print_in`) while the layer records one
+pass; the printed tracks then pause.
+
+### Saving
+After the layer audio a Performance carries, in order, each optional and
+each read only if the one before it was: `SEQ2` (every pattern of every
+track; `SEQ1` single-pattern files still load), a Synth Snapshot body,
+`SCN1` (16 × `Scene`), `SNG1` (`Song`), `CHN1` (each track's live
+chain) and `ARP1` (every arp, see **Arpeggiator**). Each block has a magic, version, count and record size, so an
+older, shorter `Scene` still loads into a newer one. Scene and song
+structs are saved as they are in memory and only grow by appending
+(`static_assert`ed sizes).
+
+### Memory
+The sequencer object is ~183 KB of D2 SRAM (~23 KB per track: the
+pattern playing, its playback copy with room for rolls, held-note and
+pre-roll state); that's why there are 8 tracks — D2 has room for about
+two more. More would mean moving the event arrays to SDRAM, which the
+control-rate sequencer could easily afford.
+
+## Home boxes, icons and the screen saver
+- Home's twelve boxes share one look: name top left (A1–A4, M1–M8), a
+  drawn state icon beside it (`DrawStateIcon()`: triangle, two bars,
+  filled circle, ring, dash), a playhead along the bottom, and "Audio
+  Tracks"/"MIDI Tracks" in the gap above the footer.
+- **Screen saver** (`Global:Display`). OLEDs burn in, and Home's frame
+  never changes. libDaisy's SSD130x driver only sends panel commands in
+  `Init()`, so `pod_oled.h` subclasses it (the transport is `protected`)
+  to send contrast and panel on/off; `OledDisplay` keeps its driver
+  private, so the one instance registers itself for a static
+  `Command()`. No touch for the timeout dims the panel, a minute later
+  turns it off (and stops drawing). The first touch only wakes it: the
+  events are swallowed until every button is up, then the knobs re-arm
+  their pickup so nothing jumps. MIDI doesn't wake it.
+
+## Layers slimmed to what a voice or guitar needs; effect pictures
+**Why.** The audio layers are mostly for a mic or an acoustic guitar.
+Per-layer Speed drifted out of time at anything but 0.5x/1x/2x, and the
+character effects (Bitcrush, Chorus, Phaser, AutoWah, Flanger) were rarely
+used but cost ~100 KB of AXI SRAM (the chorus and flanger delay lines) and
+38 KB of SDRAM (the phasers).
+- **Pages:** Status, Gain, Filter, Drive, Tremolo, LYR-FX. Drive and
+  Tremolo are separate stages after the filter, each skipped while its
+  amount is 0; Drive blends in over its first 5% so turning it up from 0
+  doesn't click (it replaces the old per-switch fade). AXI SRAM went from
+  94% to 73%.
+- **Gain monitoring.** `Ui::IsBypassed()` is also true while a layer's
+  Gain page is open, so the Bypass path -- which already scales the input
+  by the selected layer's gain -- plays it; the page draws the Bypass
+  scope divided by the Bypass mix volume, i.e. input x gain, against the
+  clip lines.
+- **Saving: file version 17.** `LayerHeader` keeps its v16 layout (Load
+  reads `kLayerHeaderV16Size` bytes for older files) and appends
+  `tremolo_depth01`/`tremolo_rate01`; `effect_param_a01/b01` now hold Drive
+  and Trim, `effect` and `speed01` are unused. An older file's one effect
+  carries over if it was Drive (1) or Tremolo (4), else both are off.
+- **Pictures.** `DrawFilterCurve()` on every filter page;
+  `DrawReverbGraph()` and `DrawDelayGraph()` on the Global reverb and delay
+  pages and (via `DrawFxSends()`) small on every engine/layer FX page,
+  "DLY OFF" while the shared delay's Time is Off. They're stylised --
+  each knob moves the part of the picture it changes -- not measurements.
+- **Global:Sends** reads and writes the Mixer's channels 0..10
+  (`MixerGet/SetSend01`, `MixerGet/SetDelaySend01`); DXD-A and DXD-B share
+  the Dexed bus's sends, so they're one channel.
+- **Global:Snap** lists the engines in two columns of rows; a long name
+  scrolls sideways a whole letter at a time, only letters wholly inside its
+  window drawn, so it can't run into the label or the other column.
+
+## Arpeggiator
+An arp on every engine for playing live (`Global:Arp`), and one on every
+MIDI track with settings per pattern. `Arpeggiator` (`arpeggiator.h/.cpp`)
+holds all 15 (`kInstances` = 7 engines + 8 tracks, `TrackArp(t)`); its
+`Tick()`, `KeyDown()` and `KeyUp()` run in the control interrupt beside the
+sequencer, so its notes can't land mid-way through an engine's voice
+allocation. The UI only writes settings.
+
+**Why this design.** The first version played semitone phrases from the key
+pressed, with In key snapping them to a scale: changing the scale hardly
+changed anything, and every note had the same velocity and length. Looking
+at other arps (MIDIcake ARP's parametric Steps/Jump/Bounce/Repeat,
+Komplete Kontrol's scale chords, Yamaha's chord-following phrases, the
+MiniFreak's Mutate/Spice) led to building the pattern from the scale
+instead of storing it, so a new scale is a new tune.
+
+### The pool
+- One key: `PoolNotes()` builds a chord on it from the scale -- each tone
+  the first of its choices that's in the scale (third 4/3/5/2, fifth 7/6/8,
+  seventh 10/11/9), so it comes out major, minor or diminished as the scale
+  says, and sus where a pentatonic has no third. `Triad`, `7th`, `Sus2`,
+  `Sus4` (the second or fourth in place of the third -- a fourth may be
+  sharp, F B C in C major), `Power` or the whole `Scale`, over Range
+  octaves, plus the top root. Each tone must be above the one before, so
+  a stand-in fourth and fifth can't both land on one note (B: F, F in C
+  harmonic minor). `Chord` is saved by number, so Sus2/Sus4 are 4 and 5;
+  `NextChord()` steps them in a musical order. **Lock**
+  builds it in the arp's key (C major: D gives D F A); **Follow** in the
+  key pressed (every key the same kind of chord). A key off the scale moves
+  to the nearest scale note, up when it's half way.
+- A held chord (two or more keys): `CurrentPool()` plays it. **Lock** moves
+  each note to the nearest scale note; **Follow** finds the chord
+  (`FindChord()`, a table of shapes best first, trying every note as the
+  root) and plays it from its root at or below the lowest key, so any
+  inversion is the same chord. `HeldChordName()` names it ("F/A").
+- **Generator** walks the pool: `GenIndex(s, n, k)` gives step k's note
+  from Steps, Jump, Shape and Repeat. It's stateless -- the walk is worked
+  out from k each time -- so the Pattern page draws the same walk the arp
+  plays. Up/Dn turns at the ends (bouncing back off one could land on the
+  note just played -- a hiccup); a pattern that loops round onto the note
+  it just played takes the next one instead.
+- **Phrase** plays the 24 factory phrases. A step is a scale step as in a
+  7-note scale (0 root, 2 third, 4 fifth, 7 octave), with a velocity
+  (ghost/soft/normal/accent: -45/-22/0/+25), a length (short = half the
+  gate, normal, long = the whole step, legato), an octave, a chance and
+  a ratchet. `PhraseNote()` places a step: in a 7-note scale it's that
+  scale's note; in a 5- or 6-note one, the note nearest the step's place
+  in a major scale (within the octave, the lower when it's half way) --
+  counting along a short scale instead put "octave" jumps on the wrong
+  note (C to F5 in C minor pentatonic). Follow counts from the key
+  played; Lock up the arp's scale from the scale note nearest it. A
+  chance step's throw is a hash of the times round (`cycle`) and the
+  step, so the same start plays the same. A Variation only nudges a
+  phrase's velocity and gate -- its rests, octave jumps and ratchets are
+  the phrase's. The phrases live in `tools/arp_phrases/phrases.py`:
+  `check.py` verifies them (in key and within two octaves in every scale,
+  Follow and Lock), `gen_table.py` writes the C++ table, and
+  `tools/arp_tests/t_phrase.cpp` plays each through the arp step by step.
+- **Variation** 1..99: `StepFlavour()` hashes (variation, step) into an
+  accent, a gate factor, an octave jump, a rest or a ratchet -- fixed, so
+  it saves and exports the same; 0 just leans on the beat.
+
+### Keys, strums and latch
+- **As other arps:** an arp starts on the first step at or after the key
+  went down (never part way through one, nor on the step it just played
+  if it stopped and started again within it), and a new chord is taken at
+  the next step -- the note playing is never cut off or played again. A
+  step plays with whatever keys are down when it's due
+  (`TakeChord(e, false)`); once they've stopped changing for `kSettleMs`
+  (40 ms) the chord's taken for good, for the steps after. An earlier
+  version replayed the step just played when a chord landed a moment
+  late, and started at once on a key just after a step; both interrupted
+  the arp in ways no other arp does, and were taken out (`t_changes`
+  checks it: every note on a step, its whole gate, a step struck once).
+- **Latch** takes the keys struck, not the keys down: letting go never
+  changes the chord -- except a key from the chord before, let go after
+  the new one went down (legato), which leaves it (`down_ms` before
+  `change_ms`). Without that, C E G into F A C latched both.
+- A track's notes come with `at_once` (they land on the same tick, no
+  strum to wait out).
+
+### Time
+- **The clock.** `ArpTick()` (main.cpp) follows the loop position while
+  the looper runs, re-gridding on start and after a jump back (a load, a
+  scrub) to `(tick / loop + 1) * loop + t`, so `tick % loop` is the loop
+  position and every rate's step divides the loop. With the looper off it
+  runs from the tempo. Two traps found on the way: **TIM5 runs at ~2 kHz,
+  not 1 kHz** (libDaisy clocks timers at 2× PCLK1, the period is set from
+  PCLK2), so counting calls ran it double speed; and `System::GetUs()` is
+  the timer count divided down, so it wraps every ~18 s at an odd value --
+  a difference across the wrap jumped the clock by over an hour (a skip
+  every 18 s). It uses `System::GetTick()` differences, which wrap cleanly.
+- **The Dexed split is for the keyboard.** It used to sit in
+  `DexedRoutedNoteOn()`, so it filtered every note sent to DXD-A/B -- a
+  track's and an arp's too, dropping any that crossed the split point. It's
+  now in `LiveKeyOn()`: it picks which engine a key from the keyboard goes
+  to, before any arp (`g_split_skipped` keeps a skipped key's NoteOff away
+  too); tracks, track arps and the arps' own notes play their engine across
+  the whole range. The octave shift still applies to every note.
+- **One reading of the clock per interrupt.** `ControlTimerCallback()`
+  reads the published loop position once and gives the same reading to
+  the sequencer and to `ArpTick()`. It used to read it twice; the audio
+  callback, at a higher priority, could land between the two and publish
+  the next tick, so now and then an arp played a bar's first step before
+  the sequencer had sent that bar's chord -- the old chord on the bar
+  line (heard on PERF16's M2, with M1 changing chord on the same ticks).
+  The harness can preempt its interrupt with an audio block to show it
+  (`t_race`).
+- **Starting** is on the next step (see **Keys, strums and latch**). A new
+  Rate carries on from its next step rather than a note straight away.
+- **Track arps** follow the playing pattern (`SetPlayingPattern()`, also
+  called from `SeqNote()` before the note -- a new pattern's first notes
+  arrive in the same tick as the switch and would otherwise be wiped by
+  it), restart their pattern at the track's top (`TrackLoopStart()`; a
+  Steps that doesn't divide the loop started each loop elsewhere), and
+  stop when the track stops or the looper's switched off.
+
+### Routing, settings and saving
+- main.cpp: a key goes to an arp if it's on (`KeyOn()`/`KeyOff()`;
+  `g_arp_key` remembers which way it went). With a track selected the
+  keys go through the track's arp, not the engine's. `SeqNote()` sends a
+  track's notes through its arp. `ArpNote()` plays the engine, remembering
+  the engine each note went to so a track's engine changing can't leave
+  one stuck. CC 123/120 stops the engine's arp and its tracks' arps.
+- A track's patterns' settings live in `pattern_[t][p]`; one never set up
+  (`own_`) takes the last edited (`last_`) when it's first played or
+  opened. Copying a pattern copies its arp; `CopyToAllPatterns()`.
+- `ARP1` trailer after `CHN1`: `kSaveEntries` (7 + 64) `SaveEntry`, 32
+  bytes each (`static_assert`ed; grows inside `reserved[]`). An older file
+  `Reset()`s every arp to off -- which asks `Tick()` to silence them, so no
+  note off comes from the main loop.
+
+### The arp on the grid, and printed into notes
+`Arpeggiator::Render()` works out offline what a track's arp plays over a
+pattern: a scratch `Arpeggiator` (not the live one) run over three laps of
+the track's playback copy -- `MidiSequencer::BuildPlayCopy()`, built from
+the recorded notes in the main loop by the same `BuildPlay()` the
+sequencer's `Rebuild()` uses, so it's right whether or not the looper runs
+-- keeping the third (by then latch and the step count are a playing
+track's, and the swing falls as on the loop) and a fourth only to end the
+third's notes where the next lap's first step would. `t_render` checks it
+against the live arp note for note (tick, pitch, length) over random
+patterns and settings.
+- **Ghost notes.** The grid draws the render over the recorded keys: a
+  hollow bar in the open, a line cut along a recorded key (so the key
+  stays whole). `Ui::RenderTrackArp()` caches it on a hash of the playback
+  copy and the pattern's arp settings, so it's only redone after a change.
+- **Print to notes.** The Print page's K1 goes one past the layers, to
+  Notes: `PrintArpToNotes()` turns the render into events
+  (`NotesToEvents()`, a note off round the end for a note running past it)
+  in the next empty pattern, with no quantise, swing or transpose on top
+  and that pattern's arp off, then switches to it at the pattern's end.
+  The keys and the arp it came from are left alone. `t_print` plays the
+  printed pattern and checks it's the arp, note for note.
+- The harness stamps each note with its interrupt's tick (the clock worked
+  out first, `ArpClock()`) -- stamped after the sequencer, a track's own
+  notes read a tick early, which first looked like a print a tick out.
+
+### Screens
+`Global:Arp` (three columns; B2 Gen/Phr with a moving star,
+`DrawStarToggle()`), then Setup (K1's travel repeats Rate, Tempo, Range;
+it takes over once it's in a zone for the setting already picked),
+Pattern (the pool as a ladder, the walk drawn through it), Phrase (a
+piano roll: height the note, length the note's, fill the velocity --
+accent tall, normal solid, soft hollow, ghost a line -- chance dotted,
+ratchets split; each note clears a pixel round itself so it stands off
+the root/octave lines; K2 the phrase's octave), Feel
+(the Variation's loudness and gate per step) and Key (the scale's keys,
+the chord dotted, Lock's key framed). A track's Arp page lists its
+patterns' arps. Editing a pattern that isn't playing shows no live state
+(`ArpLive()`). The MIDI grid sounds a note as it's added (`Ui::Preview()` → `GridPreview()` in the control interrupt,
+250 ms, straight on the engine).
+
+### Testing
+Every arp, sequencer or clock change is run through a host harness
+(`tools/arp_tests/run_all.sh`, on the computer, no Pod needed): the
+real `Arpeggiator`, `MidiSequencer` and `TempoClock`, with main.cpp's glue
+copied in, driven by 64-sample audio blocks and a 2 kHz control ISR. It
+checks note timing to the sample (restarts, loads of a different length,
+pattern switches, swing, 60 s free-running), recording through an arp,
+and 10-minute random runs with the undefined-behaviour checker (no stuck
+notes, never two notes from one arp). Most of the timing fixes above came
+out of it.
+
+### Memory
+About 20 KB of AXI SRAM for the 15 arps' state (AXI 73.7% → 77.6%).
+
