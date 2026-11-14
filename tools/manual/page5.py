@@ -8,7 +8,7 @@ import math
 sys.argv=['x']; exec(open(os.path.join(HERE,'mock2.py')).read().split("GAP=120")[0])   # strip()
 
 def ssaw_preset():   # Ui::DrawSupersawScreen(), Preset page, browsing
-    d=D(); d.title("SSaw:Preset",1); d.tt(0,15,"Factory Presets"); d.f6(0,24,"Super Pad")
+    d=D(); d.title("SSaw:Preset",1); d.tt(0,16,"Factory Presets"); d.f6(0,24,"Super Pad")
     d.ctrl(FY1,False,FD1,"","","","Scroll"); d.ctrl(FY2,True,FD2,"Back","","","Load"); return d
 
 def chain_figure():

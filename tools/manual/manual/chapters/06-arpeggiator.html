@@ -1,0 +1,81 @@
+<h1>The arpeggiator</h1>
+
+<p>Every engine has its own arpeggiator for playing live, and every MIDI track has one too, with its own settings for each pattern. Any number can run at once: DXD-A arping sixteenths while the Organ arps eighths.</p>
+
+<p><strong>Press one key</strong> and the arp builds a chord on it from its key and scale, and plays a pattern over it; press another key and the pattern moves there. <strong>Hold a chord</strong>, two or more keys, and it plays that chord instead.</p>
+
+<h2>Global:Arp</h2>
+<div class="side">
+  <figure><pre class="shot" id="g-arp">wait 2000
+hold enc 1200
+turn 19</pre></figure>
+  <div>
+  <p>Every engine's arp on one page. K1 picks an engine and B1 switches its arp on or off. B2 switches it between Generator and Phrase. Click the encoder to edit the picked arp.</p>
+  <p>A MIDI track's arps are on the track's own Arp page (Chapter 4). Either way, the arp opens on the same pages, below; a click goes back to where you opened it.</p>
+  </div>
+</div>
+
+<h2>Lock or Follow: what one key means</h2>
+<ul>
+  <li><strong>Lock</strong> keeps the key put. In C major, C plays C major, D plays D minor, F plays F major and B plays B diminished: every key fits the song. A held chord's notes are kept in the scale.</li>
+  <li><strong>Follow</strong> makes the key pressed the key, so every key plays the same kind of chord. A held chord is recognised in any inversion: major, minor, 7ths, diminished, augmented, sus, 6ths and add9.</li>
+</ul>
+
+<h2>The arp's pages</h2>
+
+<div class="side">
+  <figure><pre class="shot" id="a-setup">wait 2000
+hold enc 1200
+turn 19
+click</pre></figure>
+  <div><h3>Setup</h3>
+  <p>K1 picks <strong>Rate</strong>, <strong>Tempo</strong> or <strong>Range</strong>, and K2 sets it. Rate is 1/4 to 1/32, with triplets. Tempo is the same as <code>Global:Tempo</code>. Range spreads the chord over 1 to 3 octaves. B1 switches between Generator and Phrase. B2 switches <strong>Latch</strong>: the arp keeps playing after you let go, and only pressing keys changes the chord.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="a-pattern">wait 2000
+hold enc 1200
+turn 19
+click
+turn 1</pre></figure>
+  <div><h3>Pattern (Generator)</h3>
+  <p>Generator walks the chord's notes. K1 sets the <strong>Steps</strong>, 1 to 16, and K2 the <strong>Jump</strong>, 1 to 7 notes at a time. B1 picks the next <strong>Shape</strong>: Up, Down, Up/Dn, 3+2-, 2+1-, Zigzag, In/Out, Pedal or Scatter. B2 sets <strong>Repeat</strong>, each note ×1 to ×4. The page draws the notes as a ladder and the walk through them.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="a-phrase">wait 2000
+hold enc 1200
+turn 19
+click
+tap b1
+turn 1</pre></figure>
+  <div><h3>Phrase</h3>
+  <p>Phrase plays one of 24 ready-made phrases from the key pressed: basslines, arps, riffs and melodies. They're written in scale steps, so they play in the arp's scale, and every step has its own velocity, length, octave, chance and ratchet. K1 picks the phrase and K2 moves it up or down two octaves. The page draws it as a piano roll.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="a-feel">wait 2000
+hold enc 1200
+turn 19
+click
+turn 2</pre></figure>
+  <div><h3>Feel</h3>
+  <p>K1 is the <strong>Gate</strong>, how long each note plays, and K2 the <strong>Swing</strong>: 50% straight, 66% triplet, up to 75%. B1 and B2 step the <strong>Variation</strong> down and up; hold them to scroll quickly. Variation 0 is straight, and 1 to 99 each add a fixed set of accents, short and long notes, octave jumps, rests and ratchets, the same every time.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="a-key">wait 2000
+hold enc 1200
+turn 19
+click
+turn 3</pre></figure>
+  <div><h3>Key</h3>
+  <p>K1 sets the key and K2 the scale: Major, Minor, Dorian, Mixolydian, Harmonic Minor, Pentatonic Major and Minor, or Blues. B1 switches Lock and Follow. B2 picks the next <strong>Chord</strong>: Triad, 7th, Sus2, Sus4, Power (root and fifth) or the whole Scale, for runs.</p></div>
+</div>
+
+<h2>Playing in time</h2>
+<p>The arp starts on the next step after you play, and a new chord takes over at the next step, so the note playing is never cut off and a chord's notes don't have to land together. Arps follow the loop while the looper runs, and the tempo when it doesn't. They stop and start with the looper, on the beat.</p>
+
+<h2>Arps on MIDI tracks</h2>
+<p>While a MIDI track is selected, the keyboard plays through the track's arp, and the track records the keys you press. On playback they go through the arp again, so its Shape, Scale or Variation can still change after recording. Each pattern has its own arp: copying a pattern copies its arp. The arp starts its pattern over at the top of the track, so every loop plays the same.</p>
+<p>To edit the arp's notes one by one, turn them into real notes with <strong>Print → Notes</strong> (Chapter 4).</p>

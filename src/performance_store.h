@@ -627,7 +627,7 @@ struct SampleSynthDrumUserPreset
     int8_t  break_tune_semis   = 0;
     float   gain01             = 0.f; // Mix page Gain (v3) -- 0 dB for v2 files
     int32_t midi_channel       = -2;  // v4: sampler MIDI channel (-1 = Omni); -2 = not stored, keep current
-    float   vel_sens01         = SampleSynth::kDefaultVelSens01; // v5: MIDI page Vel Sens
+    float   vel_sens01         = SampleSynth::kDefaultDrumVelSens01; // v5: MIDI page Vel Sens
 };
 constexpr int kMaxSampleSynthDrumUserPresets = 99;
 

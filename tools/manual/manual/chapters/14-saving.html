@@ -1,0 +1,73 @@
+<h1>Saving, export and the card</h1>
+
+<p>Nothing saves by itself: everything reaches the card when you save it. There are three kinds of save, plus each engine's own User saves (Chapter 7).</p>
+<table>
+  <tr><th>Save</th><th>Keeps</th><th>Page</th></tr>
+  <tr><td>Performance</td><td>Everything: the audio tracks, the MIDI tracks with their patterns and chains, the scenes, the song, every engine's sound, and the looper and global settings.</td><td><code>Global:Perf</code></td></tr>
+  <tr><td>Snapshot</td><td>Every engine's sound and settings at once, which engines are on, and their MIDI channels. For bringing a set of sounds into a new song.</td><td><code>Global:Snap</code></td></tr>
+  <tr><td>Defaults</td><td>What the Groovebox starts with: tempo and mix (Chapter 3), MIDI channels (Chapter 15), the screen saver, the looper on or off.</td><td>Each setting's page</td></tr>
+</table>
+
+<h2>Performances</h2>
+<div class="side">
+  <figure><pre class="shot" id="perf">@demo
+hold enc 1200
+turn 4</pre></figure>
+  <div>
+  <p>On <code>Global:Perf</code>, tap B1 to save: K1 picks <strong>Overwrite</strong> (the Performance loaded) or <strong>Save New</strong>, and holding B2 confirms. To load, tap B2 to open the list, turn K2 and tap B2. The list starts with <strong>New (blank)</strong>. A <code>*</code> after the title means something has changed since the last load or save.</p>
+  <p>The card template's <code>PERF001</code> is the demo song.</p>
+  </div>
+</div>
+
+<h2>Snapshots</h2>
+<div class="side">
+  <figure><pre class="shot" id="snap">@demo
+hold enc 1200
+turn 5</pre></figure>
+  <div>
+  <p><code>Global:Snap</code> saves the same way: B1, K1 for Overwrite or Save New, hold B2. B2 opens the list, K2 scrolls and B2 loads. The page lists the engines in two columns, each with its on/off box (filled = on) and its sound's name: what's live now, or while browsing, what the highlighted snapshot holds. Grains' audio is saved in the snapshot; the samplers' sounds and kits are saved by name.</p>
+  </div>
+</div>
+
+<h2>Export</h2>
+<div class="side">
+  <figure><pre class="shot" id="export">@demo
+hold enc 1200
+turn 7</pre></figure>
+  <div>
+  <p><code>Global:Export</code> writes a WAV to the card. K1 picks what:</p>
+  <ul>
+    <li><strong>Audio Loop</strong>: one loop of the audio tracks, rendered in a few seconds and normalised. No MIDI tracks.</li>
+    <li><strong>Audio+MIDI Loop</strong>: everything you hear except the click, recorded live from bar 1 for 1 to 8 loops (K2), up to about 38 seconds.</li>
+    <li><strong>Song</strong>: the song, from the step picked on the Song page to its end (Chapter 5).</li>
+  </ul>
+  </div>
+</div>
+<p>Tap B1 for a full-quality 48 kHz file, or B2 for 44.1 kHz, saved straight into a <code>custom/</code> folder so the same card works in a MicroDexed Touch's second slot. Tap either again to stop. In the two live modes the master volume sets the level, with the limiter catching peaks.</p>
+
+<h2>Managing files on the card</h2>
+<div class="side">
+  <figure><pre class="shot" id="sdmgmt">@demo
+hold enc 1200
+turn 6</pre></figure>
+  <div>
+  <p><code>Global:SD Mgmt</code> copies and deletes files without a computer. It opens on a grid of the eight kinds of save: Global (Performances or Snapshots), Grains and Dexed User saves, SYNTH (the Ensemble's, Organ's or Supersaw's), Captures, Sampler imports, and the SMPVO and SMPDR User saves.</p>
+  <p>K1 moves around the grid and folders and B2 opens. In a file list, K2 scrolls; B1 goes back, or held, duplicates the file; holding B2 for 1.5 seconds deletes it.</p>
+  </div>
+</div>
+
+<h2>The card's folders</h2>
+<table>
+  <tr><th>Folder</th><th>Holds</th></tr>
+  <tr><td>PERFORMANCES</td><td>Performances (PERF001.DAT is the demo).</td></tr>
+  <tr><td>SNAPSHOTS</td><td>Snapshots.</td></tr>
+  <tr><td>DEXED</td><td>Dexed User saves and imported banks.</td></tr>
+  <tr><td>ENSEMBLE, ORGAN, SUPERSAW</td><td>Those engines' User saves.</td></tr>
+  <tr><td>GRAINS</td><td>Grains presets, with their audio.</td></tr>
+  <tr><td>SAMPLES</td><td>The samplers' Sounds, Captures, Multi-samples, Kits and Breaks.</td></tr>
+  <tr><td>EXPORTS</td><td>Exported WAVs.</td></tr>
+  <tr><td>custom</td><td>44.1 kHz exports for MicroDexed Touch.</td></tr>
+  <tr><td>DEXED IMPORT, GRAINS IMPORT</td><td>Files waiting to import: DX7 banks, Grains WAVs.</td></tr>
+  <tr><td>DRUM PACK IMPORT, SOUND PACK IMPORT</td><td>OP-1 packs waiting to import (Chapter 12).</td></tr>
+</table>
+<p>Most folders are made the first time you save something into them; the template makes the import folders, which aren't.</p>

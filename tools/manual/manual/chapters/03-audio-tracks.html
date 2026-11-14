@@ -1,0 +1,80 @@
+<h1>Audio tracks</h1>
+
+<p>The four audio tracks, A1–A4, are the looper. Each records the audio input (and any engine you play while it records) into a loop that all four share, locked to one tempo. The loop's length is set in bars on <code>Global:Tempo</code>.</p>
+
+<h2>Recording a loop</h2>
+<ol>
+  <li>On Home, turn to the track you want, A1–A4.</li>
+  <li>Hold B1. If the metronome is on, it counts in one bar first, with LED 1 flashing blue.</li>
+  <li>Play. LED 2 is red while it records, and it stops by itself at the end of the loop. Tap B1 to stop early.</li>
+</ol>
+<p>Then:</p>
+<table>
+  <tr><th>On Home</th><th>What happens</th></tr>
+  <tr><td>Tap B1</td><td>Pause or play the selected track.</td></tr>
+  <tr><td>Hold B1</td><td>Overdub: record more on top of the track, from the next count-in.</td></tr>
+  <tr><td>K1</td><td>Master volume.</td></tr>
+  <tr><td>K2</td><td>Metronome volume.</td></tr>
+  <tr><td>B2</td><td>Bypass on or off: hear the input without recording it.</td></tr>
+</table>
+<div class="tip"><strong>Engines record too.</strong> Anything you play on an engine while a track records goes into the take, mixed with the input. No cable needed.</div>
+
+<h2>A track's pages</h2>
+<p>Click the encoder on a selected track to open its pages, and turn to move between them. Click again, or hold, to go back.</p>
+
+<div class="side">
+  <figure><pre class="shot" id="layer-status">wait 2000
+click</pre></figure>
+  <div><h3>Status</h3>
+  <p>The track's waveform, with a moving playhead. K1 is its volume and K2 its pan. B1 records, pauses and overdubs, as on Home. Tap B2 to undo the last overdub; hold it for about a second to clear the track.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="layer-gain">wait 2000
+click
+turn 1</pre></figure>
+  <div><h3>Gain</h3>
+  <p>K1 sets the input gain, 1× to 4×. While this page is open you hear the input through it, and its level shows against the clip line: set it as high as it goes without touching the line.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="layer-filter">wait 2000
+click
+turn 2</pre></figure>
+  <div><h3>Filter</h3>
+  <p>B1 picks the filter: Off, low-pass, high-pass or band-pass. K1 is the cutoff and K2 the resonance. The page draws the filter's response.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="layer-drive">wait 2000
+click
+turn 3</pre></figure>
+  <div><h3>Drive</h3>
+  <p>K1 drives the track into saturation (0 is off). K2 trims the level back, with the middle leaving it as it is. The page draws the driven wave.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="layer-tremolo">wait 2000
+click
+turn 4</pre></figure>
+  <div><h3>Tremolo</h3>
+  <p>K1 is the depth (0 is off) and K2 the rate, 0.5 to 10 Hz. The page draws the level over time.</p></div>
+</div>
+
+<div class="side">
+  <figure><pre class="shot" id="layer-fx">wait 2000
+click
+turn 5</pre></figure>
+  <div><h3>LYR-FX</h3>
+  <p>K1 sends the track to the shared reverb and K2 to the shared delay. The page draws both, small.</p></div>
+</div>
+
+<h2>Tempo and the loop's length</h2>
+<figure><pre class="shot" id="tempo">wait 2000
+hold enc 1200
+turn 3</pre></figure>
+<p>On <code>Global:Tempo</code>, K1 sets the tempo, 50 to 240 BPM, and K2 the loop's length, 1 to 16 bars. At slow tempos the longest loops aren't available, because a loop has a fixed amount of memory. B1 switches the metronome on and off. Holding B2 saves the power-on defaults: the tempo and loop length, with the master volume, Bypass, the master filter, the reverb and the delay.</p>
+<p>The page shows the BPM large, a metronome whose arm swings on each beat while the click is on, a box for each beat, and a box for each bar of the loop. The bar playing is filled; dotted bars are ones you could still add. While any track holds audio, the page shows <code>LOCKED</code>: the tempo and length are fixed until the tracks are cleared.</p>
+
+<h2>Switching the looper off</h2>
+<p><code>Global:Looper</code> switches all four tracks on or off with B1, freeing their share of the processor for the engines. B2 sets whether the looper is on at power-on, and clicking the encoder there opens Home.</p>

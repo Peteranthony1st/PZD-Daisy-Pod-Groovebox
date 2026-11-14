@@ -1,10 +1,14 @@
+import sys
 from page import F, PW, PH, M, ACC, logo
+# cover.py [title] [out.png]: the Quick Start's cover by default.
+TITLE = sys.argv[1] if len(sys.argv) > 1 else 'Quick Start'
+OUT   = sys.argv[2] if len(sys.argv) > 2 else 'page-qs-1.png'
 from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
 p=Image.new('RGB',(PW,PH),(30,30,34)); d=ImageDraw.Draw(p)
 lw=logo(p,M,120,90,(242,242,242))
 d.text((M,240),'GROOVEBOX',font=F(64,'Heavy'),fill=(242,242,242))
-d.text((M,330),'Quick Start',font=F(52,'Medium'),fill=(190,190,196))
+d.text((M,330),TITLE,font=F(52,'Medium'),fill=(190,190,196))
 d.rectangle([M,420,M+90,428],fill=ACC)
 # the product render, straight from draw.py (case, knob, display, wheel)
 from draw import draw_parts, body, flower_glow, wheel, sil
@@ -18,4 +22,4 @@ x=(PW-w)//2; y=PH-h-200
 sh=Image.new('L',p.size,0); sh.paste(fm.point(lambda v:170 if v>40 else 0),(x+24,y+40)); p.paste((6,6,8),(0,0),sh.filter(ImageFilter.GaussianBlur(34)))
 p.paste(full,(x,y),fm)
 d.text((M,PH-110),'Eight engines · four-track looper · eight-track MIDI sequencer',font=F(24),fill=(160,160,166))
-p.save('page-qs-1.png')
+p.save(OUT)

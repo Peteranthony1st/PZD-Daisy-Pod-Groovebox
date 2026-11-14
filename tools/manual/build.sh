@@ -17,6 +17,7 @@ for s in masks knob sides16 mock2 sidesfig page page2 page5 page7 cover readme_p
     echo "  $s"
     "$PY" "$HERE/$s.py" > /dev/null
 done
+"$PY" "$HERE/cover.py" "User Manual" manual-cover.png > /dev/null
 "$PY" - "$HERE/../../docs/quick-start.pdf" <<'PY'
 import sys
 from PIL import Image
@@ -25,3 +26,5 @@ ims=[Image.open(p+'.png').convert('RGB') for p in pages]
 ims[0].save(sys.argv[1],save_all=True,append_images=ims[1:],resolution=150)
 print('  docs/quick-start.pdf, %d pages'%len(ims))
 PY
+echo "  manual"
+"$PY" "$HERE/build_manual.py"

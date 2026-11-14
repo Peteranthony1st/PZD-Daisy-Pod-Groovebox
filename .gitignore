@@ -7,3 +7,6 @@ src/build/
 # Quick Start guide build output (tools/manual/build.sh)
 tools/manual/build/
 __pycache__/
+tools/manual/host/obj/
+tools/manual/host/render
+tools/manual/host/out/

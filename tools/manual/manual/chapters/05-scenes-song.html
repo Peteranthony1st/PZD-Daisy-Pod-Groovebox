@@ -1,0 +1,49 @@
+<h1>Scenes and Song</h1>
+
+<p>Scenes remember what plays together, and the song plays scenes in order. Together they turn a set of loops and patterns into a finished piece, which exports as one WAV file.</p>
+
+<h2>Scenes</h2>
+<div class="side">
+  <figure><pre class="shot" id="scenes">@demo
+turn 12</pre></figure>
+  <div>
+  <p>There are sixteen scenes. Each remembers every MIDI track's pattern or chain (or off), and every audio track on or off at its own volume. The Scenes page comes after M8 on Home.</p>
+  <p>Get the tracks playing as a section should sound, then hold B1 to save it into the scene K1 has picked. Tap B1 to launch a scene: everything switches together on the loop's next downbeat, every track from its top. Tap again before then to cancel. Hold B2 to clear a scene. K2 is the master volume.</p>
+  </div>
+</div>
+
+<h3>Editing a scene</h3>
+<div class="side">
+  <figure><pre class="shot" id="scene-edit">@demo
+turn 12
+click</pre></figure>
+  <div>
+  <p>Click the encoder on Scenes to edit the picked scene directly. K1 picks a track; K2 sets its volume (audio tracks) or its pattern, Off or A–H (MIDI tracks). B2 switches the track on or off in the scene. B1 launches and saves as on the Scenes page.</p>
+  </div>
+</div>
+
+<h2>The song</h2>
+<div class="side">
+  <figure><pre class="shot" id="song">@demo
+turn 13</pre></figure>
+  <div>
+  <p>A song is up to 64 steps, each a scene played 1 to 32 times. The Song page comes after Scenes. K1 picks a step and K2 is the master volume.</p>
+  <p>Tap B1 to play from the picked step, and again to stop. While it plays, the list follows the step playing, and at the end everything stops.</p>
+  </div>
+</div>
+
+<h3>Building a song</h3>
+<p>Two ways, which mix freely:</p>
+<ul>
+  <li><strong>Record it.</strong> Hold B1 on the Song page, then launch scenes on the Scenes page: each launch becomes a step, for as many loops as it played.</li>
+  <li><strong>Write it.</strong> Tap B2 to insert a copy of the picked step, and hold B2 to delete one. Click the encoder to edit the picked step: K1 sets its scene and K2 its repeats.</li>
+</ul>
+<div class="side">
+  <figure><pre class="shot" id="song-edit">@demo
+turn 13
+click</pre><figcaption>Editing a step</figcaption></figure>
+  <div><p>Click again to stop editing. The patterns, chains, scenes and song all save in the Performance, with the audio and every engine's sound.</p></div>
+</div>
+
+<h2>Exporting the song</h2>
+<p>On <code>Global:Export</code>, turn K1 to <strong>Song</strong> and tap B1. The song plays from the step picked on the Song page to its end, then until the effects have faded, and is written to the card as one WAV of any length. The outputs are muted while it runs. About every 37 seconds it pauses for a moment to write to the card, so the file has no gaps. See Chapter 14 for the other export modes.</p>

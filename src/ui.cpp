@@ -2790,7 +2790,7 @@ void Ui::OnButton2Short()
             sample_synth_->SetChromaticMono(sample_synth_imp_mono_);
     }
     else if(screen_ == Screen::Mixer)
-        mixer_target_reverb_ = true; // knobs -> Reverb Send (ignored on Master)
+        mixer_target_reverb_ = true; // knobs -> Reverb + Delay Send (ignored on Master)
     else if(screen_ == Screen::Arp && arp_)
     {
         // Setup: latch on/off. Pattern: Repeat 1..4 (Generator). Key: the
@@ -3692,6 +3692,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             break;
         case KnobContext::MixerReverb:
             k1_pickup_raw_[i] = MixerGetSend01(MixerSetChannel(mixer_position_));
+            k2_pickup_raw_[i] = MixerGetDelaySend01(MixerSetChannel(mixer_position_));
             break;
         case KnobContext::MixerMaster:
             k1_pickup_raw_[i] = master_volume01_;
@@ -5260,6 +5261,8 @@ void Ui::ApplyKnobs()
             {
                 if(PickUpK1(k1))
                     MixerSetSend01(ch, k1);
+                if(PickUpK2(k2))
+                    MixerSetDelaySend01(ch, k2);
             }
             break;
         }
@@ -7411,7 +7414,7 @@ void Ui::DrawGranularWaveform(const float* peaks, float grain_anchor01, const fl
     // kBandTop pushed down to 27 (vs DrawWaveform()'s 14) -- this page's
     // header is now two Tom Thumb rows (label + centered value) instead
     // of one, ending around y21, so this needs the extra clearance.
-    const int kBandTop    = 27;
+    const int kBandTop    = 28; // the markers above it (from kBandTop - 4) clear the text
     const int kBandBottom = 44;
     const int center_y    = (kBandTop + kBandBottom) / 2;
     const int half_h      = (kBandBottom - kBandTop) / 2;
@@ -7764,9 +7767,9 @@ void Ui::DrawGlobalScreen()
             {
                 const int avg_mid  = col * kColW + kAvgRight - (kTwoDigitW - 1) / 2;
                 const int peak_mid = col * kColW + kPeakLeft + (kTwoDigitW - 1) / 2;
-                TomThumbDrawText(disp_, avg_mid - (TomThumbInkWidth("AVG") - 1) / 2, 15, "AVG",
+                TomThumbDrawText(disp_, avg_mid - (TomThumbInkWidth("AVG") - 1) / 2, 16, "AVG",
                                  true);
-                TomThumbDrawText(disp_, peak_mid - (TomThumbInkWidth("PK") - 1) / 2, 15, "PK",
+                TomThumbDrawText(disp_, peak_mid - (TomThumbInkWidth("PK") - 1) / 2, 16, "PK",
                                  true);
             }
             for(int st = 0; st < Prof::kNumStages; st++)
@@ -7997,7 +8000,7 @@ void Ui::DrawGlobalScreen()
             snprintf(line1, sizeof(line1), "Sync: On  %d BPM", (int)(tempo_->GetBpm() + 0.5f));
         else
             snprintf(line1, sizeof(line1), "Sync: Off");
-        TomThumbDrawText(disp_, 0, 15, line1, true);
+        TomThumbDrawText(disp_, 0, 16, line1, true);
         DrawDelayGraph(4, 124, 30, 12, 1.f, true);
         if(SharedDelay::IsOff(delay_time01_))
             TomThumbDrawText(disp_, (disp_->Width() - TomThumbAdvanceWidth("DELAY OFF")) / 2, 40,
@@ -8044,7 +8047,7 @@ void Ui::DrawGlobalScreen()
     else if(global_page_ == GlobalPage::Bypass)
     // Bypass's own sends -- same layout as every engine's own FX page.
     {
-        TomThumbDrawText(disp_, 0, 15, bypass_ ? "Bypass: On" : "Bypass: Off", true);
+        TomThumbDrawText(disp_, 0, 16, bypass_ ? "Bypass: On" : "Bypass: Off", true);
         // The monitored input as heard, and Global:Mixer's Bypass Peak
         // bar -- same scope+meter as every engine's own Mix page.
         DrawMixPageScope(18, bypass_scope_buf_, bypass_scope_capacity_, kMixByp);
@@ -8515,7 +8518,7 @@ void Ui::DrawArpPattern(const Arpeggiator::Settings& s)
                 snprintf(lab, sizeof(lab), "R");
             else
                 snprintf(lab, sizeof(lab), "+%d", (pool[i] - pool[0]) / 12);
-            TomThumbDrawText(disp_, 0, y + 2 > 15 ? y + 2 : 15, lab, true);
+            TomThumbDrawText(disp_, 0, y + 2 > 16 ? y + 2 : 16, lab, true);
         }
         for(int k = 0; k < steps; k++)
             disp_->DrawPixel(x0 + k * sw + sw / 2, y, true);
@@ -8587,7 +8590,7 @@ void Ui::DrawArpPhrase(const Arpeggiator::Settings& s)
             snprintf(lab, sizeof(lab), "R");
         else
             snprintf(lab, sizeof(lab), "%+d", o);
-        const int base = yy + 2 < 15 ? 15 : yy + 2 > 43 ? 43 : yy + 2;
+        const int base = yy + 2 < 16 ? 16 : yy + 2 > 43 ? 43 : yy + 2;
         TomThumbDrawText(disp_, 0, base, lab, true);
     }
     const int playing = live ? arp_->LastStep(ArpInst()) : -1;
@@ -9530,7 +9533,7 @@ void Ui::DrawFileScreen()
         return;
     }
 
-    TomThumbDrawText(disp_, 0, 15, "Performances", true);
+    TomThumbDrawText(disp_, 0, 16, "Performances", true);
 
     if(choosing_save)
     {
@@ -10454,8 +10457,8 @@ void Ui::DrawGranularScreen()
             snprintf(grain_values[2], sizeof(grain_values[2]), "%dms",
                       (int)(granular_->GetSprayMs() + 0.5f));
             FormatGranularScan(granular_, grain_values[3], sizeof(grain_values[3]));
-            const int kGrainLabelBaseline = 15;
-            const int kGrainValueBaseline = 21;
+            const int kGrainLabelBaseline = 16; // clear of the title's line
+            const int kGrainValueBaseline = 22;
             const int kGrainColWidth      = disp_->Width() / 4;
             for(int i = 0; i < 4; i++)
             {
@@ -10481,7 +10484,7 @@ void Ui::DrawGranularScreen()
         {
             char line1[24];
             snprintf(line1, sizeof(line1), "Spray +/-%dms", (int)(granular_->GetSprayMs() + 0.5f));
-            TomThumbDrawText(disp_, 0, 15, line1, true);
+            TomThumbDrawText(disp_, 0, 17, line1, true); // clear of the title's line
             DrawGranularWaveformLive();
 
             char pos_val[8], spray_val[10];
@@ -10497,7 +10500,7 @@ void Ui::DrawGranularScreen()
         {
             // The pattern itself: 16 steps, filled = a grain fires.
             uint16_t  mask   = granular_->GetRhythmMask();
-            const int kStepW = 7, kStepH = 9, kTop = 20;
+            const int kStepW = 7, kStepH = 9, kTop = 25;
             const int x0     = (disp_->Width() - GranularEngine::kRhythmSteps * kStepW) / 2;
             for(int st = 0; st < GranularEngine::kRhythmSteps; st++)
             {
@@ -10510,7 +10513,7 @@ void Ui::DrawGranularScreen()
             char line1[32];
             snprintf(line1, sizeof(line1), "Rhythm: %s   Speed: %s", granular_->GetRhythmName(),
                       granular_->GetGrainSpeedName());
-            TomThumbDrawText(disp_, 0, 15, line1, true);
+            TomThumbDrawText(disp_, 0, 17, line1, true); // clear of the title's line
             // No knobs on this page, so no knob row text.
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Rhythm", "", "",
@@ -10521,9 +10524,9 @@ void Ui::DrawGranularScreen()
         {
             char line1[28], line2[28];
             snprintf(line1, sizeof(line1), "Mode: %s", granular_->GetScanModeName());
-            TomThumbDrawText(disp_, 0, 15, line1, true);
+            TomThumbDrawText(disp_, 0, 16, line1, true);
             snprintf(line2, sizeof(line2), "Direction: %s", granular_->GetDirectionName());
-            TomThumbDrawText(disp_, 0, 21, line2, true);
+            TomThumbDrawText(disp_, 0, 22, line2, true);
             DrawGranularWaveformLive();
 
             char sc_val[10];
@@ -10554,7 +10557,7 @@ void Ui::DrawGranularScreen()
             snprintf(line1, sizeof(line1), "Keymap: %s   %s",
                       granular_->GetGrainFollowsNote() ? "On" : "Off",
                       granular_->GetPoly() ? "Poly (4 voices)" : "Mono");
-            TomThumbDrawText(disp_, 0, 15, line1, true);
+            TomThumbDrawText(disp_, 0, 16, line1, true);
             DrawGranularWaveformLive();
 
             char tune_val[8];
@@ -10702,7 +10705,7 @@ void Ui::DrawGranularScreen()
                 int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
                 const char* hold_msg
                     = granular_capture_source_ == -2 ? "Hold: Import..." : "Hold: Capture...";
-                TomThumbDrawText(disp_, 0, 15, hold_msg, true);
+                TomThumbDrawText(disp_, 0, 16, hold_msg, true);
                 disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
                 if(w > 0)
                     disp_->DrawRect(1, 21, w, 23, true, true);
@@ -10719,7 +10722,7 @@ void Ui::DrawGranularScreen()
                 snprintf(src_line, sizeof(src_line), "Source: Import");
             else
                 snprintf(src_line, sizeof(src_line), "Source: Direct Record");
-            TomThumbDrawText(disp_, 0, 15, src_line, true);
+            TomThumbDrawText(disp_, 0, 16, src_line, true);
 
             if(granular_capture_source_ == -2 && granular_import_files_dirty_)
                 RefreshGranularImportFiles();
@@ -10764,7 +10767,7 @@ void Ui::DrawGranularScreen()
                         // width.
                         while(line[0] != '\0' && TomThumbAdvanceWidth(line) > disp_->Width())
                             line[strlen(line) - 1] = '\0';
-                        TomThumbDrawText(disp_, 0, 22 + row * 6, line, true);
+                        TomThumbDrawText(disp_, 0, 23 + row * 6, line, true);
                     }
                 }
                 else
@@ -10820,7 +10823,7 @@ void Ui::DrawGranularScreen()
             {
                 float held = pod_->button2.TimeHeldMs();
                 int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                TomThumbDrawText(disp_, 0, 15, "Hold: Save Capture...", true);
+                TomThumbDrawText(disp_, 0, 16, "Hold: Save Capture...", true);
                 disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
                 if(w > 0)
                     disp_->DrawRect(1, 21, w, 23, true, true);
@@ -10835,7 +10838,7 @@ void Ui::DrawGranularScreen()
                 snprintf(line, sizeof(line), "Start%d%% End%d%%",
                           (int)(granular_trim_start01_ * 100.f + 0.5f),
                           (int)(granular_trim_end01_ * 100.f + 0.5f));
-            TomThumbDrawText(disp_, 0, 15, line, true);
+            TomThumbDrawText(disp_, 0, 16, line, true);
 
             // Reuses DrawGranularWaveform()'s two-marker drawing as-is --
             // here the markers are the trim start/end points rather than
@@ -10893,7 +10896,7 @@ void Ui::DrawGranularScreen()
             if(!at_folder_list)
                 GranularLibFolder(granular_lib_folder_, folder_name, sizeof(folder_name),
                                   folder_label, sizeof(folder_label));
-            TomThumbDrawText(disp_, 0, 15, at_folder_list ? "Starter+Captured" : folder_label,
+            TomThumbDrawText(disp_, 0, 16, at_folder_list ? "Starter+Captured" : folder_label,
                              true);
 
             if(browsing_load)
@@ -10985,7 +10988,7 @@ void Ui::DrawGranularScreen()
                 break;
             }
 
-            TomThumbDrawText(disp_, 0, 15, "User Presets", true);
+            TomThumbDrawText(disp_, 0, 16, "User Presets", true);
 
             if(choosing_save)
             {
@@ -11485,7 +11488,7 @@ void Ui::DrawDexedScreen()
             // the real, non-redundant hint (what 50% means) moves to Tom
             // Thumb, same space-freeing idiom as GranularParamPage::Filter,
             // and the scope takes the rest.
-            TomThumbDrawText(disp_, 0, 15, "50% = as saved", true);
+            TomThumbDrawText(disp_, 0, 16, "50% = as saved", true);
             DrawOscilloscope(18, kFooterDividerY - 2, dexed_scope_buf_, dexed_scope_capacity_);
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Amt", val, "", "");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
@@ -11495,7 +11498,7 @@ void Ui::DrawDexedScreen()
         {
             char val[8];
             snprintf(val, sizeof(val), "%d%%", (int)(dexed_->GetEnvSpeed01() * 100.f + 0.5f));
-            TomThumbDrawText(disp_, 0, 15, "50% = as saved", true);
+            TomThumbDrawText(disp_, 0, 16, "50% = as saved", true);
             DrawOscilloscope(18, kFooterDividerY - 2, dexed_scope_buf_, dexed_scope_capacity_);
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Amt", val, "", "");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
@@ -11679,7 +11682,7 @@ void Ui::DrawDexedScreen()
             static const char* const kGroups[] = {"Roms", "Dexed", "Imports"};
             if(at_groups)
             {
-                TomThumbDrawText(disp_, 0, 15, "Roms+Dexed+Imports", true);
+                TomThumbDrawText(disp_, 0, 16, "Roms+Dexed+Imports", true);
                 disp_->SetCursor(0, 20);
                 WriteUpper(kGroups[(int)dexed_files_group_]);
             }
@@ -11717,13 +11720,13 @@ void Ui::DrawDexedScreen()
                     snprintf(folder_line, sizeof(folder_line), "%s", name);
                 if(at_folders)
                 {
-                    TomThumbDrawText(disp_, 0, 15, kGroups[(int)dexed_files_group_], true);
+                    TomThumbDrawText(disp_, 0, 16, kGroups[(int)dexed_files_group_], true);
                     disp_->SetCursor(0, 20);
                     WriteUpper(folder_line);
                 }
                 else
                 {
-                    TomThumbDrawText(disp_, 0, 15, folder_line, true);
+                    TomThumbDrawText(disp_, 0, 16, folder_line, true);
                     int  slot = ResolveDexedPresetSlot();
                     char line2[24];
                     if(slot < 0)
@@ -11793,7 +11796,7 @@ void Ui::DrawDexedScreen()
                 break;
             }
 
-            TomThumbDrawText(disp_, 0, 15, "User Presets", true);
+            TomThumbDrawText(disp_, 0, 16, "User Presets", true);
 
             if(choosing_save)
             {
@@ -11857,7 +11860,7 @@ void Ui::DrawDexedScreen()
             {
                 float held = pod_->button2.TimeHeldMs();
                 int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                TomThumbDrawText(disp_, 0, 15, "Hold: Import...", true);
+                TomThumbDrawText(disp_, 0, 16, "Hold: Import...", true);
                 disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
                 if(w > 0)
                     disp_->DrawRect(1, 21, w, 23, true, true);
@@ -11866,7 +11869,7 @@ void Ui::DrawDexedScreen()
                 break;
             }
 
-            TomThumbDrawText(disp_, 0, 15, "From DEXED IMPORT/", true);
+            TomThumbDrawText(disp_, 0, 16, "From DEXED IMPORT/", true);
             char line[48];
             if(dexed_import_file_count_ <= 0)
                 snprintf(line, sizeof(line), "(no .syx files)");
@@ -11938,7 +11941,7 @@ void Ui::DrawEnsembleScreen()
             int        idx   = ensemble_drawbar_index_;
             if(idx < 0 || idx >= nbars)
                 idx = 0;
-            TomThumbDrawText(disp_, 0, 15, organ ? kOrganDrawbarNames[idx] : kDrawbarNames[idx], true);
+            TomThumbDrawText(disp_, 0, 16, organ ? kOrganDrawbarNames[idx] : kDrawbarNames[idx], true);
 
             // One vertical fader per drawbar -- K1 (above) picks which
             // one is selected, K2 edits that one's level; drawn instead
@@ -11974,7 +11977,7 @@ void Ui::DrawEnsembleScreen()
             char       line[24];
             snprintf(line, sizeof(line), "%s  %s harmonic", on ? "ON" : "OFF",
                       ensemble_->GetPercThird() ? "3RD" : "2ND");
-            TomThumbDrawText(disp_, 0, 15, line, true);
+            TomThumbDrawText(disp_, 0, 16, line, true);
             const int   x0 = 4, x1 = disp_->Width() - 5, y0 = 19, y1 = kFooterDividerY - 3;
             const float tau = ensemble_->GetPercDecaySeconds() / 6.9078f;
             const float amp = 0.3f + 0.7f * ensemble_->GetPercLevel01();
@@ -12125,7 +12128,7 @@ void Ui::DrawEnsembleScreen()
                 snprintf(chan_val, sizeof(chan_val), "%d", ch + 1);
             char wheel_line[24];
             snprintf(wheel_line, sizeof(wheel_line), "Wheel: %s", ensemble_->GetModWheelTargetName());
-            TomThumbDrawText(disp_, 0, 15, wheel_line, true);
+            TomThumbDrawText(disp_, 0, 16, wheel_line, true);
             DrawOscilloscope(18, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
             char voices_val[8];
             snprintf(voices_val, sizeof(voices_val), "%d", ensemble_->GetMaxVoices());
@@ -12186,7 +12189,7 @@ void Ui::DrawEnsembleScreen()
                 break;
             }
 
-            TomThumbDrawText(disp_, 0, 15, is_user ? "User Presets" : "Factory Presets", true);
+            TomThumbDrawText(disp_, 0, 16, is_user ? "User Presets" : "Factory Presets", true);
 
             if(choosing_save)
             {
@@ -12419,14 +12422,15 @@ void Ui::DrawSampleSynthScreen()
             // Mono/Choke moved here from Mix -- see
             // SampleSynthPresetData::mono_choke's own comment. Same
             // status-line position every other page's own first
-            // TomThumb line uses right under the header divider
-            // (TomThumbDrawText's y is the text's BASELINE, not its
-            // top -- row_top=10 -> baseline=10+kTomThumbRowHeight-1=15,
-            // same as Filter's own mode_line above) -- naming just
+            // TomThumb line uses right under the header divider, a
+            // pixel clear of it (TomThumbDrawText's y is the text's
+            // BASELINE: its tallest glyphs reach 5 rows up, so 16 leaves
+            // row 10 blank under the divider at 9) -- naming just
             // which state is currently selected, same "the button
             // label names the option, the status line names what's
             // active" split as Env's own AD/AD*-SR/SR* footer.
-            TomThumbDrawText(disp_, 0, 15, sample_synth_->GetMonoChoke() ? "Mono" : "Poly", true);
+            TomThumbDrawText(disp_, 0, 17, sample_synth_->GetMonoChoke() ? "Mono" : "Poly",
+                             true); // clear of the title's line, left of the grid
             // 4x4 grid, one cell per possible slice (0-16) -- filled
             // left-to-right/top-to-bottom up to the current *pending*
             // count (not yet-applied, see that knob's own comment), so
@@ -12437,8 +12441,9 @@ void Ui::DrawSampleSynthScreen()
                 constexpr int kCols = 4, kRows = 4, kCellW = 16, kCellH = 5, kGap = 2;
                 constexpr int kGridW = kCols * kCellW + (kCols - 1) * kGap;
                 constexpr int kGridH = kRows * kCellH + (kRows - 1) * kGap;
-                constexpr int kBodyTop = 18; // same body-top every other page's own
-                                              // oscilloscope uses below its status line
+                // Centred in the whole body, header divider (y=9) to footer
+                // divider: the status line sits left of the grid, clear of it.
+                constexpr int kBodyTop = 10;
                 int x0 = (disp_->Width() - kGridW) / 2;
                 int y0 = kBodyTop + ((kFooterDividerY - kBodyTop) - kGridH) / 2;
                 int pending = sample_synth_setup_pending_slices_;
@@ -12535,7 +12540,7 @@ void Ui::DrawSampleSynthScreen()
                 int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
                 const char* hold_msg
                     = sample_synth_capture_source_ == -2 ? "Hold: Import..." : "Hold: Capture...";
-                TomThumbDrawText(disp_, 0, 15, hold_msg, true);
+                TomThumbDrawText(disp_, 0, 16, hold_msg, true);
                 disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
                 if(w > 0)
                     disp_->DrawRect(1, 21, w, 23, true, true);
@@ -12552,7 +12557,7 @@ void Ui::DrawSampleSynthScreen()
                 snprintf(src_line, sizeof(src_line), "Source: Import");
             else
                 snprintf(src_line, sizeof(src_line), "Source: Direct Record");
-            TomThumbDrawText(disp_, 0, 15, src_line, true);
+            TomThumbDrawText(disp_, 0, 16, src_line, true);
 
             if(sample_synth_capture_source_ == -2 && sample_synth_import_files_dirty_)
                 RefreshSampleSynthImportFiles();
@@ -12584,7 +12589,7 @@ void Ui::DrawSampleSynthScreen()
                                   sample_synth_import_names_[idx]);
                         while(line[0] != '\0' && TomThumbAdvanceWidth(line) > disp_->Width())
                             line[strlen(line) - 1] = '\0';
-                        TomThumbDrawText(disp_, 0, 22 + row * 6, line, true);
+                        TomThumbDrawText(disp_, 0, 23 + row * 6, line, true);
                     }
                 }
                 else
@@ -12634,7 +12639,7 @@ void Ui::DrawSampleSynthScreen()
             {
                 float held = pod_->button2.TimeHeldMs();
                 int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                TomThumbDrawText(disp_, 0, 15, "Hold: Save...", true);
+                TomThumbDrawText(disp_, 0, 16, "Hold: Save...", true);
                 disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
                 if(w > 0)
                     disp_->DrawRect(1, 21, w, 23, true, true);
@@ -12647,7 +12652,7 @@ void Ui::DrawSampleSynthScreen()
             snprintf(line, sizeof(line), "Start%d%% End%d%%",
                       (int)(sample_synth_trim_start01_ * 100.f + 0.5f),
                       (int)(sample_synth_trim_end01_ * 100.f + 0.5f));
-            TomThumbDrawText(disp_, 0, 15, line, true);
+            TomThumbDrawText(disp_, 0, 16, line, true);
 
             // Reuses DrawGranularWaveform()'s own two-marker drawing as-
             // is -- a generic Ui:: method despite the name, not Grains-
@@ -12680,7 +12685,7 @@ void Ui::DrawSampleSynthScreen()
             snprintf(mono_line, sizeof(mono_line), "Cap:%s  Imp:%s",
                       sample_synth_cap_mono_ ? "Mono" : "Poly",
                       sample_synth_imp_mono_ ? "Mono" : "Poly");
-            TomThumbDrawText(disp_, 0, 15, mono_line, true);
+            TomThumbDrawText(disp_, 0, 16, mono_line, true);
             char cap_val[8], imp_val[8];
             snprintf(cap_val, sizeof(cap_val), "%+d", cap_semis);
             snprintf(imp_val, sizeof(imp_val), "%+d", (int)sample_synth_imp_tune_semis_);
@@ -12698,7 +12703,7 @@ void Ui::DrawSampleSynthScreen()
             {
                 float held = pod_->button2.TimeHeldMs();
                 int   w    = (int)(Clampf(held / 800.f, 0.f, 1.f) * (disp_->Width() - 2));
-                TomThumbDrawText(disp_, 0, 15, "Hold: Import...", true);
+                TomThumbDrawText(disp_, 0, 16, "Hold: Import...", true);
                 disp_->DrawRect(0, 20, disp_->Width() - 1, 24, true, false);
                 if(w > 0)
                     disp_->DrawRect(1, 21, w, 23, true, true);
@@ -12718,7 +12723,7 @@ void Ui::DrawSampleSynthScreen()
             if(sample_synth_import_dirty_)
                 RefreshSampleSynthImport();
             bool voice = sample_synth_mode_ == SampleSynthMode::Voice;
-            TomThumbDrawText(disp_, 0, 15, voice ? "Import Sounds" : "Import Drums", true);
+            TomThumbDrawText(disp_, 0, 16, voice ? "Import Sounds" : "Import Drums", true);
             char line[40];
 
             // SMPDR, first step: Kits or Breaks.
@@ -12731,7 +12736,7 @@ void Ui::DrawSampleSynthScreen()
                     snprintf(line, sizeof(line), "%c%-7s%d waiting",
                               brk == sample_synth_import_drum_breaks_ ? '>' : ' ',
                               brk ? "Breaks" : "Kits", n);
-                    TomThumbDrawText(disp_, 0, 22 + row * 6, line, true);
+                    TomThumbDrawText(disp_, 0, 23 + row * 6, line, true);
                 }
                 if(sample_synth_import_loose_ > 0)
                 {
@@ -12850,7 +12855,7 @@ void Ui::DrawSampleSynthScreen()
             else
                 snprintf(mode_line, sizeof(mode_line), "%s",
                           type_names[sample_synth_voice_type_ < 0 ? 0 : sample_synth_voice_type_]);
-            TomThumbDrawText(disp_, 0, 15, mode_line, true);
+            TomThumbDrawText(disp_, 0, 16, mode_line, true);
 
             if(browsing_load)
             {
@@ -12963,7 +12968,7 @@ void Ui::DrawSampleSynthScreen()
             bool drum_folders = !is_voice && browsing_load && sample_synth_drum_user_folder_ < 0;
             bool drum_in_folder = !is_voice && browsing_load && sample_synth_drum_user_folder_ >= 0;
             static const char* const kDrumFolders[2] = {"Kits", "Breaks"};
-            TomThumbDrawText(disp_, 0, 15,
+            TomThumbDrawText(disp_, 0, 16,
                               is_voice         ? "Sound Presets"
                               : drum_folders   ? "Kits+Breaks"
                               : drum_in_folder ? kDrumFolders[sample_synth_drum_user_folder_]
@@ -13574,7 +13579,7 @@ void Ui::DrawMixerScreen()
     {
         disp_->SetCursor(0, 0);
         WriteUpper("Mixer:Scope");
-        TomThumbDrawText(disp_, 0, 15, "Final Mix", true);
+        TomThumbDrawText(disp_, 0, 16, "Final Mix", true);
         DrawOscilloscope(19, 44, master_scope_buf_, master_scope_capacity_);
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "", "", "", "");
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
@@ -13667,7 +13672,7 @@ void Ui::DrawMixerScreen()
             snprintf(pan_val, sizeof(pan_val), "%d%%",
                       (int)(MixerGetPan01(sel_ch) * 100.f + 0.5f));
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Vol", vol_val, pan_val, "Pan");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Vol/Pan*", "", "", "Rev");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Vol/Pan*", "", "", "Rev/Dly");
         }
         else
         {
@@ -13675,15 +13680,18 @@ void Ui::DrawMixerScreen()
             // above via is_master) -- kept as a real fallback rather
             // than an assert, in case that ever changes again.
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Vol", vol_val, "", "");
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Vol*", "", "", "Rev");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Vol*", "", "", "Rev/Dly");
         }
     }
     else
     {
+        char dly_val[8];
         snprintf(second_val, sizeof(second_val), "%d%%",
                   (int)(MixerGetSend01(sel_ch) * 100.f + 0.5f));
-        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Rev", second_val, "", "");
-        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Vol/Pan", "", "", "Rev*");
+        snprintf(dly_val, sizeof(dly_val), "%d%%",
+                  (int)(MixerGetDelaySend01(sel_ch) * 100.f + 0.5f));
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Rev", second_val, dly_val, "Dly");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Vol/Pan", "", "", "Rev/Dly*");
     }
 }
 
@@ -13747,7 +13755,7 @@ void Ui::DrawAlgorithmDiagram(int algo0)
     // the 32 is loaded.
     char line1[16];
     snprintf(line1, sizeof(line1), "ALGO %d/32", algo0 + 1);
-    TomThumbDrawText(disp_, 0, 15, line1, true);
+    TomThumbDrawText(disp_, 0, 16, line1, true);
 
     // --- Reconstruct the signal-flow graph -------------------
     // Array index 0 = hardware OP6, index 5 = OP1 (confirmed from

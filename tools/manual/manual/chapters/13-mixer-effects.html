@@ -1,0 +1,76 @@
+<h1>Mixer and effects</h1>
+
+<p>Everything meets in the mixer, then the shared effects: one plate reverb and one stereo delay that every track and engine sends into, and a master filter. A soft limiter on the master output catches loud peaks instead of clipping.</p>
+
+<h2>Global:Tracks and Global:Synths</h2>
+<div class="row">
+  <figure><pre class="shot" id="mix-tracks">@demo
+hold enc 1200</pre><figcaption>Global:Tracks</figcaption></figure>
+  <figure><pre class="shot" id="mix-synths">@demo
+hold enc 1200
+turn 1</pre><figcaption>Global:Synths</figcaption></figure>
+</div>
+<p>The first two Global pages are the mixer. <strong>Tracks</strong> shows the four audio tracks and the eight MIDI tracks (L1–L4, M1–M8); <strong>Synths</strong> shows the eight engines. Both end with Bypass (the monitored input) and Master. Each channel is a name over a live peak meter, from −48 dB to 0 dBFS, with a clip mark.</p>
+<p>On both, K1 is the <strong>Master Vol</strong> and K2 the <strong>Bypass Vol</strong>, so you can pull a live mic down without touching the mix (Bypass starts at 60%). The bottom row is the live processor load, average and peak; tap B1 for a breakdown by part.</p>
+<p>A MIDI track has no sound of its own, so its channel <em>is</em> its engine's: M1 playing DXD-A shows and sets DXD-A's level, and turning one turns the other.</p>
+
+<h3>A channel's settings</h3>
+<div class="side">
+  <figure><pre class="shot" id="mix-channel">@demo
+hold enc 1200
+click</pre></figure>
+  <div>
+  <p>Click the encoder to step into the channels one by one; turn to move between them, and past the last for a live oscilloscope of the final mix. On a channel, K1 is its volume and K2 its pan. B2 (<strong>Rev/Dly</strong>) turns them into its reverb send (K1) and delay send (K2), and B1 brings back volume and pan. On Master, K1 is the volume and K2 the reverb's size. A MIDI track's channel is titled with its engine, like <code>M1&gt;DXA</code>.</p>
+  <p>Every channel pans with an equal-power law, −3 dB in the centre.</p>
+  </div>
+</div>
+
+<h2>Global:Sends</h2>
+<div class="side">
+  <figure><pre class="shot" id="sends">@demo
+hold enc 1200
+turn 2</pre></figure>
+  <div>
+  <p>Every channel's reverb and delay send on one page: the audio tracks, each engine (DXD-A and DXD-B share the Dexed bus's) and Bypass, each with two bars. K1 picks the channel; B1 points K2 at its reverb send and B2 at its delay send.</p>
+  </div>
+</div>
+
+<h2>The reverb</h2>
+<p>One shared plate reverb, in the Dattorro design. Its pages draw a decay graph: the pre-delay gap, the early reflections and the tail.</p>
+<table>
+  <tr><th>Page</th><th>K1</th><th>K2</th><th>B1</th><th>B2</th></tr>
+  <tr><td>Reverb</td><td>Size (the decay)</td><td></td><td></td><td></td></tr>
+  <tr><td>RevTone</td><td>PreDelay / Decay Diffusion</td><td>PreFilter / Damping</td><td>Knobs → PreDelay + PreFilter</td><td>Knobs → Diffusion + Damping</td></tr>
+  <tr><td>RevDiff</td><td>Input Diffusion 1</td><td>Input Diffusion 2</td><td></td><td></td></tr>
+</table>
+<div class="row">
+  <figure><pre class="shot" id="reverb">@demo
+hold enc 1200
+turn 11</pre><figcaption>Global:Reverb</figcaption></figure>
+  <figure><pre class="shot" id="revtone">@demo
+hold enc 1200
+turn 12</pre><figcaption>Global:RevTone</figcaption></figure>
+</div>
+<p>On the graph, the tail's length is Size, its height PreFilter, its texture Decay Diffusion, and its thinning towards the end Damping.</p>
+
+<h2>The delay</h2>
+<p>One shared stereo delay, with free time or a note value synced to the tempo, ping-pong, a tone that darkens each repeat, and a send that puts its echoes into the reverb. Its pages draw an echo timeline.</p>
+<table>
+  <tr><th>Page</th><th>K1</th><th>K2</th><th>B1</th><th>B2</th></tr>
+  <tr><td>Dly-Rev</td><td>Delay → Reverb</td><td></td><td></td><td></td></tr>
+  <tr><td>Delay</td><td>Time: Off, 20 ms–3 s, or a note value</td><td>Feedback</td><td>Sync off (free time)</td><td>Sync on (1/16 … 1/2)</td></tr>
+  <tr><td>DlyTone</td><td>Ping-Pong</td><td>Tone (darker repeats)</td><td></td><td></td></tr>
+</table>
+<div class="side">
+  <figure><pre class="shot" id="delay">@demo
+hold enc 1200
+turn 15</pre></figure>
+  <div><p>The timeline's spacing is Time, shrinking by Feedback, with ping-pong above and below the line, thinner repeats for a darker Tone, and a haze after each for Dly-Rev. Beat ticks show when it's synced. At 0% Ping-Pong the echoes follow the sound's pan; at 100% they always bounce left and right.</p></div>
+</div>
+
+<h2>The master filter and Bypass</h2>
+<p><code>Global:Filter</code> filters the whole mix: K1 cutoff, K2 resonance, B1 the type (Off, low-pass, high-pass, band-pass).</p>
+<p><code>Global:Bypass</code> sets the monitored input's own reverb and delay sends, with the same scope and meter as an engine's Mix page. Switch Bypass on with B2 on Home.</p>
+
+<h2>Global:Speed</h2>
+<p>Vari-speed for the whole project: K1 changes the speed and pitch of everything together, and B2 resets it to 1.0×. B1 switches the transport between <strong>Normal</strong>, <strong>Scrub</strong> and <strong>Freeze</strong>. In Scrub, the encoder moves through the loop like a tape; in Freeze, it nudges the frozen spot. Hold the encoder to leave.</p>

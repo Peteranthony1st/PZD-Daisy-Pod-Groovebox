@@ -1,0 +1,80 @@
+<h1>Finding your way</h1>
+
+<p>Every screen on the Groovebox is laid out the same way, and the same few moves get you anywhere. This chapter covers them once, so the rest of the manual can just name the page and the control.</p>
+
+<h2>The screen</h2>
+<figure class="annot">
+<pre class="shot" id="anatomy">wait 2000
+click
+turn 2</pre>
+<ol>
+  <li data-x="-7" data-y="4">Where you are: the area, then the page. This is audio track A1's Filter page.</li>
+  <li data-x="135" data-y="4">Where the loop is: the bar it's playing, and a box for each beat.</li>
+  <li data-x="135" data-y="27">What the page does. Most pages draw it: here, the filter's response.</li>
+  <li data-x="-7" data-y="51">The knob row, marked by the circle. K1's job is on the left with its value beside the circle; K2's is on the right.</li>
+  <li data-x="-7" data-y="60">The button row, marked by the square. B1's job is on the left, B2's on the right.</li>
+</ol>
+</figure>
+<p>A small <code>*</code> after a page's title means its sound has changed since it was last loaded or saved.</p>
+
+<h2>Turning, clicking and holding</h2>
+<table>
+  <tr><th>Encoder</th><th>What it does</th></tr>
+  <tr><td>Turn</td><td>On Home, moves through the tracks, then the Scenes and Song pages. Anywhere else, moves through that area's pages.</td></tr>
+  <tr><td>Click</td><td>Goes one level in, or back out. From Home it opens the selected track. On a Global page with <code>PUSH ENC TO OPEN</code>, it opens that engine or mixer, and clicking again comes back.</td></tr>
+  <tr><td>Hold</td><td>From Home, opens Global. From anywhere else, goes back Home.</td></tr>
+  <tr><td>Triple-click</td><td>Three clicks within about a second: All Notes Off on every engine, for a stuck note. You stay on the page you were on.</td></tr>
+</table>
+
+<h2>Home</h2>
+<p>Home is where you start and where you come back to. Turning the encoder there moves through the four audio tracks (A1–A4), the eight MIDI tracks (M1–M8), then the Scenes and Song pages. The tracks show four to a page, each box with its state and a playhead along the bottom.</p>
+<div class="row">
+  <figure><pre class="shot" id="home-audio">wait 2000</pre><figcaption>The audio tracks</figcaption></figure>
+  <figure><pre class="shot" id="home-midi">@demo
+turn 4</pre><figcaption>The MIDI tracks</figcaption></figure>
+</div>
+<div class="row">
+  <figure><pre class="shot" id="home-scenes">@demo
+turn 12</pre><figcaption>Scenes</figcaption></figure>
+  <figure><pre class="shot" id="home-song">@demo
+turn 13</pre><figcaption>Song</figcaption></figure>
+</div>
+<p>On Home, K1 is the master volume and K2 the metronome's. B1 records, pauses and overdubs the selected track, and B2 switches Bypass, which lets you hear the input. Each box shows its track's state:</p>
+<table>
+  <tr><th>Sign</th><th>The track is</th></tr>
+  <tr><td>▶</td><td>playing</td></tr>
+  <tr><td>‖</td><td>paused</td></tr>
+  <tr><td>●</td><td>recording</td></tr>
+  <tr><td>○</td><td>counting in, ready to record</td></tr>
+  <tr><td>–</td><td>empty</td></tr>
+</table>
+
+<h2>Global</h2>
+<p>Hold the encoder on Home to open Global, the settings that aren't any one track's. Turn through its pages; hold again to go back Home.</p>
+<figure><pre class="shot" id="global-tracks">wait 2000
+hold enc 1200</pre><figcaption>Global:Tracks, the first Global page</figcaption></figure>
+<table>
+  <tr><th>Page</th><th>For</th></tr>
+  <tr><td>Tracks, Synths</td><td>The mixer: the tracks' and the engines' levels, with Master and Bypass.</td></tr>
+  <tr><td>Sends</td><td>Every channel's reverb and delay send on one page.</td></tr>
+  <tr><td>Tempo</td><td>BPM, the loop's length in bars, and the metronome.</td></tr>
+  <tr><td>Perf, Snap</td><td>Saving and loading Performances and Snapshots.</td></tr>
+  <tr><td>SD Mgmt</td><td>Copying and deleting files on the card.</td></tr>
+  <tr><td>Export</td><td>Writing a WAV of a loop or the whole song.</td></tr>
+  <tr><td>Display</td><td>The screen saver.</td></tr>
+  <tr><td>Speed</td><td>Vari-speed, scrub and freeze for the whole project.</td></tr>
+  <tr><td>Filter</td><td>The master filter.</td></tr>
+  <tr><td>Reverb, RevTone, RevDiff</td><td>The shared reverb.</td></tr>
+  <tr><td>Dly-Rev, Delay, DlyTone</td><td>The shared delay, and how much of it goes into the reverb.</td></tr>
+  <tr><td>Bypass</td><td>The monitored input's sends and level.</td></tr>
+  <tr><td>MIDI</td><td>Every engine's MIDI channel, and the sustain pedal.</td></tr>
+  <tr><td>Arp</td><td>Every engine's arpeggiator.</td></tr>
+  <tr><td>Grains … SMPDR</td><td>One page per engine: switch it on, and click to open it.</td></tr>
+  <tr><td>Looper</td><td>Switches the whole looper on or off.</td></tr>
+</table>
+
+<h2>Knobs pick up</h2>
+<p>The knobs don't jump the moment you touch them. Each value on the screen is the setting as it is now; turning a knob only takes control once it reaches that value. So moving to a new page never changes anything until you mean it to.</p>
+
+<h2>The screen saver</h2>
+<p>After a few minutes with nothing touched, the screen dims, then switches off a minute later. The first touch only wakes it, so it can't change anything by accident. Set the time on <code>Global:Display</code>: Off, 1, 2, 5, 10 or 30 minutes (5 to start with). B1 there puts it to sleep now, and B2 saves the time for every power-on.</p>

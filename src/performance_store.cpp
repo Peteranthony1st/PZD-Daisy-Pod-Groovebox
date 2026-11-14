@@ -3759,7 +3759,7 @@ struct SampleSynthVoiceUserPresetFileHeader
 // 2: + gain01, appended -- a v1 file is everything before it (the
 // struct's own tail padding lands exactly where gain01 now starts).
 // 3: + midi_channel, appended the same way.
-// 4: + vel_sens01, appended (older files load the 75% default).
+// 4: + vel_sens01, appended (older files load the default, 50%).
 constexpr uint32_t kSampleSynthVoiceUserPresetFileVersion   = 4;
 constexpr uint32_t kSampleSynthVoiceUserPresetFileVersionV3 = 3;
 constexpr uint32_t kSampleSynthVoiceUserPresetFileVersionV2 = 2;
@@ -3787,7 +3787,7 @@ struct SampleSynthDrumUserPresetFileHeader
 // clean reject rather than a migration.
 // 3: + gain01, appended, same as the voice presets' v2 above.
 // 4: + midi_channel, appended, same as the voice presets' v3.
-// 5: + vel_sens01, appended, same as the voice presets' v4.
+// 5: + vel_sens01, appended, as the voice presets' v4 (older files load 0%).
 constexpr uint32_t kSampleSynthDrumUserPresetFileVersion   = 5;
 constexpr uint32_t kSampleSynthDrumUserPresetFileVersionV4 = 4;
 constexpr uint32_t kSampleSynthDrumUserPresetFileVersionV3 = 3;

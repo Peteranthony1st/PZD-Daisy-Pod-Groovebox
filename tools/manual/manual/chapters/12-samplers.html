@@ -1,0 +1,56 @@
+<h1>The samplers</h1>
+
+<p>Two sampler engines share most of their pages. <strong>SMPVO</strong> (Sample Sound) plays one sound across the keyboard: a single sample, a multi-sample, or a capture. <strong>SMPDR</strong> (Sample Drum) plays a kit or a break, one sample per key from C2. Open them from <code>Global:SMPVO</code> and <code>Global:SMPDR</code>.</p>
+
+<h2>Pages both have</h2>
+<table>
+  <tr><th>Page</th><th>K1</th><th>K2</th><th>B1</th><th>B2</th></tr>
+  <tr><td>Filter</td><td>Cutoff</td><td>Resonance</td><td>Filter type</td><td></td></tr>
+  <tr><td>Env</td><td>Attack / Sustain</td><td>Decay / Release</td><td>Knobs → A + D</td><td>Knobs → S + R</td></tr>
+  <tr><td>Mix</td><td>Level / Gain</td><td>Pan</td><td>Knobs → Level + Pan</td><td>Knobs → Gain</td></tr>
+  <tr><td>FX</td><td>Reverb / delay send</td><td>Reverb size / delay time</td><td>Reverb</td><td>Delay</td></tr>
+  <tr><td>MIDI</td><td>MIDI channel</td><td>Velocity: how much softer notes play quieter</td><td></td><td></td></tr>
+  <tr><td>Import</td><td>Destination</td><td></td><td>Back</td><td>Hold: import</td></tr>
+  <tr><td>Preset</td><td>Types, then folders</td><td>Items in the folder</td><td>Back</td><td>Open / load</td></tr>
+  <tr><td>User</td><td colspan="4">Your saves (Chapter 7).</td></tr>
+</table>
+
+<p>Velocity starts at 50% on SMPVO and at 0% on SMPDR, where every hit plays at full level until you turn it up. It's kept with each User save.</p>
+
+<h2>SMPVO: one sound across the keyboard</h2>
+<p>SMPVO's Preset page starts with <strong>Sounds</strong>, <strong>Captured</strong> and <strong>Multi</strong>, then a folder, then an item. Its own pages capture and tune a sound:</p>
+<div class="side">
+  <figure><pre class="shot" id="smv-capture">@engine 26
+turn 5</pre></figure>
+  <div>
+  <p><strong>Capture</strong>: B1 picks the source (Direct, Layer or Import) and holding B2 records or captures. <strong>Trim</strong>: K1 and K2 set the start and end, B1 plays the result and holding B2 saves it as a Sound. <strong>Tune</strong>: K1 tunes captures and K2 imports, ±24 semitones, and B1 and B2 switch each between Mono and Poly.</p>
+  </div>
+</div>
+
+<h2>SMPDR: kits and breaks</h2>
+<div class="side">
+  <figure><pre class="shot" id="smd-setup">@engine 27
+@808
+turn 3</pre></figure>
+  <div>
+  <p>SMPDR's Preset page goes straight to its <strong>Kits</strong> and <strong>Breaks</strong>. A kit plays its pads poly; a break starts with Choke on, so each new pad cuts the last.</p>
+  <p><strong>Setup</strong>: K1 tunes the kit, ±24 semitones. B1 switches Mono (choke) and Poly for this kit. K2 sets how many slices to cut a single loop into, 0–16, and holding B2 applies it.</p>
+  </div>
+</div>
+
+<h2>Sounds, kits and breaks from a computer</h2>
+<p>The sample library lives in numbered folders of up to 32 items under <code>SAMPLES/</code> on the card: <code>SOUNDS1</code>, <code>CAPTURED1</code>, <code>MULTISMP1</code>, <code>KITS1</code>, <code>BREAKS1</code> and so on. When one fills, the next is made. You can add to it on a computer, no import needed:</p>
+<ul>
+  <li><strong>Sounds</strong>: copy <code>.wav</code> files into a <code>SAMPLES/SOUNDS</code> folder. Any sample rate from 8 to 192 kHz, 16 or 24-bit, 32-bit or float, mono or stereo. A note at the end of the name, like <code>Cello C3.wav</code>, sets its root.</li>
+  <li><strong>Multi-samples</strong>: make a folder in a <code>MULTISMP</code> folder with one WAV per recorded note, the note in each name. Each key plays from the nearest recording. Up to 24 notes and about 33 seconds.</li>
+  <li><strong>Kits and breaks</strong>: make a folder in a <code>KITS</code> or <code>BREAKS</code> folder and copy WAVs in. They load in name order, one per key from C2 (<code>01 kick.wav</code>, <code>02 snare.wav</code>…). Up to 24 pads and about 33 seconds.</li>
+</ul>
+
+<h2>Importing OP-1 packs</h2>
+<p>OP-1 sample packs, as <code>.aif</code> files from op1.fun or the OP-1 pack builder, import directly, with their slice points and pitch:</p>
+<ol>
+  <li>Copy the files into the staging folders at the card's root: <code>DRUM PACK IMPORT/KITS/</code> for drum packs, <code>DRUM PACK IMPORT/BREAKS/</code> for breaks and loops, and <code>SOUND PACK IMPORT/</code> for sampler patches.</li>
+  <li>On SMPDR's or SMPVO's <strong>Import</strong> page (on SMPDR, K1 picks Kits or Breaks and B2 opens it), K1 picks the destination: a new bank, or an existing one with room. Hold B2 to import every file in the folder.</li>
+  <li>Imported files move into the folder's <code>Done/</code>. A file that fails stays for the next try.</li>
+</ol>
+<p>op1.fun often names downloads <code>patch.aif</code>: rename it first, to give the kit a proper name.</p>

@@ -1,0 +1,46 @@
+<h1>Ensemble and Organ</h1>
+
+<p>Two engines share one set of pages. The <strong>Ensemble</strong> is a divide-down string machine in the ARP Solina tradition: seven drawbars of saws and squares, a built-in stereo chorus, an LFO and velocity, with 19 factory sounds. The <strong>Organ</strong> is a tonewheel-style drawbar organ: nine drawbars of pure sines in Hammond order, with percussion and key click, and eight classic registrations. Open them from <code>Global:Ensmbl</code> and <code>Global:Organ</code>.</p>
+
+<h2>Registration</h2>
+<div class="row">
+  <figure><pre class="shot" id="ens-regist">@engine 23</pre><figcaption>The Ensemble's seven drawbars</figcaption></figure>
+  <figure><pre class="shot" id="org-regist">@engine 24</pre><figcaption>The Organ's nine</figcaption></figure>
+</div>
+<p>K1 picks a drawbar and K2 sets its level; the bar's footage shows at the top. The Organ's run 16', 5 1/3', 8', 4', 2 2/3', 2', 1 3/5', 1 1/3' and 1'. Both start with every drawbar at 60%.</p>
+
+<h2>The pages</h2>
+<table>
+  <tr><th>Page</th><th>K1</th><th>K2</th><th>B1</th><th>B2</th></tr>
+  <tr><td>Perc <em>(Organ)</em></td><td>Decay, about 0.15–1.5 s</td><td>Volume</td><td>Percussion on/off</td><td>2nd / 3rd harmonic</td></tr>
+  <tr><td>Click <em>(Organ)</em></td><td>Key click (0 = off)</td><td></td><td></td><td></td></tr>
+  <tr><td>Env</td><td>Attack / Sustain</td><td>Decay / Release</td><td></td><td>AD ↔ SR</td></tr>
+  <tr><td>Ensemble</td><td>Chorus depth</td><td>Chorus rate</td><td></td><td></td></tr>
+  <tr><td>LFO <em>(Ensemble)</em></td><td>Rate (a note value when synced)</td><td>Fade, 0–5 s</td><td>Wave: Tri, Saw, Square, S&amp;H</td><td>Free / Sync</td></tr>
+  <tr><td>LFODep <em>(Ensemble)</em></td><td>Pitch, Filter or Amp</td><td>Its depth (centre = off)</td><td></td><td></td></tr>
+  <tr><td>Filter</td><td>Cutoff</td><td>Resonance</td><td>Filter type</td><td></td></tr>
+  <tr><td>Mix</td><td>Level</td><td>Gain, 0 to +12 dB</td><td></td><td></td></tr>
+  <tr><td>FX</td><td>Reverb / delay send</td><td>Reverb size / delay time</td><td>Reverb</td><td>Delay</td></tr>
+  <tr><td>MIDI</td><td>MIDI channel / Velocity</td><td>Voices, 1–16</td><td>Mod wheel target</td><td>K1 → channel or velocity <em>(Ensemble)</em></td></tr>
+  <tr><td>Preset, User</td><td colspan="4">As on every engine (Chapter 7).</td></tr>
+</table>
+
+<h2>The Ensemble's LFO and velocity</h2>
+<div class="side">
+  <figure><pre class="shot" id="ens-lfo">@engine 23
+turn 3</pre></figure>
+  <div>
+  <p>The <strong>LFO</strong> moves the pitch of each note (with Fade, so vibrato comes in after the note starts), the filter (when its type isn't Off), or the level: a Square synced to 1/16 is a trance gate. Synced, it stays on the beat with the looper. The LFODep page sets how much it moves each one; either side of centre moves it the opposite way.</p>
+  <p><strong>Velocity</strong> (on the MIDI page, B2 then K1): at 0 every note plays alike, as on a string machine. Turned up, softer notes are quieter, darker and slower to swell; harder ones play the registration as set, with a snappier attack.</p>
+  </div>
+</div>
+
+<h2>The Organ's percussion and click</h2>
+<div class="side">
+  <figure><pre class="shot" id="org-perc">@engine 24
+turn 1</pre></figure>
+  <div>
+  <p>Percussion is single-trigger, as on a tonewheel organ: one shared ping restarts only when you press a key with no other key held, and every note sounding while it fades carries it. So a struck chord pings on every note, and legato lines have none. Key click adds the contact click at each note's start.</p>
+  <p>The Organ has no LFO pages and doesn't respond to velocity. Its User saves go in <code>ORGAN/</code>.</p>
+  </div>
+</div>

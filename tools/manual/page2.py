@@ -9,7 +9,7 @@ D=g['D']; W=g['W']; FY1,FY2,FD1,FD2=g['FY1'],g['FY2'],g['FD1'],g['FD2']
 
 # screens (copied from ui.cpp the same way tools/readme_screens.py does)
 def perf_browse():   # Ui::DrawFileScreen(), BrowsingLoad on PERF1
-    d=D(); d.title("Global:Perf",1); d.tt(0,15,"Performances"); d.f6(0,24,"PERF1")
+    d=D(); d.title("Global:Perf",1); d.tt(0,16,"Performances"); d.f6(0,24,"PERF1")
     d.ctrl(FY1,False,FD1,"","","","Scroll"); d.ctrl(FY2,True,FD2,"Back","","","Load"); return d
 def home_rec(state):
     d=D(); g['home_top'](d,2)

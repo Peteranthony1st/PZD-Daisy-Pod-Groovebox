@@ -3,7 +3,7 @@ from common import CASE_DIR, SCREENS_PY, LOGO, HERE
 exec(open(os.path.join(HERE,'page2.py')).read().split("# ---- page 3")[0])
 
 def perf_save():   # Ui::DrawFileScreen(), ChoosingSave, after loading PERF1
-    d=D(); d.title("Global:Perf",1); d.tt(0,15,"Performances")
+    d=D(); d.title("Global:Perf",1); d.tt(0,16,"Performances")
     d.f6(0,24,"> Overwrite"); d.f6(0,34,"  Save New")
     d.ctrl(FY1,False,FD1,"Select","","",""); d.ctrl(FY2,True,FD2,"Back","","","Hold=Save"); return d
 def home_midi_rec():

@@ -1,0 +1,45 @@
+<h1>MIDI and reference</h1>
+
+<h2>Global:MIDI</h2>
+<div class="side">
+  <figure><pre class="shot" id="g-midi">wait 2000
+hold enc 1200
+turn 18</pre></figure>
+  <div>
+  <p>Every engine's MIDI channel in one place, one column each: GR, DXA, DXB, ENS, ORG, SMV, SMD and SSW, each with its on/off dot and channel. K1 picks an engine and K2 sets its channel, Omni or 1–16: the same setting as the engine's own MIDI page. Hold B2 to save every channel as its power-on default.</p>
+  <p>While DXD-B is locked to DXD-A it shows <code>=A</code>; giving it a different channel here unlocks it.</p>
+  </div>
+</div>
+
+<h2>The sustain pedal</h2>
+<p>A pedal sending CC 64 holds notes on every engine, each on its own MIDI channel. Letting go releases every held note except keys still down, and playing a held note again restarts it. Sustained notes count towards an engine's voices.</p>
+<p>If your pedal works backwards (some keyboards detect the pedal at power-on), tap B1 on <code>Global:MIDI</code> to switch between <strong>Sus-Pedal:Norm</strong> and <strong>Sus-Pedal:Rev</strong>; it's saved straight away. A <strong>SUS</strong> box in the page's title shows the pedal live, filled while it's down.</p>
+
+<h2>The mod wheel</h2>
+<p>The Ensemble, Organ and Supersaw each pick what the mod wheel moves, with B1 on their MIDI page: the Ensemble and Organ Off, Chorus, Level or Filter; the Supersaw Off, Detune, Cutoff or Level.</p>
+
+<h2>Stuck notes</h2>
+<p>Triple-click the encoder, or send CC 123 (All Notes Off): every engine lets go of every note, sustained ones too. <code>ALL NOTES OFF</code> shows briefly.</p>
+
+<h2>Keeping the processor in hand</h2>
+<p>The Groovebox runs at 480 MHz, and every engine skips its work while it's silent, so an engine that's on but not playing costs almost nothing. With every engine playing chords over four looping tracks with effects, the load peaks in the mid-80s. To keep headroom:</p>
+<ul>
+  <li>Switch off engines a song doesn't use: off frees their share entirely.</li>
+  <li>Lower an engine's <strong>Voices</strong> on its MIDI page, especially Dexed's, when several engines play. The Organ is the cheapest of the chord engines.</li>
+  <li>Record synth parts into audio tracks, then switch those engines off.</li>
+  <li>Set the reverb and delay last: several engines sending into the effects at once is the heaviest load.</li>
+  <li>A track's Drive and Tremolo cost nothing at 0.</li>
+</ul>
+<p>The bottom row of <code>Global:Tracks</code> and <code>Global:Synths</code> shows the load live; tap B1 there for a breakdown: Grains, Dexed, Ensemble, Organ, SMPVO, SMPDR, Supersaw, the looper, the delay, the reverb and everything else, each as average and peak.</p>
+
+<h2>If something isn't right</h2>
+<table>
+  <tr><th>What happens</th><th>Try</th></tr>
+  <tr><td>A note won't stop</td><td>Triple-click the encoder.</td></tr>
+  <tr><td>No sound from a keyboard</td><td>Is the engine ENABLED on its Global page? Is the keyboard on the engine's channel (1 to start with)? Check Master Vol (K1 on Home), the engine's Mix level and the headphone wheel.</td></tr>
+  <tr><td>The keyboard does nothing</td><td>Check the cable is Type A and plugged into MIDI In. MIDI doesn't come in over USB.</td></tr>
+  <tr><td>The screen is dark</td><td>The screen saver: touch any control to wake it. That first touch does nothing else.</td></tr>
+  <tr><td>"No SD card"</td><td>Switch off, push the card fully in, and switch on again.</td></tr>
+  <tr><td>Tempo or bars won't change</td><td>They're locked while an audio track holds audio (<code>LOCKED</code> on Global:Tempo). Clear the tracks first.</td></tr>
+  <tr><td>New firmware didn't install</td><td>A Pod new to this firmware needs the bootloader once (Chapter 1).</td></tr>
+</table>

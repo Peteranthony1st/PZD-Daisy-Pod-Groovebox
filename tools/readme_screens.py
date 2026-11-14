@@ -254,7 +254,7 @@ def arp_pattern():
         y=ry(i)
         if (pool[i]-pool[0])%12==0:
             for x in range(x0,W,2): d.px(x,y)
-            d.tt(0,max(y+2,15),"R" if i==0 else "+%d"%((pool[i]-pool[0])//12))
+            d.tt(0,max(y+2,16),"R" if i==0 else "+%d"%((pool[i]-pool[0])//12))
         for k in range(steps): d.px(x0+k*sw+sw//2,y)
     prev=None
     for k in range(steps):
@@ -305,7 +305,7 @@ def arp_phrase():
         if lo<=p<=lo+span:
             yy=y(p)
             for x in range(x0,W,3): d.px(x,yy)
-            d.tt(0,max(min(yy+2,43),15),"R" if o==0 else "%+d"%o)
+            d.tt(0,max(min(yy+2,43),16),"R" if o==0 else "%+d"%o)
     blocks=[]
     for k,st in enumerate(ph):
         if st in (P.REST,P.TIE): continue

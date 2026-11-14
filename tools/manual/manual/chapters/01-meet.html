@@ -1,0 +1,54 @@
+<h1>Meet the Groovebox</h1>
+
+<p>The PZD Groovebox is a pocket, multitimbral groovebox built on the Electrosmith Daisy Pod. It records and loops audio, plays eight synth and sampler engines from a MIDI keyboard, and sequences them, all at the same time on one small board. A 128 × 64 screen shows every setting, and the Pod's two knobs, two buttons and one clickable encoder control all of it.</p>
+
+<h2>What it does</h2>
+<ul>
+  <li><strong>A four-track looper.</strong> Record, overdub and undo audio from the input, locked to one tempo, with a filter, drive, tremolo and effect sends on every track.</li>
+  <li><strong>Eight engines.</strong> Two DX7-style FM synths (DXD-A and DXD-B), a string machine (Ensemble), a drawbar organ, a supersaw synth, a granular instrument (Grains) and two samplers, one for melodic sounds (SMPVO) and one for drums (SMPDR). Any of them can play at once.</li>
+  <li><strong>An eight-track MIDI sequencer.</strong> Record from a keyboard or draw notes on a grid, with eight patterns per track and chains of patterns.</li>
+  <li><strong>Scenes and a song.</strong> Sixteen scenes switch patterns and audio tracks together on the beat, and a song of up to 64 steps arranges them.</li>
+  <li><strong>An arpeggiator</strong> on every engine and every MIDI track.</li>
+  <li><strong>A mixer and shared effects:</strong> a plate reverb, a stereo delay and a master filter.</li>
+  <li><strong>Saving and export.</strong> Performances, snapshots and presets save to the SD card, and anything you play exports as a WAV file.</li>
+</ul>
+
+<h2>Controls and connections</h2>
+<p>The Groovebox is a Daisy Pod in the PZD case, with a screen added. Every page is worked the same way: the encoder moves around, the two knobs set the two values on the upper row of the screen, and the two buttons do what the lower row says.</p>
+<img class="figure" src="../mD_full.png" alt="The Groovebox from above and from each side, with every control and socket labelled">
+
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Encoder</td><td>Turn to move between tracks or pages. Click to go in or back out. Hold to go Home, or from Home to Global. Click three times quickly for All Notes Off.</td></tr>
+  <tr><td>K1, K2</td><td>Set the two values on the screen's upper row: K1 the left one, K2 the right one.</td></tr>
+  <tr><td>B1, B2</td><td>Do what the screen's lower row says: B1 the left action, B2 the right one. Some actions need a tap, others a hold.</td></tr>
+  <tr><td>Volume wheel</td><td>The headphone level, in the notch at the bottom edge.</td></tr>
+  <tr><td>MIDI In</td><td>A 3.5 mm TRS MIDI input, Type A.</td></tr>
+  <tr><td>Audio In, Audio Out</td><td>Stereo line input and output, on 3.5 mm jacks.</td></tr>
+  <tr><td>Headphones</td><td>The headphone output.</td></tr>
+  <tr><td>USB</td><td>Power. MIDI doesn't come in over USB.</td></tr>
+  <tr><td>SD card</td><td>A micro SD card, FAT32, for everything you save.</td></tr>
+</table>
+
+<h2>The lights</h2>
+<table>
+  <tr><th>Light</th><th>What it shows</th></tr>
+  <tr><td>LED 1</td><td>Green while any track plays, blue while paused. It flashes blue in time with the click during a count-in.</td></tr>
+  <tr><td>LED 2</td><td>Red while anything records: an audio track, a MIDI track, a capture, or a live export.</td></tr>
+  <tr><td>The daisy</td><td>The Daisy Seed's power light.</td></tr>
+</table>
+
+<h2>The card and the firmware</h2>
+<p>The SD card holds your performances, snapshots, presets, samples and exports. Start with the card template, <code>sdcard-template.zip</code>, attached to each release: unzip it onto the root of a FAT32 micro SD card. It holds the demo song, starter sounds and the folders the Groovebox saves into.</p>
+<div class="tip"><strong>Switch off first.</strong> Always switch off before taking the card out or putting it in.</div>
+
+<h3>Installing new firmware</h3>
+<p>Copy <code>main.bin</code> from the release onto the root of the card, put the card in, and switch on with a steady power supply. The Groovebox finds the file and installs it by itself.</p>
+
+<h3>The first time: the bootloader</h3>
+<p>The firmware starts through a small bootloader, which a Pod needs once. Any Pod that has run this firmware from v1.6.0 onward already has it. Otherwise:</p>
+<ol>
+  <li>Put the Pod into DFU mode: hold <code>BOOT</code>, tap <code>RESET</code>, let go of <code>BOOT</code>.</li>
+  <li>Open Electrosmith's web programmer (flash.daisy.audio) and flash <code>dsy_bootloader_v6_4-intdfu-2000ms.bin</code>, attached to each release.</li>
+  <li>Then install the firmware from the card as above.</li>
+</ol>

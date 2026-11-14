@@ -1,0 +1,82 @@
+<h1>Dexed</h1>
+
+<p>Dexed is a six-operator FM synth in the style of the Yamaha DX7, built on the msfa emulation core, with 3129 factory sounds in 54 folders. There are two of it, <strong>DXD-A</strong> and <strong>DXD-B</strong>, which can layer two sounds or split the keyboard between them, like a DX5. Each has its own sound, voices and User save; they share one Dexed bus with its filter, effects and fold.</p>
+
+<h2>Dexed's pages</h2>
+<p>Open DXD-A or DXD-B from its Global page; the pages' titles say which you're editing. Pages marked <em>bus</em> are shared: the same settings whichever engine you came in from.</p>
+
+<div class="side">
+  <figure><pre class="shot" id="dx-algo">@engine 21</pre></figure>
+  <div><h3>Algo</h3>
+  <p>The loaded sound's algorithm, drawn like the DX7's own: operator 1 on the left, every carrier on the row above OUT, filled boxes are carriers, outlined ones modulators, and FB marks the feedback. Set the algorithm in the Advanced editor.</p></div>
+</div>
+
+<table>
+  <tr><th>Page</th><th>K1</th><th>K2</th><th>B1</th><th>B2</th></tr>
+  <tr><td>Feedback</td><td>Feedback, 0–7</td><td></td><td></td><td></td></tr>
+  <tr><td>Vibrato</td><td>LFO speed</td><td>Pitch-mod depth</td><td></td><td></td></tr>
+  <tr><td>Brightness</td><td>Modulator level (centre = as saved)</td><td></td><td></td><td></td></tr>
+  <tr><td>EnvSpeed</td><td>Envelope rates (centre = as saved)</td><td></td><td></td><td></td></tr>
+  <tr><td>Filter <em>bus</em></td><td>Cutoff</td><td>Resonance</td><td>Filter type</td><td></td></tr>
+  <tr><td>Mix</td><td>Level / Gain</td><td>Pan</td><td>DXD-A → DXD-B → Bus</td><td>Knobs → Gain</td></tr>
+  <tr><td>DX-FX <em>bus</em></td><td>Reverb / delay send</td><td>Reverb size / delay time</td><td>Reverb</td><td>Delay</td></tr>
+  <tr><td>DX-FOLD <em>bus</em></td><td>Fold amount (0 = off)</td><td>Output trim</td><td></td><td></td></tr>
+  <tr><td>MIDI</td><td>MIDI channel</td><td>Voices, 1–16</td><td>Lock on/off</td><td></td></tr>
+  <tr><td>Split</td><td>Split point, C#1–F5</td><td>Octave shift, ±2</td><td>Layer / Split</td><td>K2 → A or B</td></tr>
+  <tr><td>Advanced</td><td colspan="4">Click to open the full DX7 voice editor (below).</td></tr>
+  <tr><td>Import</td><td></td><td>Pick a <code>.syx</code> file</td><td></td><td>Hold: import it</td></tr>
+  <tr><td>Preset</td><td>Roms, Dexed, Imports, then folders</td><td>Sounds in the folder</td><td>Back</td><td>Open / load</td></tr>
+  <tr><td>User</td><td colspan="4">Your saves, as on every engine (Chapter 7).</td></tr>
+</table>
+
+<h2>Two engines: Mix, MIDI and Split</h2>
+<div class="side">
+  <figure><pre class="shot" id="dx-mix">@engine 21
+turn 6</pre></figure>
+  <div><h3>Mix</h3>
+  <p>Four bars: DXD-A and DXD-B (each engine's level and pan into the bus), BUS, and OUT, the live output meter. B1 picks which of the first three the knobs set. A and B start at 100% and centre.</p></div>
+</div>
+<p><strong>MIDI.</strong> With Lock on (the default), both engines play on one channel and K1 sets it for both. With Lock off, each engine's MIDI page sets its own channel, for two parts from a sequencer or two keyboards.</p>
+<p><strong>Voices.</strong> One engine alone can use up to 16 voices. With both on they share 24: the engine already playing keeps its voices, the one switched on gets what's left, and K2 stops at what the other leaves free.</p>
+<div class="side">
+  <figure><pre class="shot" id="dx-split">@engine 21
+turn 10</pre></figure>
+  <div><h3>Split</h3>
+  <p>In Layer, both engines play every key. In Split, DXD-A plays below the split point and DXD-B from it upwards; the keyboard drawing shows each engine's zone. Each engine has an octave shift, which works in Layer too: the same sound an octave apart thickens it. The split is for the keyboard: a MIDI track plays its engine across the whole range.</p></div>
+</div>
+<p>Loading a preset into one engine while the other is on changes only that engine's sound, not the shared bus, so choosing B's sound doesn't reset A's filter or mix.</p>
+
+<h2>The Advanced editor</h2>
+<div class="side">
+  <figure><pre class="shot" id="dx-eg">@engine 21
+turn 11
+click
+turn 4</pre></figure>
+  <div>
+  <p>Click on the Advanced page to open the full DX7 voice, with the DX7's own parameter names. The first ten pages edit one operator: B1 picks OP1–OP6, and the title shows which (with OFF when it's switched off). The last six are voice pages for the whole sound. A click goes back to Advanced.</p>
+  <p>The envelope pages draw the envelope like the DX7's own picture: L1–L4 are numbered squares and R1–R4 the slopes between them. The line starts at L4, holds at L3 until the dotted OFF line (key release), and R4 falls back to L4. What the knobs change is highlighted.</p>
+  </div>
+</div>
+<table>
+  <tr><th>Page</th><th>K1</th><th>K2</th><th>B2</th></tr>
+  <tr><td>ALGORITHM</td><td>ALGORITHM, 1–32</td><td></td><td></td></tr>
+  <tr><td>OSC FREQUENCY</td><td>F COARSE</td><td>F FINE</td><td>OSC MODE: RATIO / FIXED</td></tr>
+  <tr><td>OSC DETUNE</td><td>DETUNE, ±7</td><td></td><td></td></tr>
+  <tr><td>OUTPUT LEVEL</td><td>OUTPUT LEVEL, 0–99</td><td></td><td>Operator on/off</td></tr>
+  <tr><td>EG RATE</td><td>R1 (or R3)</td><td>R2 (or R4)</td><td>R1/R2 ↔ R3/R4</td></tr>
+  <tr><td>EG LEVEL</td><td>L1 (or L3)</td><td>L2 (or L4)</td><td>L1/L2 ↔ L3/L4</td></tr>
+  <tr><td>LEVEL SCALING CURVE</td><td>L CURVE (or BREAK POINT)</td><td>R CURVE</td><td>K1: L CURVE ↔ BREAK POINT</td></tr>
+  <tr><td>LEVEL SCALING DEPTH</td><td>L DEPTH</td><td>R DEPTH</td><td></td></tr>
+  <tr><td>RATE SCALING</td><td>RATE SCALING, 0–7</td><td></td><td></td></tr>
+  <tr><td>SENSITIVITY</td><td>KEY VELOCITY, 0–7</td><td>A MOD SENS, 0–3</td><td></td></tr>
+  <tr><td>PITCH EG RATE</td><td>R1 (or R3)</td><td>R2 (or R4)</td><td>R1/R2 ↔ R3/R4</td></tr>
+  <tr><td>PITCH EG LEVEL</td><td>L1 (or L3)</td><td>L2 (or L4)</td><td>L1/L2 ↔ L3/L4</td></tr>
+  <tr><td>LFO</td><td>LFO SPEED</td><td>LFO DELAY</td><td>LFO WAVE</td></tr>
+  <tr><td>LFO DEPTH</td><td>PM DEPTH</td><td>AM DEPTH</td><td>LFO KEY SYNC</td></tr>
+  <tr><td>P MOD SENS</td><td>P MOD SENS, 0–7</td><td></td><td>OSC KEY SYNC</td></tr>
+  <tr><td>KEY TRANSPOSE</td><td>TRANSPOSE (middle C = C3)</td><td></td><td></td></tr>
+</table>
+<p>A switched-off operator shows as a dotted box in the algorithm, and is saved in User saves and snapshots.</p>
+
+<h2>Your own DX7 sounds</h2>
+<p>Copy DX7 SysEx banks (<code>.syx</code>) into <code>DEXED IMPORT/</code> on the card. On the Import page, K2 picks a file and holding B2 imports it: it becomes a folder under Preset → Imports. User saves are named after the sound; a second save with the same name is numbered, so copies stay apart.</p>

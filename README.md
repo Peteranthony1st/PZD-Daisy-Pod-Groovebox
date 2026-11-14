@@ -46,9 +46,11 @@ save/load, all controlled from the Pod's two knobs, two buttons, and one
 clickable encoder.
 
 **New here?** Start with the **[Quick Start guide](docs/quick-start.pdf)**
-(8 pages, also on the root of the SD card template): setting up the card,
-the demo song, your first loop, playing from a MIDI keyboard, and making
-and saving a song.
+(8 pages): setting up the card, the demo song, your first loop, playing
+from a MIDI keyboard, and making and saving a song. The **[User
+Manual](docs/user-manual.pdf)** then covers every page, with every screen
+exactly as the Groovebox draws it. Both are also on the root of the SD card
+template.
 
 ## Engines
 
@@ -436,7 +438,7 @@ meters in dB (−48 dB to 0 dBFS, with clip indicators), puts **Master
 Vol** and **Bypass Vol** on K1/K2 — so you can pull a live mic down
 without touching the mix (Bypass starts at 60% at power-on) — and the
 live CPU meter on the bottom row. Click into either for Volume, Pan and
-Reverb send per channel, and a live oscilloscope of the final mix. A
+the Reverb and Delay sends per channel, and a live oscilloscope of the final mix. A
 MIDI track's channel **is** its engine's: M1 playing DXD-A shows and
 sets DXD-A's level, so turning one turns the other (the detail page
 names it, e.g. `M1>DXA`). DXD-A and DXD-B each have their own fader and
@@ -1013,7 +1015,7 @@ Shared by both:
 | Env | Attack / Sustain | Decay / Release | Target AD | Target SR |
 | Mix | Output level / Gain (0 to +12 dB into the limiter) | Pan | Knobs → Level+Pan | Knobs → Gain |
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
-| MIDI | MIDI channel (Omni, 1-16) | — | — | — |
+| MIDI | MIDI channel (Omni, 1-16) | Velocity: how much softer notes play quieter (0% = every hit full; SMPVO starts at 50%, SMPDR at 0%) | — | — |
 | Import | Destination (SMPDR: first Kits/Breaks) | — | Back (SMPDR: to Kits/Breaks) | SMPDR: Open (tap); Hold 800ms = Import |
 | Preset | Scroll types, then folders (SMPVO: Sounds/Captured/Multi; SMPDR: Kits/Breaks) | Scroll items in a folder | Back | Open / Load (tap, stays in folder) |
 | User | Saving: Overwrite/Save New | Scroll your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
@@ -1047,7 +1049,7 @@ mix, then wraps back to the first.
 
 | Channel | Knob 1 | Knob 2 | Button 1 | Button 2 |
 |---|---|---|---|---|
-| Layer 1–4 / M1–M8 / every engine / Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
+| Layer 1–4 / M1–M8 / every engine / Bypass | Volume / Reverb send | Pan / Delay send | Knobs → Volume+Pan | Knobs → Reverb+Delay sends |
 | Master | Volume | Reverb size | — | — |
 
 ## Building and flashing

@@ -1,0 +1,49 @@
+<h1>The engines</h1>
+
+<p>The Groovebox has eight engines, and any of them can play at once, each on its own MIDI channel. They play from a keyboard, from the MIDI tracks and from the arpeggiators, and anything they play while an audio track records goes into the take.</p>
+
+<table>
+  <tr><th>Engine</th><th>Global page</th><th>What it is</th></tr>
+  <tr><td>Dexed</td><td>DXD-A, DXD-B</td><td>Two DX7-style FM synths, to layer or split: electric pianos, bells, basses, brass. Chapter 8.</td></tr>
+  <tr><td>Ensemble</td><td>Ensmbl</td><td>A string machine with a built-in chorus: strings and pads. Chapter 9.</td></tr>
+  <tr><td>Organ</td><td>Organ</td><td>A tonewheel-style drawbar organ, with percussion and key click. Chapter 9.</td></tr>
+  <tr><td>Supersaw</td><td>SSaw</td><td>Seven detuned saws in the JP-8000 style: leads, plucks, big chords. Chapter 10.</td></tr>
+  <tr><td>Grains</td><td>Grains</td><td>A granular instrument: textures and pads from audio you capture or import. Chapter 11.</td></tr>
+  <tr><td>Sample Sound</td><td>SMPVO</td><td>One captured or imported sound, or a multi-sample, played across the keyboard. Chapter 12.</td></tr>
+  <tr><td>Sample Drum</td><td>SMPDR</td><td>Drum kits and breaks on pads. Chapter 12.</td></tr>
+</table>
+
+<h2>Switching an engine on</h2>
+<div class="side">
+  <figure><pre class="shot" id="engine-global">wait 2000
+hold enc 1200
+turn 21
+tap b1</pre></figure>
+  <div>
+  <p>Every engine starts switched off. On its Global page, B1 switches it on or off; the page shows ENABLED or DISABLED, and Dexed also shows its voices. Click the encoder to open the engine's pages; a click on any of them comes back here.</p>
+  <p>An engine that's on but silent costs almost nothing, and one that's off costs nothing at all, so switch off what a song doesn't use.</p>
+  </div>
+</div>
+
+<h2>Pages every engine has</h2>
+<p>Besides its own pages, every engine has these:</p>
+<table>
+  <tr><th>Page</th><th>What it does</th></tr>
+  <tr><td>Filter</td><td>K1 cutoff, K2 resonance, B1 picks the filter type. The page draws the response.</td></tr>
+  <tr><td>Mix</td><td>The engine's output level and its <strong>Gain</strong>, 0 to +12 dB before its limiter, with a meter. Turn Gain up until the meter sits high without lighting the clip cap at the top, then set how loud the engine sits in the mix with Level.</td></tr>
+  <tr><td>FX</td><td>Its reverb and delay sends, and the shared reverb's size and delay's time. B1 points the knobs at the reverb, B2 at the delay.</td></tr>
+  <tr><td>MIDI</td><td>K1 is its MIDI channel, Omni or 1–16. Engines that play chords set their voices here too.</td></tr>
+  <tr><td>Preset</td><td>The sounds that come with it, load only.</td></tr>
+  <tr><td>User</td><td>Your own saves.</td></tr>
+</table>
+
+<h3>The Mix page</h3>
+<p>On the Ensemble, the Organ and the Supersaw, K1 is Level and K2 is Gain; pan is on the mixer. On Grains and the samplers, K1 and K2 are Level and Pan: B2 points K1 at Gain, and B1 back at Level. On Dexed, B1 picks which bar the knobs set, and B2 switches K1 to Gain and back.</p>
+
+<h3>Preset and User</h3>
+<p>On a <strong>Preset</strong> page, tap B2 to open the list, turn a knob to scroll and tap B2 to load. The list stays open after a load, so you can play each sound in turn. Where the sounds are in folders, K1 picks the folder and K2 the sound; B1 goes back a level.</p>
+<p>On a <strong>User</strong> page, B1 saves: K1 picks <strong>Overwrite</strong> (the save you loaded) or <strong>Save New</strong>, and holding B2 confirms. B2 opens your saves, starting with <strong>New</strong> (a fresh sound); K2 scrolls and a tap loads.</p>
+<p>A User save keeps everything on the engine's pages: the sound, its Mix settings and sends, the mod wheel target and its MIDI channel. So one save can bring back "Dexed on channel 1" and another "a drum kit on channel 10". A factory sound leaves the channel as it is.</p>
+
+<h2>MIDI channels</h2>
+<p>Every engine starts on channel 1, except SMPDR on 10. Set each engine's channel on its MIDI page, or all of them on <code>Global:MIDI</code>, where holding B2 saves them for every power-on (Chapter 15). Give engines different channels to play them as separate parts; give them the same one to layer them.</p>

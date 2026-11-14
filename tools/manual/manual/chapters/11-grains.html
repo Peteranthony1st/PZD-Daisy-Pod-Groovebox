@@ -1,0 +1,50 @@
+<h1>Grains</h1>
+
+<p>Grains is a granular instrument. It plays a sound as a cloud of short grains, so it can stretch, freeze, scatter and re-pitch it. The sound can be captured live, taken from an audio track, imported as a WAV, or loaded with a preset. Open it from <code>Global:Grains</code>.</p>
+
+<div class="row">
+  <figure><pre class="shot" id="gr-grain">@engine 20
+@airy</pre><figcaption>Grain, with Airy Piano loaded</figcaption></figure>
+  <figure><pre class="shot" id="gr-pos">@engine 20
+@airy
+turn 1</pre><figcaption>Position</figcaption></figure>
+</div>
+
+<h2>How it plays</h2>
+<ul>
+  <li><strong>Position</strong> is where each note's play pointer sits, and <strong>Scan</strong> moves it through the sound: ×1.00 replays it at its own speed, slower stretches it without changing pitch, negative runs backwards, and Hold keeps it still. Every note starts at Position, and turning Position while notes play carries the whole cloud with it.</li>
+  <li>The pointer stays between <strong>Loop Start</strong> and <strong>Loop End</strong>, and Mode sets what it does at the edges.</li>
+  <li><strong>Spray</strong> scatters each grain's start around the pointer. <strong>Direction</strong> is which way each grain plays its own slice, separate from which way Scan moves the pointer.</li>
+  <li><strong>Grain Size</strong> and <strong>Density</strong> set how long each grain is and how many start each second. A note can have up to 32 grains sounding (fewer each in a chord), so very long grains at a high density thin out and get quieter: keep Size in seconds × Density under about 32.</li>
+  <li>Up to <strong>four notes</strong> at once, or Mono. With <strong>Keymap</strong> on, each grain plays at the note's pitch; off, every note plays at the Pitch setting. A fifth note takes over the oldest, its grains fading out.</li>
+</ul>
+<p>The waveform shows Position's span and a tick for each sounding note's pointer.</p>
+
+<h2>The pages</h2>
+<table>
+  <tr><th>Page</th><th>K1</th><th>K2</th><th>B1</th><th>B2</th></tr>
+  <tr><td>Grain</td><td>Grain Size, 1–1000 ms</td><td>Density, 0.5–500 per second</td><td></td><td></td></tr>
+  <tr><td>Position</td><td>Position</td><td>Spray, ±0–2000 ms</td><td></td><td></td></tr>
+  <tr><td>Scan</td><td>Scan, −2× … Hold … +2×</td><td></td><td>Loop, One shot, Ping pong</td><td>Forward, Reverse, Random</td></tr>
+  <tr><td>Rhythm</td><td></td><td></td><td>Rhythm pattern</td><td>Slow, Medium, Fast, Sync</td></tr>
+  <tr><td>Loop</td><td>Loop Start</td><td>Loop End</td><td></td><td></td></tr>
+  <tr><td>Pitch</td><td>Pitch, ±24 semitones</td><td></td><td>Keymap on/off</td><td>Mono / Poly</td></tr>
+  <tr><td>ADSR</td><td>Attack / Sustain</td><td>Decay / Release</td><td>Knobs → A + D</td><td>Knobs → S + R</td></tr>
+  <tr><td>Filter, Mix, FX, MIDI</td><td colspan="4">As on every engine (Chapter 7).</td></tr>
+  <tr><td>Capture</td><td></td><td></td><td>Source: Direct, Layer, Import</td><td>Hold: record or capture</td></tr>
+  <tr><td>Trim</td><td>Start</td><td>End</td><td>Play the trimmed part</td><td>Hold: save the capture</td></tr>
+  <tr><td>Preset</td><td>Starter and Captured folders</td><td>Sounds in the folder</td><td>Back</td><td>Open / load</td></tr>
+  <tr><td>User</td><td colspan="4">Your saves (Chapter 7).</td></tr>
+</table>
+
+<div class="side">
+  <figure><pre class="shot" id="gr-rhythm">@engine 20
+@airy
+turn 3</pre></figure>
+  <div><h3>Rhythm</h3>
+  <p>Plays the grains in a 16-step pattern instead of a steady stream; B1 picks the pattern and B2 its speed, with Sync following the tempo. The page draws the pattern.</p></div>
+</div>
+
+<h2>Capturing a sound</h2>
+<p>On the <strong>Capture</strong> page, B1 picks where the sound comes from: <strong>Direct</strong> records the input, <strong>Layer</strong> takes an audio track, and <strong>Import</strong> loads a WAV from <code>GRAINS IMPORT/</code> on the card. Hold B2 to record or capture. Then on <strong>Trim</strong>, set the start and end with the knobs, play the result with B1, and hold B2 to save it: it goes into Preset → Captured. LED 2 is red while a capture records.</p>
+<p>Grains presets keep their sound with them, so a User save brings back the audio as well as the settings. The card template comes with starter sounds in <code>GRAINS/PRESETS/</code>, Airy Piano first.</p>

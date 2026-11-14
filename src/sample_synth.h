@@ -169,8 +169,10 @@ class SampleSynth
     // level (as before this existed), 1 = soft hits down to silence. Its
     // own setting per engine (SMPVO/SMPDR's MIDI page K2), kept with the
     // User presets like Gain rather than in SampleSynthPresetData. Applies
-    // from the next note.
-    static constexpr float kDefaultVelSens01 = 0.75f;
+    // from the next note. SMPVO starts at 50%; SMPDR at 0%, so a kit plays
+    // every hit at full level until it's turned up (main.cpp sets it).
+    static constexpr float kDefaultVelSens01     = 0.5f;
+    static constexpr float kDefaultDrumVelSens01 = 0.f;
     void  SetVelSens01(float v01) { vel_sens01_ = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01); }
     float GetVelSens01() const { return vel_sens01_; }
 

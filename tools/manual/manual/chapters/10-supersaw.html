@@ -1,0 +1,47 @@
+<h1>Supersaw</h1>
+
+<p>The Supersaw is modelled on the Roland JP-8000's Super Saw voice: seven detuned saws with the JP's own detune spacing, knob curve and mix. Around them are a second oscillator, a resonant filter per voice with its own envelope, an LFO, mono and legato modes with portamento, velocity, and a stereo chorus. It has 42 factory sounds, from trance leads and plucks to future-bass chords and synthwave brass. Open it from <code>Global:SSaw</code>.</p>
+
+<h2>The SSaw page</h2>
+<div class="side">
+  <figure><pre class="shot" id="ssw-ssaw">@engine 25</pre></figure>
+  <div>
+  <p>K1 is <strong>Detune</strong> and K2 is <strong>Mix</strong>. The page draws the seven saws as bars: they spread out as you turn Detune, with the JP's uneven spacing, and their height follows Mix. The centre saw is solid and the outer pair dotted.</p>
+  <p><strong>Spread</strong> shows how far the outer saws are from the centre one, in cents. The JP's Detune climbs slowly, then steeply at the top, to ±202 cents at 100%. Mix raises the six side saws from almost silent to louder than the centre one.</p>
+  </div>
+</div>
+
+<h2>The pages</h2>
+<table>
+  <tr><th>Page</th><th>K1</th><th>K2</th><th>B1</th><th>B2</th></tr>
+  <tr><td>Osc2</td><td>Coarse, ±24 semitones</td><td>Fine, ±50 cents</td><td>Wave: Saw, Square, Tri</td><td></td></tr>
+  <tr><td>Balance</td><td>OSC1 ↔ OSC2 (centre = both full)</td><td></td><td></td><td></td></tr>
+  <tr><td>Filter</td><td>Cutoff</td><td>Resonance</td><td>LPF, HPF, BPF</td><td>12 / 24 dB</td></tr>
+  <tr><td>FltEnv</td><td>Attack / Sustain</td><td>Decay / Release</td><td>Knobs → A + D</td><td>Knobs → S + R</td></tr>
+  <tr><td>FltMod</td><td>Envelope depth (centre = none)</td><td>Key follow</td><td></td><td></td></tr>
+  <tr><td>AmpEnv</td><td>Attack / Sustain</td><td>Decay / Release</td><td>Knobs → A + D</td><td>Knobs → S + R</td></tr>
+  <tr><td>LFO</td><td>Rate (a note value when synced)</td><td>Fade, 0–5 s</td><td>Wave: Tri, Saw, Square, S&amp;H</td><td>Free / Sync</td></tr>
+  <tr><td>LFODep</td><td>Pitch, Filter or Amp</td><td>Its depth (centre = off)</td><td></td><td></td></tr>
+  <tr><td>Voice</td><td>Portamento time</td><td></td><td>Poly, Mono, Legato</td><td>Porta: On / Off</td></tr>
+  <tr><td>Chorus</td><td>Depth</td><td>Rate</td><td></td><td></td></tr>
+  <tr><td>Mix</td><td>Level</td><td>Gain, 0 to +12 dB</td><td></td><td></td></tr>
+  <tr><td>FX</td><td>Reverb / delay send</td><td>Reverb size / delay time</td><td>Reverb</td><td>Delay</td></tr>
+  <tr><td>MIDI</td><td>MIDI channel / Velocity</td><td>Voices, 1–16</td><td>Mod wheel: Off, Detune, Cutoff, Level</td><td>K1 → channel or velocity</td></tr>
+  <tr><td>Preset, User</td><td colspan="4">As on every engine (Chapter 7).</td></tr>
+</table>
+
+<div class="row">
+  <figure><pre class="shot" id="ssw-fltenv">@engine 25
+turn 4</pre><figcaption>FltEnv</figcaption></figure>
+  <figure><pre class="shot" id="ssw-voice">@engine 25
+turn 9</pre><figcaption>Voice</figcaption></figure>
+</div>
+
+<h2>Playing it</h2>
+<ul>
+  <li><strong>Velocity</strong> (MIDI page, B2 then K1): harder than the JP's standard velocity of 80 is louder, brighter (the cutoff opens and the filter envelope sweeps further) and snappier. Softer is quieter, darker and slower to swell.</li>
+  <li><strong>The LFO</strong> is one for the whole engine, so a synced one stays on the beat with the looper. Pitch has a Fade for each note.</li>
+  <li><strong>Mono</strong> plays the last key held and goes back to the one still down when you let go. <strong>Legato</strong> doesn't restart the envelopes on an overlapping note. <strong>Portamento</strong> glides over its time, in Poly too.</li>
+  <li>User saves go in <code>SUPERSAW/</code>.</li>
+</ul>
+<div class="tip"><strong>Processor.</strong> At its heaviest (ten voices sounding, full Detune and Mix, OSC2, 24 dB filter, pitch and filter LFOs) the Supersaw takes about 18–19% of the processor. Everyday sounds take less.</div>

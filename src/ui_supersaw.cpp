@@ -605,16 +605,17 @@ void Ui::DrawSupersawScreen()
         }
         case SupersawParamPage::Osc2:
         {
-            // One cycle of its wave.
-            const int  x0 = 20, x1 = disp_->Width() - 21, yt = 16, yb = kFooterDividerY - 6;
+            // Two cycles of its wave, as the LFO page draws its own.
+            const int  x0 = 4, x1 = disp_->Width() - 5, yt = 14, yb = kFooterDividerY - 4;
             const auto wave = s->GetOsc2Wave();
             int        py   = -1;
             for(int x = x0; x <= x1; x++)
             {
-                const float p = (float)(x - x0) / (float)(x1 - x0);
-                float       y01;
+                float p = 2.f * (float)(x - x0) / (float)(x1 - x0 + 1);
+                p -= (float)(int)p;
+                float y01;
                 if(wave == E::Osc2Wave::Saw)
-                    y01 = 1.f - p;
+                    y01 = p; // a rising ramp, as the oscillator plays it
                 else if(wave == E::Osc2Wave::Square)
                     y01 = p < 0.5f ? 1.f : 0.f;
                 else
@@ -805,7 +806,7 @@ void Ui::DrawSupersawScreen()
                 DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
                 break;
             }
-            TomThumbDrawText(disp_, 0, 15, is_user ? "User Presets" : "Factory Presets", true);
+            TomThumbDrawText(disp_, 0, 16, is_user ? "User Presets" : "Factory Presets", true);
             if(choosing_save)
             {
                 const bool can_overwrite = SswIsUserSlot(ssw_loaded_slot_);

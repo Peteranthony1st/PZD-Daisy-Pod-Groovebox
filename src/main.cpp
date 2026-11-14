@@ -2019,6 +2019,7 @@ int main(void)
 #endif
     sample_synth.Init(hw.AudioSampleRate());
     sample_drum.Init(hw.AudioSampleRate());
+    sample_drum.SetVelSens01(SampleSynth::kDefaultDrumVelSens01);
     sequencer.Init(&SeqNote, g_seq_patterns);
     g_arp.Init(&ArpNote);
     memset(g_seq_live_engine, -1, sizeof(g_seq_live_engine));
