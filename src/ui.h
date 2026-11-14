@@ -2313,6 +2313,18 @@ class Ui
     static constexpr int kEngineCol0X   = 1;
     static constexpr const char* kEngineColLabels[kSnapRows]
         = {"GR", "DXA", "DXB", "ENS", "ORG", "SMV", "SMD", "SSW"};
+    // The order Global:MIDI and Global:Arp show the engines in, left to
+    // right (each entry an engine index as above, which is also how their
+    // settings are stored): the Supersaw beside the Ensemble and Organ,
+    // then the samplers. EngineColumn() is the inverse.
+    static constexpr int kEngineShowOrder[kSnapRows] = {0, 1, 2, 3, 4, 7, 5, 6};
+    static int           EngineColumn(int engine)
+    {
+        for(int c = 0; c < kSnapRows; c++)
+            if(kEngineShowOrder[c] == engine)
+                return c;
+        return 0;
+    }
     // Global:Snap lists the engines in two columns of rows -- short name,
     // on/off dot, sound name -- and a name longer than its kSnapNameW
     // scrolls sideways: kSnapNameHoldMs still at each end, a pixel every

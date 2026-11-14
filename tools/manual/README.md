@@ -1,6 +1,7 @@
 # Quick Start guide and User Manual
 
-`build.sh` draws the Quick Start guide (`docs/quick-start.pdf`), the README's
+`build.sh` draws the Quick Start guide (`docs/quick-start.pdf`, and its pages
+as JPEGs in `docs/quick-start-jpg/` for posting), the README's
 gallery of the Groovebox (`images/pod-*.png`) and the User Manual
 (`docs/user-manual.pdf`).
 

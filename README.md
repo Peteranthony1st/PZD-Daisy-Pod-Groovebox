@@ -354,8 +354,8 @@ saved channels every engine starts on channel 1, except SMPDR on
 channel 10.
 
 **MIDI** (`Global:MIDI`) lists every engine's MIDI channel in one place,
-one column each: Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR and
-Supersaw (GR, DXA, DXB, ENS, ORG, SMV, SMD, SSW), each with its on/off
+one column each: Grains, DXD-A, DXD-B, Ensemble, Organ, Supersaw, SMPVO
+and SMPDR (GR, DXA, DXB, ENS, ORG, SSW, SMV, SMD), each with its on/off
 dot and channel.
 K1 picks an engine (its column is highlighted) and K2 sets its channel
 (Omni, 1–16); these are the same settings as each engine's own MIDI
@@ -391,7 +391,7 @@ Saving works like a User page: B1, then K1 picks Overwrite (the snapshot
 last loaded or saved) or Save New, and holding B2 confirms. B2 opens the
 list, K2 scrolls and B2 loads; the snapshot number shows next to K2. A
 list shows the engines in two columns — Grains, DXD-A, DXD-B and Ensemble,
-then Organ, SMPVO, SMPDR and Supersaw — each with its on/off box (filled = on) and
+then Organ, Supersaw, SMPVO and SMPDR — each with its on/off box (filled = on) and
 its sound's name; a long name scrolls sideways after a second. It
 shows what's live now, or while browsing, what the highlighted snapshot
 holds (MIDI channels are on `Global:MIDI`). Snapshots live in
@@ -721,7 +721,7 @@ capture in progress.
 | Global: SD Mgmt | Scroll (category grid, folder lists) | Scroll (file list) | Back, Hold = Duplicate | Open, Hold 1500ms = Delete (file list) |
 | Global: Export | Audio Loop / Audio+MIDI Loop / Song | Loops (Audio+MIDI Loop, 1–8) | Tap = Export, native 48kHz ("Studio"); while running = stop | Tap = Export, 44.1kHz for MicroDexed ("CD"); while running = stop |
 | Global: Display | Screen saver time (Off, 1–30 min) | — | Sleep now | Save the time as power-up default |
-| Global: MIDI | Pick an engine (Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR, Supersaw) | That engine's MIDI channel (Omni, 1-16) | Sus-Pedal: Norm/Rev toggle (saved immediately) | Hold 800ms = Save every channel as power-on default |
+| Global: MIDI | Pick an engine (Grains, DXD-A, DXD-B, Ensemble, Organ, Supersaw, SMPVO, SMPDR) | That engine's MIDI channel (Omni, 1-16) | Sus-Pedal: Norm/Rev toggle (saved immediately) | Hold 800ms = Save every channel as power-on default |
 | Global: Arp | Pick an engine | — | Its arp on/off | Generator/Phrase (push encoder to edit its arp) |
 | Global: DXD-A | — | — | Toggle DXD-A on/off (off by default) | — (push encoder to enter Screen::Dexed, editing DXD-A) |
 | Global: DXD-B | — | — | Toggle DXD-B on/off (off by default) | — (push encoder to enter Screen::Dexed, editing DXD-B) |
@@ -1042,7 +1042,7 @@ Sounds get onto the card.
 
 Entered from `Global:Tracks` it steps through L1–L4, M1–M8, Bypass and
 Master; from `Global:Synths` through Grains, DXD-A, DXD-B, Ensemble (ESB),
-Organ, SMPVO (VOI), SMPDR (DRM), Supersaw (SSW), Bypass and Master. A
+Organ, Supersaw (SSW), SMPVO (VOI), SMPDR (DRM), Bypass and Master. A
 MIDI track's stop is its engine's channel (titled e.g. `Mixer:M1>DXA`).
 Rotating past the last one shows a live oscilloscope of the final output
 mix, then wraps back to the first.

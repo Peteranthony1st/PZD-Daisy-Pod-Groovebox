@@ -34,9 +34,9 @@ constexpr int kEnvStep = 8;
 // use the bank, so it's unchanged). Its factory sounds' Gains were then
 // matched to peak near -3 dB.
 constexpr float kStringsBoost = 2.f;
-// New's Gain on the Ensemble: +3 dB, set by ear on the Pod against the
-// Organ (the factory sounds are matched to it, see ensemble_factory_data.cpp).
-constexpr float kEnsembleNewGain = 3.f / 12.04f;
+// New's Gain on the Ensemble: 0 dB, as every other engine starts (the
+// factory sounds keep their own, see ensemble_factory_data.cpp).
+constexpr float kEnsembleNewGain = 0.f;
 // Key click length: ~3 ms at 48 kHz.
 constexpr int kClickSamples = 144;
 // Every voice renders a whole block into this, one voice at a time,

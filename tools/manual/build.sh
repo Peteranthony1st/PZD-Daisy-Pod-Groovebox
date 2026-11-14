@@ -25,6 +25,13 @@ pages=['page-qs-1','page-quickstart']+['page-qs-%d'%n for n in range(3,9)]
 ims=[Image.open(p+'.png').convert('RGB') for p in pages]
 ims[0].save(sys.argv[1],save_all=True,append_images=ims[1:],resolution=150)
 print('  docs/quick-start.pdf, %d pages'%len(ims))
+# The same pages as JPEGs, for posting (docs/quick-start-jpg/).
+import os
+jpg=os.path.join(os.path.dirname(sys.argv[1]),'quick-start-jpg')
+os.makedirs(jpg,exist_ok=True)
+for i,im in enumerate(ims,1):
+    im.save(os.path.join(jpg,'PZD-Quick-Start-%d.jpg'%i),quality=92,optimize=True,subsampling=0)
+print('  docs/quick-start-jpg/, %d JPEGs'%len(ims))
 PY
 echo "  manual"
 "$PY" "$HERE/build_manual.py"

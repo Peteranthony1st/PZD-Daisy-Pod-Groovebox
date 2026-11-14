@@ -200,7 +200,7 @@ def star_toggle(d,left,pair,second):
     d.tt(x,FY2+5,pair); d.tt(x+w if second else x-st,FY2+5,"*")
 def arp_global():
     d=D(); d.title("Global:Arp",0)
-    rows=[("GR",0,""),("DXA",1,"Gen"),("DXB",1,"Phr"),("ENS",0,""),("ORG",1,"Gen"),("SMV",0,""),("SMD",0,""),("SSW",1,"Gen")]
+    rows=[("GR",0,""),("DXA",1,"Gen"),("DXB",1,"Phr"),("ENS",0,""),("ORG",1,"Gen"),("SSW",1,"Gen"),("SMV",0,""),("SMD",0,"")]
     for c in (1,2): d.line(c*43-1,11,c*43-1,36)
     sel=1
     for e,(n,on,m) in enumerate(rows):
@@ -373,8 +373,8 @@ def global_tracks():
     return mixer_overview("Global:Tracks",["L1","L2","L3","L4","M1","M2","M3","M4","M5","M6","M7","M8","BYP","MAS"],
                           [.7,.55,0,.4,.8,.6,.65,0,.5,0,0,0,0,.85])
 def global_synths():
-    return mixer_overview("Global:Synths",["GR","DXA","DXB","ESB","ORG","VOI","DRM","SSW","BYP","MAS"],
-                          [0,.6,.6,.45,0,0,.8,.75,0,.85])
+    return mixer_overview("Global:Synths",["GR","DXA","DXB","ESB","ORG","SSW","VOI","DRM","BYP","MAS"],
+                          [0,.6,.6,.45,0,.75,0,.8,0,.85])
 def ssaw_supersaw():
     # SSaw:SSaw -- the bars follow the Detune knob, the readout is the true
     # spread (see ui_supersaw.cpp's SuperSaw page). Detune 60%, Mix 70%.

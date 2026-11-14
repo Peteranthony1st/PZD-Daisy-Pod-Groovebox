@@ -2,7 +2,8 @@
 # for the computer with stand-ins for the Pod's hardware (fake/).
 SRC   = ../../../src
 CXX  ?= clang++
-FLAGS = -std=gnu++17 -O1 -w -D'section(x)=used' -include fake/stm32h7xx.h \
+# -MMD: each object also rebuilds when a header it includes changes.
+FLAGS = -std=gnu++17 -O1 -w -MMD -MP -D'section(x)=used' -include fake/stm32h7xx.h \
         -Ifake -I$(SRC) -I$(SRC)/libDaisy/src -I$(SRC)/DaisySP/Source \
         -I$(SRC)/DaisySP/DaisySP-LGPL/Source \
         $(addprefix -I,$(shell find $(SRC)/DaisySP/Source $(SRC)/DaisySP/DaisySP-LGPL/Source -type d))
@@ -35,5 +36,7 @@ obj/dsp_%.o: %.cpp | obj
 	$(CXX) $(FLAGS) -c $< -o $@
 obj:
 	mkdir -p obj
+
+-include $(wildcard obj/*.d)
 clean:
 	rm -rf obj render

@@ -6028,8 +6028,10 @@ filter runs a second channel only for the right side.
 
 ### Levels
 
-Matched by ear on the Pod with the Organ's default as the reference:
-New on the Supersaw and the Ensemble is Gain +3 dB. The 42 factory sounds
+Matched by ear on the Pod with the Organ's default as the reference,
+New on the Supersaw and the Ensemble was Gain +3 dB; it's now 0 dB, as
+every other engine starts, so New sits a little below the factory
+sounds and Gain is there to lift it. The 42 factory sounds
 were then levelled offline against each other (`kFactoryGain`): peak
 meter level first, then K-weighted loudness (BS.1770), because a
 supersaw's spiky peaks carry less energy than the same peak of sines and

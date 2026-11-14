@@ -239,7 +239,7 @@ class SupersawSynth
         float   porta_time01   = 0.3f;
         float   chorus_depth01 = 0.35f;
         float   chorus_rate01  = 0.3f;
-        float   gain01         = 3.f / 12.04f; // New: +3 dB, set by ear on the Pod
+        float   gain01         = 0.f; // New: 0 dB, as every other engine starts
         float   output_level01 = 0.7f;
         float   pan01          = 0.5f;
         float   reverb_send01  = 0.3f; // a little space from the start
@@ -342,7 +342,7 @@ class SupersawSynth
     float           chorus_depth_smoothed_ = 0.35f;
     float           chorus_rate01_         = 0.3f;
 
-    float gain01_ = 3.f / 12.04f, gain_ = 1.f;
+    float gain01_ = 0.f, gain_ = 1.f;
     float output_level01_ = 0.7f, output_level_ = 1.f;
     float pan01_ = 0.5f, pan_l_gain_ = 0.7071f, pan_r_gain_ = 0.7071f;
     float reverb_send01_ = 0.3f, delay_send01_ = 0.f;

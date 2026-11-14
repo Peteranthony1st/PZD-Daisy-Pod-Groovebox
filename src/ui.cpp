@@ -3049,7 +3049,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                                                     : MixerGetSend01(SendsChannel(sends_ch_));
             break;
         case KnobContext::GlobalArp:
-            k1_pickup_raw_[i] = ((float)arp_engine_ + 0.5f) / (float)Arpeggiator::kEngines;
+            k1_pickup_raw_[i] = ((float)EngineColumn(arp_engine_) + 0.5f) / (float)Arpeggiator::kEngines;
             break;
         case KnobContext::ArpSetup:
             if(arp_)
@@ -4080,7 +4080,7 @@ void Ui::ApplyKnobs()
                 }
             }
             if(global_page_ == GlobalPage::Arp && PickUpK1(k1))
-                arp_engine_ = (int)(Clampf(k1, 0.f, 0.999f) * (float)Arpeggiator::kEngines);
+                arp_engine_ = kEngineShowOrder[(int)(Clampf(k1, 0.f, 0.999f) * (float)Arpeggiator::kEngines)];
             if(global_page_ == GlobalPage::Display && PickUpK1(k1))
                 saver_option_ = (int)(Clampf(k1, 0.f, 0.999f) * (float)kSaverOptions);
             if(global_page_ == GlobalPage::Export && !live_open_)
@@ -4215,7 +4215,7 @@ void Ui::ApplyKnobs()
                 if(k1_moved_ || fabsf(k1 - k1_entry_raw_) >= kPickupMove)
                 {
                     k1_moved_ = true;
-                    int row   = (int)(Clampf(k1, 0.f, 1.f) * ((float)kMidiRows - 0.01f));
+                    int row   = kEngineShowOrder[(int)(Clampf(k1, 0.f, 1.f) * ((float)kMidiRows - 0.01f))];
                     if(row != midi_row_)
                     {
                         midi_row_ = row;
@@ -8461,10 +8461,11 @@ void Ui::DrawArpGlobalPage()
         return;
     for(int c = 1; c <= 2; c++)
         disp_->DrawLine(c * 43 - 1, 11, c * 43 - 1, 36, true);
-    for(int e = 0; e < Arpeggiator::kEngines; e++)
+    for(int c = 0; c < Arpeggiator::kEngines; c++)
     {
-        const Arpeggiator::Settings& s = arp_->Get(e);
-        const int  x0 = (e / 3) * 43, y0 = 12 + (e % 3) * 8, base = y0 + 6;
+        const int                    e  = kEngineShowOrder[c]; // the engine in this cell
+        const Arpeggiator::Settings& s  = arp_->Get(e);
+        const int  x0 = (c / 3) * 43, y0 = 12 + (c % 3) * 8, base = y0 + 6;
         const bool sel = e == arp_engine_;
         if(sel)
             disp_->DrawRect(x0, y0, x0 + 41, y0 + 7, true, true);
@@ -8806,7 +8807,7 @@ int Ui::SendsChannel(int cell)
     // which both engines share).
     static const int kIds[kSendChannels] = {kMixL1,  kMixL1 + 1, kMixL1 + 2, kMixL1 + 3,
                                             kMixGr,  kMixDxa,    kMixEns,    kMixOrg,
-                                            kMixSmv, kMixSmd,    kMixSsw,    kMixByp};
+                                            kMixSsw, kMixSmv,    kMixSmd,    kMixByp};
     return kIds[cell < 0 ? 0 : (cell >= kSendChannels ? kSendChannels - 1 : cell)];
 }
 
@@ -8820,7 +8821,7 @@ void Ui::DrawSendsPage()
     // A cell per channel, two rows of six: its name, a reverb bar and a
     // delay bar (dotted where empty); the chosen one outlined.
     static const char* const kNames[kSendChannels]
-        = {"A1", "A2", "A3", "A4", "GR", "DXD", "ENS", "ORG", "SMV", "SMD", "SSW", "BYP"};
+        = {"A1", "A2", "A3", "A4", "GR", "DXD", "ENS", "ORG", "SSW", "SMV", "SMD", "BYP"};
     const bool dly_off = SharedDelay::IsOff(delay_time01_);
     for(int ch = 0; ch < kSendChannels; ch++)
     {
@@ -9389,9 +9390,10 @@ void Ui::DrawSnapScreen()
     // name (scrolling sideways if it's long).
     if(!browsing || shown)
     {
-        // Grid order; 4 is DXD-B, 5 the Organ, 3/6 SMPVO/SMPDR (see
-        // LiveSnapEngineName()).
-        static const int kRows[kSnapRows] = {0, 1, 4, 2, 5, 3, 6, 7};
+        // Grid order, the same as Global:MIDI's (kEngineShowOrder), in the
+        // snapshot's own numbering: 4 is DXD-B, 5 the Organ, 7 the
+        // Supersaw, 3/6 SMPVO/SMPDR (see LiveSnapEngineName()).
+        static const int kRows[kSnapRows] = {0, 1, 4, 2, 5, 7, 3, 6};
         // An older snapshot holds one Sampler face only (the other
         // column shows "-").
         const bool pair      = shown && shown->sampler_pair.present != 0;
@@ -9463,7 +9465,7 @@ void Ui::DrawSnapScreen()
                     TomThumbDrawChar(disp_, cx, base, *c, true);
                 cx += adv;
             }
-            TomThumbDrawText(disp_, x0 + 2, base, kEngineColLabels[r], true);
+            TomThumbDrawText(disp_, x0 + 2, base, kEngineColLabels[kEngineShowOrder[r]], true);
             disp_->DrawRect(x0 + 15, base - 3, x0 + 17, base - 1, true, on); // filled = engine on
         }
         // On the footer's knob circle (x = Width/2).
@@ -9477,6 +9479,7 @@ void Ui::DrawSnapScreen()
 }
 
 constexpr const char* Ui::kEngineColLabels[]; // C++14: needs an out-of-class definition
+constexpr int         Ui::kEngineShowOrder[]; // likewise
 
 int Ui::SnapNameScroll(int name_len) const
 {
@@ -10308,9 +10311,10 @@ void Ui::DrawMidiScreen()
 
     // One column per engine, same columns as Global:Snap: short name,
     // on/off dot, MIDI channel. K1's column is inverted.
-    for(int r = 0; r < kMidiRows; r++)
+    for(int c = 0; c < kMidiRows; c++)
     {
-        bool on;
+        const int r = kEngineShowOrder[c]; // the engine in this column
+        bool      on;
         switch(r)
         {
             case 0: on = granular_enabled_; break;
@@ -10324,7 +10328,7 @@ void Ui::DrawMidiScreen()
         }
         const int   ch    = *MidiRowChannel(r);
         const bool  sel   = r == midi_row_;
-        const int   x     = kEngineCol0X + r * kEngineColW;
+        const int   x     = kEngineCol0X + c * kEngineColW;
         const char* label = kEngineColLabels[r];
         if(sel)
             disp_->DrawRect(x, 10, x + kEngineColW - 2, 44, true, true);
@@ -11060,8 +11064,10 @@ int Ui::MixerSetChannel(int pos) const
 {
     if(mixer_set_ == 1) // Global:Synths
     {
+        // The synths (the Supersaw beside the Ensemble and Organ), then
+        // the samplers.
         static const int kSynths[kMixSynthsCount] = {kMixGr,  kMixDxa, kMixDxb, kMixEns, kMixOrg,
-                                                     kMixSmv, kMixSmd, kMixSsw, kMixByp, kMixMas};
+                                                     kMixSsw, kMixSmv, kMixSmd, kMixByp, kMixMas};
         return kSynths[pos < 0 ? 0 : (pos >= kMixSynthsCount ? kMixSynthsCount - 1 : pos)];
     }
     // Global:Tracks: L1-L4, M1-M8 (each its engine's channel), Bypass, Master.
