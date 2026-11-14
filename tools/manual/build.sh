@@ -13,7 +13,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 PY=${PYTHON:-python3}
 mkdir -p "$HERE/build" && cd "$HERE/build"
 export PYTHONPATH="$HERE"
-for s in masks knob sides16 mock2 sidesfig page page2 page5 page7 cover; do
+for s in masks knob sides16 mock2 sidesfig page page2 page5 page7 cover readme_photos; do
     echo "  $s"
     "$PY" "$HERE/$s.py" > /dev/null
 done

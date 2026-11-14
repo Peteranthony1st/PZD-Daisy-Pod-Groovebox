@@ -1,6 +1,7 @@
 # Quick Start guide
 
-`build.sh` draws the Quick Start guide and writes `docs/quick-start.pdf`.
+`build.sh` draws the Quick Start guide and writes `docs/quick-start.pdf`, and
+the README's gallery of the Groovebox (`images/pod-*.png`).
 
 - **The Groovebox drawings** come from the PZD case's own STL files (TOP,
   BASE and KNOB), rendered from above and from each side, so every hole,
@@ -19,5 +20,6 @@
 | `mock2.py`, `sidesfig.py` | the labelled diagrams |
 | `page.py` | the page styles, page 2 and the manual's sample page |
 | `page2.py`, `page5.py`, `page7.py`, `cover.py` | pages 3–8 and the cover |
+| `readme_photos.py` | the README's gallery, `images/pod-*.png` |
 
 Needs Python 3 with numpy, scipy and pillow, and macOS's Avenir Next.

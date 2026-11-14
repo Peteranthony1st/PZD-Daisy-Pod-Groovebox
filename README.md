@@ -5,16 +5,16 @@
 > or start a discussion.
 
 <p align="center">
-  <img width="30%" alt="Home screen" src="images/home.jpg" />
+  <img width="30%" alt="Home: audio tracks" src="images/pod-home.png" />
   &nbsp;
-  <img width="30%" alt="Global mixer" src="images/global-mixer.jpg" />
+  <img width="30%" alt="Home: MIDI tracks" src="images/pod-midi-tracks.png" />
   &nbsp;
-  <img width="30%" alt="SD card management" src="images/global-sd-mgmt.jpg" />
+  <img width="30%" alt="Global:Tracks mixer" src="images/pod-global-tracks.png" />
 </p>
 <p align="center">
-  <img width="30%" alt="Mixer scope" src="images/mixer-scope.jpg" />
+  <img width="30%" alt="Supersaw" src="images/pod-supersaw.png" />
   &nbsp;
-  <img width="30%" alt="Mixer bypass channel" src="images/mixer-bypass.jpg" />
+  <img width="30%" alt="Song" src="images/pod-song.png" />
 </p>
 
 <p align="center">
