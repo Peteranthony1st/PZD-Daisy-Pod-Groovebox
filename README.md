@@ -50,7 +50,9 @@ clickable encoder.
 from a MIDI keyboard, and making and saving a song. The **[User
 Manual](docs/user-manual.pdf)** then covers every page, with every screen
 exactly as the Groovebox draws it. Both are also on the root of the SD card
-template.
+template. Building the case? The **[Enclosure Build
+Guide](docs/enclosure-build-guide.pdf)** covers printing it and putting it
+together.
 
 ## Engines
 
@@ -296,6 +298,9 @@ and play chords, with Airy Piano first.
   or [PRINTABLES](https://www.printables.com/@PlanetZeroDe_5266703), or
   buy one ready-made on
   [ETSY](https://www.etsy.com/uk/shop/PlanetZeroDesignsPZD?ref=shop_profile&listing_id=4560482983).
+  The **[Enclosure Build Guide](docs/enclosure-build-guide.pdf)** has the
+  print settings, the parts list (with the 2.42" SSD1309 display) and how
+  to put it together, including the display's wiring.
 
 <p align="center">
   <a href="https://cults3d.com/en/3d-model/gadget/pzd-daisy-pod-groovebox-case">
