@@ -16,6 +16,7 @@
 #include "granular_engine.h"
 #include "dexed_synth.h"
 #include "ensemble_synth.h"
+#include "supersaw_synth.h"
 #include "sample_synth.h"
 #include "sequencer.h"
 #include "arpeggiator.h"
@@ -256,6 +257,8 @@ EnsembleSynth DSY_DTCM_BSS ensemble;
 // sine drawbars instead of the divide-down bank. Ordinary SRAM: DTCM has
 // no room for another chorus delay line, and the organ is cheap anyway.
 EnsembleSynth organ;
+// The Supersaw (see supersaw_synth.h). Ordinary SRAM, like the Organ.
+SupersawSynth supersaw;
 
 // A 10-voice polyphonic sample player (see sample_synth.h -- combines
 // DexedSynth's own voice-stealing pattern with GranularEngine's
@@ -505,6 +508,7 @@ enum SustainEngine
     kSusOrgan,
     kSusSmpvo,
     kSusSmpdr,
+    kSusSupersaw,
     kSusEngines
 };
 static bool g_sus_pedal[kSusEngines];
@@ -522,6 +526,7 @@ static void EngineNoteOn(int e, uint8_t note, uint8_t velocity)
         case kSusOrgan: organ.NoteOn(note, velocity); break;
         case kSusSmpvo: sample_synth.NoteOn(note, velocity); break;
         case kSusSmpdr: sample_drum.NoteOn(note, velocity); break;
+        case kSusSupersaw: supersaw.NoteOn(note, velocity); break;
     }
 }
 
@@ -536,6 +541,7 @@ static void EngineNoteOff(int e, uint8_t note)
         case kSusOrgan: organ.NoteOff(note); break;
         case kSusSmpvo: sample_synth.NoteOff(note); break;
         case kSusSmpdr: sample_drum.NoteOff(note); break;
+        case kSusSupersaw: supersaw.NoteOff(note); break;
     }
 }
 
@@ -552,6 +558,7 @@ static void EngineAllNotesOff(int e)
         case kSusOrgan: organ.AllNotesOff(); break;
         case kSusSmpvo: sample_synth.AllNotesOff(); break;
         case kSusSmpdr: sample_drum.AllNotesOff(); break;
+        case kSusSupersaw: supersaw.AllNotesOff(); break;
     }
     for(int n = 0; n < 128; n++)
     {
@@ -904,9 +911,10 @@ void ControlTimerCallback(void*)
     const int seq_track = ui.GetSeqLiveTrack();
     int sample_synth_ch = ui.GetSampleSynthMidiChannel();
     int sample_drum_ch  = ui.GetSampleDrumMidiChannel();
+    int supersaw_ch     = ui.GetSupersawMidiChannel();
     // Per SustainEngine, for the note/pedal dispatch below.
-    const int sus_ch[kSusEngines] = {granular_ch, dexed_ch,        dexed_b_ch,    ensemble_ch,
-                                     organ_ch,    sample_synth_ch, sample_drum_ch};
+    const int sus_ch[kSusEngines] = {granular_ch, dexed_ch,        dexed_b_ch,     ensemble_ch,
+                                     organ_ch,    sample_synth_ch, sample_drum_ch, supersaw_ch};
     if(ui.IsPedalReversed() != g_sus_reversed)
     {
         g_sus_reversed = ui.IsPedalReversed();
@@ -991,6 +999,12 @@ void ControlTimerCallback(void*)
                 raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
                 sample_drum.SetPitchBend14bit((uint16_t)raw);
             }
+            if(supersaw_ch == -1 || pb.channel == supersaw_ch)
+            {
+                int32_t raw = (int32_t)pb.value + 8192;
+                raw         = raw < 0 ? 0 : (raw > 16383 ? 16383 : raw);
+                supersaw.SetPitchBend14bit((uint16_t)raw);
+            }
         }
         else if(event.type == ControlChange)
         {
@@ -1019,6 +1033,8 @@ void ControlTimerCallback(void*)
                     sample_synth.SetModWheel01((float)cc.value / 127.f);
                 if(sample_drum_ch == -1 || cc.channel == sample_drum_ch)
                     sample_drum.SetModWheel01((float)cc.value / 127.f);
+                if(supersaw_ch == -1 || cc.channel == supersaw_ch)
+                    supersaw.SetModWheel01((float)cc.value / 127.f);
             }
             // CC 123 (All Notes Off) / CC 120 (All Sound Off) -- see
             // DexedSynth::AllNotesOff()'s own doc comment for why this
@@ -1287,6 +1303,8 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     if(ui.IsEnsembleEnabled())
     {
         prof_t = Prof::Now();
+        ensemble.SetClock((float)g_seq_tick / (float)MidiSequencer::kPpq, tempo.GetBpm(),
+                          g_seq_running);
         ensemble.Process(size, ensemble_l, ensemble_r, reverb_send_l, reverb_send_r,
                           delay_send_l, delay_send_r);
         prof[Prof::kEnsemble] = Prof::Now() - prof_t;
@@ -1332,6 +1350,27 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
             ensemble_l[i] += organ_l[i];
             ensemble_r[i] += organ_r[i];
         }
+
+    // The Supersaw, the same way as the Organ: its own buffers (for
+    // printing), then onto ensemble_l/r. Its LFO gets the clock first: the
+    // loop position while the looper runs, so a synced LFO sits on bar 1.
+    static float ssw_l[256];
+    static float ssw_r[256];
+    const bool   ssw_on = ui.IsSupersawEnabled();
+    if(ssw_on)
+    {
+        supersaw.SetClock((float)g_seq_tick / (float)MidiSequencer::kPpq, tempo.GetBpm(),
+                          g_seq_running);
+        prof_t = Prof::Now();
+        supersaw.Process(size, ssw_l, ssw_r, reverb_send_l, reverb_send_r, delay_send_l,
+                         delay_send_r);
+        prof[Prof::kSupersaw] = Prof::Now() - prof_t;
+        for(size_t i = 0; i < size; i++)
+        {
+            ensemble_l[i] += ssw_l[i];
+            ensemble_r[i] += ssw_r[i];
+        }
+    }
 
     // Skipped entirely when disabled from Global:SMPVO/SMPDR -- same
     // real CPU-saving pattern as ui.IsEnsembleEnabled() above. Voice
@@ -1461,6 +1500,7 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
         auto bit = [print_mask](int e) { return (print_mask & (1u << e)) != 0; };
         const bool dx  = bit(MidiSequencer::kDexedA) || bit(MidiSequencer::kDexedB);
         const bool ens = bit(MidiSequencer::kEnsemble), org = bit(MidiSequencer::kOrgan) && organ_on;
+        const bool ssw = bit(MidiSequencer::kSupersaw) && ssw_on;
         const bool smv = bit(MidiSequencer::kSmpvo), smd = bit(MidiSequencer::kSmpdr) && smp_drum_on;
         for(size_t i = 0; i < size; i++)
         {
@@ -1475,15 +1515,20 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
                 l += dexed_l[i];
                 r += dexed_r[i];
             }
-            if(ens) // ensemble_l holds the Organ too, when it's on
+            if(ens) // ensemble_l holds the Organ and Supersaw too, when on
             {
-                l += ensemble_l[i] - (organ_on ? organ_l[i] : 0.f);
-                r += ensemble_r[i] - (organ_on ? organ_r[i] : 0.f);
+                l += ensemble_l[i] - (organ_on ? organ_l[i] : 0.f) - (ssw_on ? ssw_l[i] : 0.f);
+                r += ensemble_r[i] - (organ_on ? organ_r[i] : 0.f) - (ssw_on ? ssw_r[i] : 0.f);
             }
             if(org)
             {
                 l += organ_l[i];
                 r += organ_r[i];
+            }
+            if(ssw)
+            {
+                l += ssw_l[i];
+                r += ssw_r[i];
             }
             if(smv) // samp_l holds SMPDR too, when it's on
             {
@@ -1952,6 +1997,26 @@ int main(void)
     ensemble.Init(hw.AudioSampleRate());
     organ.SetOrgan(true); // before Init(), which builds its wave
     organ.Init(hw.AudioSampleRate());
+    supersaw.Init(hw.AudioSampleRate());
+#ifdef SUPERSAW_CPU_TEST
+    // The worst case: full Detune and Mix, OSC2 on, 24 dB filter swept by
+    // its envelope and the LFO, pitch LFO (new increments every step),
+    // chorus on -- 10 notes held from power-on.
+    supersaw.SetDetune01(1.f);
+    supersaw.SetMix01(1.f);
+    supersaw.SetOsc2Wave(SupersawSynth::Osc2Wave::Square);
+    supersaw.SetOsc2Coarse(-12);
+    supersaw.SetBalance01(0.5f);
+    supersaw.SetCutoff01(0.6f);
+    supersaw.SetResonance01(0.3f);
+    supersaw.SetFilterEnvDepth01(0.8f);
+    supersaw.SetLfoRate01(0.5f);
+    supersaw.SetLfoDepth01(SupersawSynth::kLfoFilter, 0.7f);
+    supersaw.SetLfoDepth01(SupersawSynth::kLfoPitch, 0.55f);
+    supersaw.SetOutputLevel01(0.5f);
+    for(int i = 0; i < 10; i++)
+        supersaw.NoteOn((uint8_t)(36 + i * 5), 100);
+#endif
     sample_synth.Init(hw.AudioSampleRate());
     sample_drum.Init(hw.AudioSampleRate());
     sequencer.Init(&SeqNote, g_seq_patterns);
@@ -2024,6 +2089,7 @@ int main(void)
             &g_sample_synth_capturing, &g_sample_synth_capture_write_pos, g_undo_backup_l,
             g_undo_backup_r, &g_undo_owner_layer,
             &g_undo_backup_len);
+    ui.SetSupersaw(&supersaw);
     ui.SetSequencer(&sequencer);
     ui.SetArpeggiator(&g_arp);
     // Each float of an undo buffer holds one 16-bit stereo frame.

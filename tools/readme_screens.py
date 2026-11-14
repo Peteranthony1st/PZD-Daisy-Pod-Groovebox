@@ -200,7 +200,7 @@ def star_toggle(d,left,pair,second):
     d.tt(x,FY2+5,pair); d.tt(x+w if second else x-st,FY2+5,"*")
 def arp_global():
     d=D(); d.title("Global:Arp",0)
-    rows=[("GR",0,""),("DXA",1,"Gen"),("DXB",1,"Phr"),("ENS",0,""),("ORG",1,"Gen"),("SMV",0,""),("SMD",0,"")]
+    rows=[("GR",0,""),("DXA",1,"Gen"),("DXB",1,"Phr"),("ENS",0,""),("ORG",1,"Gen"),("SMV",0,""),("SMD",0,""),("SSW",1,"Gen")]
     for c in (1,2): d.line(c*43-1,11,c*43-1,36)
     sel=1
     for e,(n,on,m) in enumerate(rows):
@@ -327,6 +327,79 @@ def arp_phrase():
         if k==playing: d.line(xa,44,xa+cw-2,44)
     d.ctrl(FY1,False,FD1,"Phrase",name,"0","Octave"); d.ctrl(FY2,True,FD2,"","","","")
     return d
+# --- Supersaw and the mixer pages ------------------------------------------
+# The Global page icons, read from src/ui_graphics.cpp (48x20, MSB first).
+_g=re.sub(r'//[^\n]*','',open(SRC+'ui_graphics.cpp').read())
+def icon_bits(name):
+    body=_g.split('const uint8_t %s[kGlobalIconBytes] = {'%name)[1].split('};')[0]
+    return [int(x,16) for x in re.findall(r'0x([0-9A-Fa-f]{2})',body)]
+def bitmap(d,x0,y0,w,h,bits):
+    stride=(w+7)//8
+    for y in range(h):
+        for x in range(w):
+            if bits[y*stride+x//8]&(0x80>>(x%8)): d.px(x0+x,y0+y)
+def ctrl_noicon(d,row_y,div,ll,lv,rv,rl):
+    # DrawControlRow(..., show_icon=false)
+    d.line(0,div,W-1,div); b=row_y+5
+    d.tt(1,b,ll)
+    if rl: d.tt(W-1-d.ttw(rl),b,rl)
+    cx=W//2
+    if lv: d.tt(cx-4-d.ttink(lv),b,lv)
+    if rv: d.tt(cx+5,b,rv)
+def global_entry(title,enabled,icon):
+    # Ui::DrawGlobalEntryPage()
+    d=D(); d.title(title,0)
+    d.tt(1,16,"ENABLED" if enabled else "DISABLED")
+    bitmap(d,(W-48)//2,18,48,20,icon_bits(icon))
+    h="PUSH ENC TO OPEN"; d.tt((W-d.ttw(h))//2,44,h)
+    d.ctrl(FY1,False,FD1,"","","",""); d.ctrl(FY2,True,FD2,"Toggle On/Off","","","")
+    return d
+def global_supersaw(): return global_entry("Global:SSaw",True,'kGlobalIconSupersaw')
+def hbar(d,x0,y0,w,h,v):
+    d.rect(x0,y0,x0+w-1,y0+h-1); f=int(v*(w-2)+0.5)
+    if f>0: d.rect(x0+1,y0+1,x0+f,y0+h-2,True,True)
+def mixer_overview(title,names,levels):
+    # Global:Tracks / Global:Synths -- Ui::DrawMixerOverviewGrid(16)
+    d=D(); d.title(title,0)
+    n=len(names); cols=7 if n>10 else 5; cw=126//cols; bw=cw-2
+    for p,(nm,lv) in enumerate(zip(names,levels)):
+        x=1+(p%cols)*cw; base=16+(p//cols)*14
+        d.tt(x+(bw-d.ttink(nm))//2,base,nm); hbar(d,x,base+2,bw,5,lv)
+    h="PUSH ENC TO OPEN"; d.tt((W-d.ttw(h))//2,44,h)
+    d.ctrl(FY1,False,FD1,"Master Vol","80%","60%","Bypass Vol")
+    ctrl_noicon(d,FY2,FD2,"CPU","31%","38%","Peak")
+    return d
+def global_tracks():
+    return mixer_overview("Global:Tracks",["L1","L2","L3","L4","M1","M2","M3","M4","M5","M6","M7","M8","BYP","MAS"],
+                          [.7,.55,0,.4,.8,.6,.65,0,.5,0,0,0,0,.85])
+def global_synths():
+    return mixer_overview("Global:Synths",["GR","DXA","DXB","ESB","ORG","VOI","DRM","SSW","BYP","MAS"],
+                          [0,.6,.6,.45,0,0,.8,.75,0,.85])
+def ssaw_supersaw():
+    # SSaw:SSaw -- the bars follow the Detune knob, the readout is the true
+    # spread (see ui_supersaw.cpp's SuperSaw page). Detune 60%, Mix 70%.
+    det,mix,spread=0.6,0.7,27
+    d=D(); d.title("SSaw:SSaw",0)
+    off=[0,128,-128,408,-412,704,-720]; side=(1+32*mix)/33
+    d.line(9,41,119,41)
+    for t in (9,36,64,92,119): d.line(t,41,t,43)
+    pos=[64+o/720*55*det for o in off]
+    pr=pl=pos[0]
+    for r,l in ((1,2),(3,4),(5,6)):
+        if pos[r]-pr<5: pos[r]=pr+5
+        pr=pos[r]
+        if pl-pos[l]<5: pos[l]=pl-5
+        pl=pos[l]
+    for k in range(7):
+        x=int(pos[k]+0.5); h=25/33 if k==0 else side; top=39-int(19*h)
+        if k==0: d.rect(x-2,top,x+2,39,True,True)
+        elif k>=5:
+            for y in range(top,40,2): d.px(x-1,y); d.px(x+1,y)
+            d.px(x,top)
+        else: d.rect(x-1,top,x+1,39)
+    d.tt(2,16,"Spread %dct"%spread)
+    d.ctrl(FY1,False,FD1,"Detune","60%","70%","Mix"); d.ctrl(FY2,True,FD2,"","","","")
+    return d
 def save(d,name):
     S=3; im=Image.new('RGB',(W*S+12,H*S+12),(0,0,0)); px=im.load()
     for y in range(H):
@@ -335,7 +408,7 @@ def save(d,name):
                 for a in range(S):
                     for b in range(S): px[6+x*S+a,6+y*S+b]=(235,242,255)
     im.save(name)
-SCREENS=[(home_audio,'home-audio'),(home_midi,'home-midi'),(patt,'midi-patt'),(chain,'midi-chain'),(scenes,'scenes'),(scene_edit,'scene-edit'),(song,'song'),(arp_global,'global-arp'),(arp_setup,'arp-setup'),(arp_pattern,'arp-pattern'),(arp_key,'arp-key'),(midi_arp,'midi-arp'),(arp_phrase,'arp-phrase')]
+SCREENS=[(home_audio,'home-audio'),(home_midi,'home-midi'),(patt,'midi-patt'),(chain,'midi-chain'),(scenes,'scenes'),(scene_edit,'scene-edit'),(song,'song'),(arp_global,'global-arp'),(arp_setup,'arp-setup'),(arp_pattern,'arp-pattern'),(arp_key,'arp-key'),(midi_arp,'midi-arp'),(arp_phrase,'arp-phrase'),(global_supersaw,'global-supersaw'),(ssaw_supersaw,'ssaw-supersaw'),(global_tracks,'global-tracks'),(global_synths,'global-synths')]
 out=sys.argv[1]
 os.makedirs(out,exist_ok=True)
 for fn,n in SCREENS:

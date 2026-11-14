@@ -13,7 +13,7 @@ constexpr uint32_t kQuantTicks[MidiSequencer::kNumQuant] = {0, 8, 12, 16, 24, 32
 
 const char* MidiSequencer::EngineName(int engine)
 {
-    static const char* const kNames[kNumEngines] = {"GR", "DXA", "DXB", "ENS", "ORG", "SMV", "SMD"};
+    static const char* const kNames[kNumEngines] = {"GR", "DXA", "DXB", "ENS", "ORG", "SMV", "SMD", "SSW"};
     return engine >= 0 && engine < kNumEngines ? kNames[engine] : "?";
 }
 

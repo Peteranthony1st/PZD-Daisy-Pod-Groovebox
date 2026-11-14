@@ -612,10 +612,15 @@ void Ui::HandleEncoder(const UiControlEvents& events)
         {
             int n = (int)EnsembleParamPage::kCount;
             int p = (((int)ensemble_param_page_ + inc) % n + n) % n;
-            // Perc/Click are Organ-only: step past them on the Ensemble.
-            const int step = inc >= 0 ? 1 : -1;
-            while(!(ensemble_ && ensemble_->IsOrgan())
-                  && (p == (int)EnsembleParamPage::Perc || p == (int)EnsembleParamPage::Click))
+            // Perc/Click are Organ-only, the LFO pages Ensemble-only: step
+            // past the other engine's.
+            const int  step  = inc >= 0 ? 1 : -1;
+            const bool organ = ensemble_ && ensemble_->IsOrgan();
+            while((!organ
+                   && (p == (int)EnsembleParamPage::Perc || p == (int)EnsembleParamPage::Click))
+                  || (organ
+                      && (p == (int)EnsembleParamPage::Lfo
+                          || p == (int)EnsembleParamPage::LfoDepth)))
                 p = ((p + step) % n + n) % n;
             EnsembleParamPage new_ensemble_page = (EnsembleParamPage)p;
             if((new_ensemble_page == EnsembleParamPage::Preset
@@ -625,6 +630,8 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             ensemble_param_page_ = new_ensemble_page;
             save_load_mode_      = SaveLoadMode::Idle; // same reset as Global:File above
         }
+        else if(screen_ == Screen::Supersaw)
+            SupersawRotatePage(inc);
         else if(screen_ == Screen::SampleSynth)
         {
             int n = (int)SampleSynthParamPage::kCount;
@@ -684,7 +691,7 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             arp_page_ = ((arp_page_ + inc) % kArpPages + kArpPages) % kArpPages;
         else if(screen_ == Screen::Mixer)
         {
-            int n            = kNumMixerPositions;
+            int n            = MixerSetCount() + 1; // + the Scope stop
             int new_position = ((mixer_position_ + inc) % n + n) % n;
             if(new_position != mixer_position_)
             {
@@ -713,7 +720,7 @@ void Ui::HandleEncoder(const UiControlEvents& events)
         if(screen_ == Screen::Home)
         {
             screen_      = Screen::Global;
-            global_page_ = GlobalPage::Mixer;
+            global_page_ = GlobalPage::MixTracks;
             // This hand-wired SD socket has no card-detect pin, so the
             // firmware otherwise never notices a card was swapped out
             // (e.g. pulled to move a WAV export to another device) and
@@ -807,10 +814,16 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             arp_track_ = -1;
         }
         else if(!encoder_long_fired_ && screen_ == Screen::Global
-                && global_page_ == GlobalPage::Mixer)
+                && (global_page_ == GlobalPage::MixTracks || global_page_ == GlobalPage::MixSynths))
         {
-            // Global:Mixer is an entry point into Screen::Mixer, same
-            // convention Global:Pad/Global:Granular's own click uses.
+            // Global:Tracks/Global:Synths are entry points into
+            // Screen::Mixer, which then steps through that page's set.
+            const int set = global_page_ == GlobalPage::MixSynths ? 1 : 0;
+            if(set != mixer_set_)
+            {
+                mixer_set_      = set;
+                mixer_position_ = 0;
+            }
             screen_ = Screen::Mixer;
         }
         else if(!encoder_long_fired_ && screen_ == Screen::Global
@@ -839,6 +852,13 @@ void Ui::HandleEncoder(const UiControlEvents& events)
                 ensemble_user_cursor_   = 0;
             }
             screen_ = Screen::Ensemble;
+        }
+        else if(!encoder_long_fired_ && screen_ == Screen::Global
+                && global_page_ == GlobalPage::Supersaw)
+        {
+            // Global:Supersaw is the entry point into Screen::Supersaw,
+            // as Global:Ensemble's is into Screen::Ensemble.
+            screen_ = Screen::Supersaw;
         }
         else if(!encoder_long_fired_ && screen_ == Screen::Global
                 && (global_page_ == GlobalPage::SampleSynthVoice
@@ -887,7 +907,8 @@ void Ui::HandleEncoder(const UiControlEvents& events)
         else if(!encoder_long_fired_
                 && (screen_ == Screen::Granular || screen_ == Screen::Dexed
                     || screen_ == Screen::Ensemble || screen_ == Screen::SampleSynth
-                    || screen_ == Screen::Mixer || screen_ == Screen::Arp))
+                    || screen_ == Screen::Mixer || screen_ == Screen::Arp
+                    || screen_ == Screen::Supersaw))
         {
             // Back out to the Global page this screen was entered from --
             // global_page_ is left untouched while inside, so this lands on
@@ -1040,10 +1061,16 @@ void Ui::HandleButton2(const UiControlEvents& events)
             else if(!in_items && SdMgmtEnsembleBox())
             {
                 // Ensemble or Organ: point the preset functions (and the
-                // loaded-slot tracking Delete updates) at that engine.
-                sd_mgmt_ens_kind_ = sd_mgmt_list_cursor_ > 0 ? 1 : 0;
-                SelectEnsembleEngine(sd_mgmt_ens_kind_);
-                ensemble_preset_slots_dirty_ = true;
+                // loaded-slot tracking Delete updates) at that engine. The
+                // Supersaw (2) has its own.
+                sd_mgmt_ens_kind_ = sd_mgmt_list_cursor_ > 2 ? 2 : sd_mgmt_list_cursor_;
+                if(sd_mgmt_ens_kind_ < 2)
+                {
+                    SelectEnsembleEngine(sd_mgmt_ens_kind_);
+                    ensemble_preset_slots_dirty_ = true;
+                }
+                else
+                    ssw_slots_dirty_ = true;
                 sd_mgmt_cursor_              = 0;
                 sd_mgmt_status_[0]           = '\0';
             }
@@ -1978,6 +2005,10 @@ void Ui::HandleButton2(const UiControlEvents& events)
             button2_long_fired_ = false;
         }
     }
+    else if(screen_ == Screen::Supersaw
+            && (supersaw_page_ == SupersawParamPage::Preset
+                || supersaw_page_ == SupersawParamPage::User))
+        SupersawHandleButton2(events);
     else if(events.btn2_released)
     {
         OnButton2Short();
@@ -2039,7 +2070,7 @@ void Ui::OnButton1Short()
                 tempo_->ToggleMetronome();
             else if(global_page_ == GlobalPage::Midi)
                 SetPedalReversed(!pedal_reversed_); // Norm <-> Rev
-            else if(global_page_ == GlobalPage::Mixer)
+            else if(global_page_ == GlobalPage::MixTracks || global_page_ == GlobalPage::MixSynths)
                 mixer_profile_view_ = !mixer_profile_view_;
             else if(global_page_ == GlobalPage::Arp && arp_)
                 arp_->Get(arp_engine_).on = !arp_->Get(arp_engine_).on;
@@ -2170,6 +2201,12 @@ void Ui::OnButton1Short()
                 organ_enabled_ = !organ_enabled_;
                 if(ensemble_engines_[1])
                     ensemble_engines_[1]->AllNotesOff();
+            }
+            else if(global_page_ == GlobalPage::Supersaw)
+            {
+                supersaw_enabled_ = !supersaw_enabled_;
+                if(supersaw_)
+                    supersaw_->AllNotesOff();
             }
             else if(global_page_ == GlobalPage::SampleSynthVoice)
             {
@@ -2397,15 +2434,16 @@ void Ui::OnButton1Short()
                 }
             }
             break;
+        case Screen::Supersaw: SupersawButton1(); break;
         case Screen::Ensemble:
             if(ensemble_param_page_ == EnsembleParamPage::Perc && ensemble_)
                 ensemble_->SetPercOn(!ensemble_->GetPercOn());
+            else if(ensemble_param_page_ == EnsembleParamPage::Lfo && ensemble_)
+                LfoCycleWave(ensemble_->Lfo());
             else if(ensemble_param_page_ == EnsembleParamPage::Env)
                 ensemble_env_target_sr_ = false; // knobs -> Attack+Decay
             else if(ensemble_param_page_ == EnsembleParamPage::FX)
                 ensemble_fx_target_delay_ = false; // knobs -> Reverb (Send+Size)
-            else if(ensemble_param_page_ == EnsembleParamPage::Mix)
-                ensemble_mix_target_gain_ = false; // knobs -> Level+Pan
             else if(ensemble_param_page_ == EnsembleParamPage::Filter && ensemble_)
             {
                 // Same "Button1 cycles" idiom as Layer:Filter/Dexed:Filter.
@@ -2728,8 +2766,14 @@ void Ui::OnButton2Short()
         ensemble_env_target_sr_ = true; // knobs -> Sustain+Release
     else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::FX)
         ensemble_fx_target_delay_ = true; // knobs -> Delay (Send+Time)
-    else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::Mix)
-        ensemble_mix_target_gain_ = true; // knobs -> Gain
+    else if(screen_ == Screen::Supersaw)
+        SupersawButton2Short();
+    else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::Lfo
+            && ensemble_)
+        LfoToggleSync(ensemble_->Lfo(), KnobContext::EnsembleLfo);
+    else if(screen_ == Screen::Ensemble && ensemble_param_page_ == EnsembleParamPage::MIDI
+            && ensemble_ && !ensemble_->IsOrgan())
+        ensemble_midi_vel_ = !ensemble_midi_vel_; // knobs -> Velocity / Channel+Voices
     else if(screen_ == Screen::SampleSynth && sample_synth_param_page_ == SampleSynthParamPage::Env)
         sample_synth_adsr_target_sr_ = true; // knobs -> Sustain+Release
     else if(screen_ == Screen::SampleSynth && sample_synth_param_page_ == SampleSynthParamPage::FX)
@@ -2821,13 +2865,15 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case GlobalPage::Granular: return KnobContext::GlobalGranular;
                 case GlobalPage::Looper: return KnobContext::GlobalLooper;
                 case GlobalPage::Display: return KnobContext::GlobalDisplay;
-                case GlobalPage::Mixer: return KnobContext::GlobalMixer;
+                case GlobalPage::MixTracks:
+                case GlobalPage::MixSynths: return KnobContext::GlobalMixer;
                 case GlobalPage::Sends: return KnobContext::GlobalSends;
                 case GlobalPage::SdMgmt: return KnobContext::GlobalSdMgmt;
                 case GlobalPage::Dexed:
                 case GlobalPage::DexedB: return KnobContext::GlobalDexed;
                 case GlobalPage::Ensemble:
-                case GlobalPage::Organ: return KnobContext::GlobalEnsemble;
+                case GlobalPage::Organ:
+                case GlobalPage::Supersaw: return KnobContext::GlobalEnsemble;
                 case GlobalPage::SampleSynthVoice:
                 case GlobalPage::SampleSynthDrum: return KnobContext::GlobalSampleSynth;
                 default: return KnobContext::GlobalTempo;
@@ -2893,6 +2939,7 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case DexedOpParamPage::Transpose: return KnobContext::DexedVoiceTranspose;
                 default: return KnobContext::DexedOpAlgo;
             }
+        case Screen::Supersaw: return SupersawKnobContext();
         case Screen::Ensemble:
             switch(ensemble_param_page_)
             {
@@ -2903,14 +2950,18 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                     return ensemble_env_target_sr_ ? KnobContext::EnsembleEnvSR
                                                       : KnobContext::EnsembleEnvAD;
                 case EnsembleParamPage::Ensemble: return KnobContext::EnsembleEnsemble;
+                case EnsembleParamPage::Lfo: return KnobContext::EnsembleLfo;
+                case EnsembleParamPage::LfoDepth: return KnobContext::EnsembleLfoDepth;
                 case EnsembleParamPage::Filter: return KnobContext::EnsembleFilter;
                 case EnsembleParamPage::Mix:
-                    return ensemble_mix_target_gain_ ? KnobContext::EnsembleMixGain
-                                                     : KnobContext::EnsembleMix;
+                    return KnobContext::EnsembleMix;
                 case EnsembleParamPage::FX:
                     return ensemble_fx_target_delay_ ? KnobContext::EnsembleFxDelay
                                                         : KnobContext::EnsembleFxReverb;
-                case EnsembleParamPage::MIDI: return KnobContext::EnsembleMidi;
+                case EnsembleParamPage::MIDI:
+                    return ensemble_midi_vel_ && ensemble_ && !ensemble_->IsOrgan()
+                               ? KnobContext::EnsembleMidiVel
+                               : KnobContext::EnsembleMidi;
                 case EnsembleParamPage::Preset: return KnobContext::EnsemblePreset;
                 case EnsembleParamPage::User: return KnobContext::EnsembleUser;
                 default: return KnobContext::EnsembleRegistration;
@@ -2970,9 +3021,9 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                    : arp_page_ == 2 ? KnobContext::ArpFeel
                                     : KnobContext::ArpKey;
         case Screen::Mixer:
-            if(mixer_position_ >= kNumMixerChannels) // Scope stop
+            if(mixer_position_ >= MixerSetCount()) // Scope stop
                 return KnobContext::MixerNoKnobs;
-            if(mixer_position_ == kNumMixerChannels - 1) // Master
+            if(MixerSetChannel(mixer_position_) == kMixMas)
                 return KnobContext::MixerMaster;
             return mixer_target_reverb_ ? KnobContext::MixerReverb : KnobContext::MixerVolPan;
     }
@@ -2994,8 +3045,8 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             break;
         case KnobContext::GlobalSends:
             k1_pickup_raw_[i] = ((float)sends_ch_ + 0.5f) / (float)kSendChannels;
-            k2_pickup_raw_[i] = sends_target_delay_ ? MixerGetDelaySend01(sends_ch_)
-                                                    : MixerGetSend01(sends_ch_);
+            k2_pickup_raw_[i] = sends_target_delay_ ? MixerGetDelaySend01(SendsChannel(sends_ch_))
+                                                    : MixerGetSend01(SendsChannel(sends_ch_));
             break;
         case KnobContext::GlobalArp:
             k1_pickup_raw_[i] = ((float)arp_engine_ + 0.5f) / (float)Arpeggiator::kEngines;
@@ -3400,15 +3451,11 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k2_pickup_raw_[i] = ensemble_->GetFilterResonance01();
             }
             break;
-        case KnobContext::EnsembleMixGain:
-            if(ensemble_)
-                k1_pickup_raw_[i] = ensemble_->GetGain01();
-            break;
         case KnobContext::EnsembleMix:
             if(ensemble_)
             {
                 k1_pickup_raw_[i] = ensemble_->GetOutputLevel01();
-                k2_pickup_raw_[i] = ensemble_->GetPan01();
+                k2_pickup_raw_[i] = ensemble_->GetGain01();
             }
             break;
         case KnobContext::EnsembleFxReverb:
@@ -3435,6 +3482,35 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                     = Clampf(((float)(ensemble_->GetMaxVoices() - 1) + 0.5f)
                                  / ((float)EnsembleSynth::kMaxVoices - 0.01f),
                              0.f, 1.f);
+            break;
+        case KnobContext::SupersawSuperSaw:
+        case KnobContext::SupersawOsc2:
+        case KnobContext::SupersawBalance:
+        case KnobContext::SupersawFilter:
+        case KnobContext::SupersawFltEnvAD:
+        case KnobContext::SupersawFltEnvSR:
+        case KnobContext::SupersawFltMod:
+        case KnobContext::SupersawAmpEnvAD:
+        case KnobContext::SupersawAmpEnvSR:
+        case KnobContext::SupersawLfo:
+        case KnobContext::SupersawLfoDepth:
+        case KnobContext::SupersawVoice:
+        case KnobContext::SupersawChorus:
+        case KnobContext::SupersawMix:
+        case KnobContext::SupersawFxReverb:
+        case KnobContext::SupersawFxDelay:
+        case KnobContext::SupersawMidi:
+        case KnobContext::SupersawMidiVel: SupersawSyncPickup(ctx, i); break;
+        case KnobContext::SupersawList: break; // browses a list directly, no pickup used
+        case KnobContext::EnsembleMidiVel:
+            if(ensemble_)
+                k1_pickup_raw_[i] = ensemble_->GetVelSens01();
+            break;
+        case KnobContext::EnsembleLfo:
+        case KnobContext::EnsembleLfoDepth:
+            if(ensemble_)
+                LfoSyncPickup(ensemble_->Lfo(), ctx == KnobContext::EnsembleLfoDepth,
+                              ensemble_lfo_dest_, i);
             break;
         case KnobContext::EnsemblePreset: break; // browses a list directly, no pickup used
         case KnobContext::EnsembleUser: break;   // ditto
@@ -3611,11 +3687,11 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::GranularPreset: break; // browses a list directly, no pickup used
         case KnobContext::GranularUser: break;   // ditto
         case KnobContext::MixerVolPan:
-            k1_pickup_raw_[i] = MixerGetVolume01(mixer_position_);
-            k2_pickup_raw_[i] = MixerGetPan01(mixer_position_);
+            k1_pickup_raw_[i] = MixerGetVolume01(MixerSetChannel(mixer_position_));
+            k2_pickup_raw_[i] = MixerGetPan01(MixerSetChannel(mixer_position_));
             break;
         case KnobContext::MixerReverb:
-            k1_pickup_raw_[i] = MixerGetSend01(mixer_position_);
+            k1_pickup_raw_[i] = MixerGetSend01(MixerSetChannel(mixer_position_));
             break;
         case KnobContext::MixerMaster:
             k1_pickup_raw_[i] = master_volume01_;
@@ -3997,9 +4073,9 @@ void Ui::ApplyKnobs()
                 if(PickUpK2(k2))
                 {
                     if(sends_target_delay_)
-                        MixerSetDelaySend01(sends_ch_, k2);
+                        MixerSetDelaySend01(SendsChannel(sends_ch_), k2);
                     else
-                        MixerSetSend01(sends_ch_, k2);
+                        MixerSetSend01(SendsChannel(sends_ch_), k2);
                 }
             }
             if(global_page_ == GlobalPage::Arp && PickUpK1(k1))
@@ -4172,7 +4248,7 @@ void Ui::ApplyKnobs()
                     snap_cursor_ = idx;
                 }
             }
-            else if(global_page_ == GlobalPage::Mixer)
+            else if(global_page_ == GlobalPage::MixTracks || global_page_ == GlobalPage::MixSynths)
             {
                 // The two volumes you reach for live: Master, and Bypass
                 // on its own -- Bypass also goes through Master, so with
@@ -4636,6 +4712,8 @@ void Ui::ApplyKnobs()
             }
             break;
 
+        case Screen::Supersaw: SupersawApplyKnobs(k1, k2, ci); break;
+
         case Screen::Ensemble:
             if(!ensemble_)
                 break;
@@ -4683,6 +4761,11 @@ void Ui::ApplyKnobs()
                             ensemble_->SetRelease01(k2);
                     }
                     break;
+                case EnsembleParamPage::Lfo:
+                case EnsembleParamPage::LfoDepth:
+                    LfoApplyKnobs(ensemble_->Lfo(), ensemble_param_page_ == EnsembleParamPage::LfoDepth,
+                                  &ensemble_lfo_dest_, k1, k2, ci);
+                    break;
                 case EnsembleParamPage::Ensemble:
                     if(PickUpK1(k1))
                         ensemble_->SetChorusDepth01(k1);
@@ -4695,17 +4778,11 @@ void Ui::ApplyKnobs()
                     if(PickUpK2(k2))
                         ensemble_->SetFilterResonance01(k2);
                     break;
-                case EnsembleParamPage::Mix:
-                    if(ensemble_mix_target_gain_)
-                    {
-                        if(PickUpK1(k1))
-                            ensemble_->SetGain01(k1);
-                        break;
-                    }
+                case EnsembleParamPage::Mix: // Pan is on the Mixer
                     if(PickUpK1(k1))
                         ensemble_->SetOutputLevel01(k1);
                     if(PickUpK2(k2))
-                        ensemble_->SetPan01(k2);
+                        ensemble_->SetGain01(k2);
                     break;
                 case EnsembleParamPage::FX:
                     if(!ensemble_fx_target_delay_)
@@ -4734,6 +4811,12 @@ void Ui::ApplyKnobs()
                         ensemble_->SetClick01(k1);
                     break;
                 case EnsembleParamPage::MIDI:
+                    if(ensemble_midi_vel_ && !ensemble_->IsOrgan())
+                    {
+                        if(PickUpK1(k1))
+                            ensemble_->SetVelSens01(k1);
+                        break;
+                    }
                     if(PickUpK1(k1))
                         *EnsembleActiveChannelPtr() = -1 + (int)(k1 * 16.99f);
                     if(PickUpK2(k2))
@@ -5151,10 +5234,10 @@ void Ui::ApplyKnobs()
 
         case Screen::Mixer:
         {
-            int ch = mixer_position_;
-            if(ch >= kNumMixerChannels) // Scope stop -- no continuous knobs
+            if(mixer_position_ >= MixerSetCount()) // Scope stop -- no continuous knobs
                 break;
-            if(ch == kNumMixerChannels - 1) // Master: Volume + Reverb Size, no toggle
+            const int ch = MixerSetChannel(mixer_position_);
+            if(ch == kMixMas) // Master: Volume + Reverb Size, no toggle
             {
                 if(PickUpK1(k1))
                 {
@@ -5333,6 +5416,7 @@ void Ui::Draw()
         case Screen::Arp: DrawArpScreen(); break;
         case Screen::Dexed: DrawDexedScreen(); break;
         case Screen::Ensemble: DrawEnsembleScreen(); break;
+        case Screen::Supersaw: DrawSupersawScreen(); break;
         case Screen::DexedOperator: DrawDexedOperatorScreen(); break;
         case Screen::SampleSynth: DrawSampleSynthScreen(); break;
         case Screen::SeqTrack: DrawSeqTrackScreen(); break;
@@ -7651,7 +7735,7 @@ void Ui::DrawGlobalScreen()
         DrawArpGlobalPage();
         return;
     }
-    if(global_page_ == GlobalPage::Mixer)
+    if(global_page_ == GlobalPage::MixTracks || global_page_ == GlobalPage::MixSynths)
     {
         // Entry point only, same treatment as Global:Pad/Granular -- an
         // at-a-glance summary (same 8-channel grid used elsewhere, see
@@ -7662,24 +7746,24 @@ void Ui::DrawGlobalScreen()
         // means "this label describes the button next to it"). No knobs
         // of its own any more.
         disp_->SetCursor(0, 0);
-        WriteUpper("Global:Mixer");
+        WriteUpper(global_page_ == GlobalPage::MixSynths ? "Global:Synths" : "Global:Tracks");
         DrawBeatIndicator(disp_->Width() - 41, 0, 3);
         disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
         if(mixer_profile_view_)
         {
             // Per-stage CPU, avg/peak % of the block budget (profiler.h),
-            // two columns of five under an AVG/PK heading. The average
+            // three columns of four under an AVG/PK heading. The average
             // ends 1px before a fixed "/" and the peak starts 1px after
             // it, so the slash always sits midway between the two; the
             // headings are centred over two-digit numbers.
-            static const char* const kNames[Prof::kNumStages]
-                = {"Gran", "DXD", "Ens", "Orgn", "SmVo", "SmDr", "Loop", "Dly", "Rev", "Othr"};
-            constexpr int kAvgRight = 30, kSlashX = 32, kPeakLeft = 36, kTwoDigitW = 7;
-            for(int col = 0; col < 2; col++)
+            static const char* const kNames[Prof::kNumStages] = {
+                "Gran", "DXD", "Ens", "Orgn", "SmVo", "SmDr", "SSaw", "Loop", "Dly", "Rev", "Othr"};
+            constexpr int kColW = 43, kAvgRight = 24, kSlashX = 26, kPeakLeft = 30, kTwoDigitW = 7;
+            for(int col = 0; col < 3; col++)
             {
-                const int avg_mid  = col * 64 + kAvgRight - (kTwoDigitW - 1) / 2;
-                const int peak_mid = col * 64 + kPeakLeft + (kTwoDigitW - 1) / 2;
+                const int avg_mid  = col * kColW + kAvgRight - (kTwoDigitW - 1) / 2;
+                const int peak_mid = col * kColW + kPeakLeft + (kTwoDigitW - 1) / 2;
                 TomThumbDrawText(disp_, avg_mid - (TomThumbInkWidth("AVG") - 1) / 2, 15, "AVG",
                                  true);
                 TomThumbDrawText(disp_, peak_mid - (TomThumbInkWidth("PK") - 1) / 2, 15, "PK",
@@ -7687,9 +7771,9 @@ void Ui::DrawGlobalScreen()
             }
             for(int st = 0; st < Prof::kNumStages; st++)
             {
-                // y is the text baseline (glyphs sit above it): 21..45
+                // y is the text baseline (glyphs sit above it): 21..39
                 // sits under the heading and clear of the footer (row 46).
-                const int x = (st % 2) * 64, y = 21 + (st / 2) * 6;
+                const int x = (st % 3) * kColW, y = 21 + (st / 3) * 6;
                 char      avg[6], peak[6];
                 snprintf(avg, sizeof(avg), "%d", (int)(Prof::g_avg[st] * 100.f + 0.5f));
                 snprintf(peak, sizeof(peak), "%d", (int)(Prof::g_peak[st] * 100.f + 0.5f));
@@ -7701,6 +7785,7 @@ void Ui::DrawGlobalScreen()
         }
         else
         {
+            mixer_set_ = global_page_ == GlobalPage::MixSynths ? 1 : 0;
             DrawMixerOverviewGrid(16);
             const char* hint = "PUSH ENC TO OPEN";
             int         hw   = TomThumbAdvanceWidth(hint);
@@ -7760,6 +7845,11 @@ void Ui::DrawGlobalScreen()
     if(global_page_ == GlobalPage::Organ)
     {
         DrawGlobalEntryPage("Global:Organ", organ_enabled_, kGlobalIconOrgan);
+        return;
+    }
+    if(global_page_ == GlobalPage::Supersaw)
+    {
+        DrawGlobalEntryPage("Global:SSaw", supersaw_enabled_, kGlobalIconSupersaw);
         return;
     }
     if(global_page_ == GlobalPage::SampleSynthVoice)
@@ -7957,7 +8047,7 @@ void Ui::DrawGlobalScreen()
         TomThumbDrawText(disp_, 0, 15, bypass_ ? "Bypass: On" : "Bypass: Off", true);
         // The monitored input as heard, and Global:Mixer's Bypass Peak
         // bar -- same scope+meter as every engine's own Mix page.
-        DrawMixPageScope(18, bypass_scope_buf_, bypass_scope_capacity_, 10); // Mixer channel 10
+        DrawMixPageScope(18, bypass_scope_buf_, bypass_scope_capacity_, kMixByp);
         char send_val[8], shared_val[12];
         if(!bypass_fx_target_delay_)
         {
@@ -8272,9 +8362,9 @@ void Ui::DrawTremoloCurve(float depth01, float rate01)
 const char* Ui::ArpEngineName(int e, bool short_name)
 {
     static const char* const kShort[Arpeggiator::kEngines]
-        = {"GR", "DXA", "DXB", "ENS", "ORG", "SMV", "SMD"};
+        = {"GR", "DXA", "DXB", "ENS", "ORG", "SMV", "SMD", "SSW"};
     static const char* const kLong[Arpeggiator::kEngines]
-        = {"Grains", "DXD-A", "DXD-B", "Ensemble", "Organ", "SMPVO", "SMPDR"};
+        = {"Grains", "DXD-A", "DXD-B", "Ensemble", "Organ", "SMPVO", "SMPDR", "Supersaw"};
     if(e < 0 || e >= Arpeggiator::kEngines)
         return "?";
     return short_name ? kShort[e] : kLong[e];
@@ -8707,6 +8797,16 @@ void Ui::DrawArpScreen()
     DrawStarToggle(true, "Lock/Follow", !s.lock);
 }
 
+int Ui::SendsChannel(int cell)
+{
+    // Each Global:Sends cell's mixer channel (DXD: the Dexed bus's sends,
+    // which both engines share).
+    static const int kIds[kSendChannels] = {kMixL1,  kMixL1 + 1, kMixL1 + 2, kMixL1 + 3,
+                                            kMixGr,  kMixDxa,    kMixEns,    kMixOrg,
+                                            kMixSmv, kMixSmd,    kMixSsw,    kMixByp};
+    return kIds[cell < 0 ? 0 : (cell >= kSendChannels ? kSendChannels - 1 : cell)];
+}
+
 void Ui::DrawSendsPage()
 {
     disp_->SetCursor(0, 0);
@@ -8717,7 +8817,7 @@ void Ui::DrawSendsPage()
     // A cell per channel, two rows of six: its name, a reverb bar and a
     // delay bar (dotted where empty); the chosen one outlined.
     static const char* const kNames[kSendChannels]
-        = {"A1", "A2", "A3", "A4", "GR", "DXD", "ENS", "ORG", "SMV", "SMD", "BYP"};
+        = {"A1", "A2", "A3", "A4", "GR", "DXD", "ENS", "ORG", "SMV", "SMD", "SSW", "BYP"};
     const bool dly_off = SharedDelay::IsOff(delay_time01_);
     for(int ch = 0; ch < kSendChannels; ch++)
     {
@@ -8728,7 +8828,8 @@ void Ui::DrawSendsPage()
                          kNames[ch], true);
         for(int row = 0; row < 2; row++)
         {
-            const float v = row == 0 ? MixerGetSend01(ch) : (dly_off ? 0.f : MixerGetDelaySend01(ch));
+            const int   id = SendsChannel(ch);
+            const float v  = row == 0 ? MixerGetSend01(id) : (dly_off ? 0.f : MixerGetDelaySend01(id));
             const int   y = cy + 9 + row * 3;
             for(int x = cx + 2; x < cx + 18; x += 2)
                 disp_->DrawPixel(x, y + 1, true);
@@ -8738,7 +8839,8 @@ void Ui::DrawSendsPage()
         }
     }
     char val[8];
-    const float v = sends_target_delay_ ? MixerGetDelaySend01(sends_ch_) : MixerGetSend01(sends_ch_);
+    const float v = sends_target_delay_ ? MixerGetDelaySend01(SendsChannel(sends_ch_))
+                                          : MixerGetSend01(SendsChannel(sends_ch_));
     if(sends_target_delay_ && dly_off)
         snprintf(val, sizeof(val), "Off");
     else
@@ -8804,6 +8906,9 @@ void Ui::LiveSnapEngineName(int engine, char* out, size_t out_size)
             snprintf(out, out_size, "%s", name[0] != '\0' ? name : "?");
             break;
         }
+        case 7: // Supersaw
+            SupersawPresetName(ssw_loaded_slot_, out, out_size);
+            break;
         case 2: // Ensemble
         case 5: // Organ
         {
@@ -8922,6 +9027,16 @@ void Ui::CaptureSynthSnapshot(PerformanceStore::SynthSnapshot* out)
         LiveSnapEngineName(5, og.name, sizeof(og.name));
         og.preset              = ensemble_engines_[1]->CapturePreset();
         og.preset.midi_channel = organ_midi_channel_;
+    }
+    if(supersaw_)
+    {
+        PerformanceStore::SynthSnapshot::Supersaw& ss = snap.supersaw;
+        ss.present             = 1;
+        ss.on                  = supersaw_enabled_ ? 1 : 0;
+        ss.slot                = ssw_loaded_slot_;
+        LiveSnapEngineName(7, ss.name, sizeof(ss.name));
+        ss.preset              = supersaw_->CapturePreset();
+        ss.preset.midi_channel = supersaw_midi_channel_;
     }
     if(sample_synth_)
     {
@@ -9131,6 +9246,21 @@ bool Ui::ApplySynthSnapshot(PerformanceStore::SynthSnapshot& snap, size_t audio_
     }
     SelectEnsembleEngine(ens_was);
 
+    // The Supersaw: a snapshot from before it has supersaw.present 0 --
+    // off, its sound left as it is.
+    if(supersaw_)
+    {
+        supersaw_->AllNotesOff();
+        supersaw_enabled_ = snap.supersaw.present && snap.supersaw.on;
+        if(snap.supersaw.present)
+        {
+            supersaw_->ApplyPreset(snap.supersaw.preset);
+            ApplyPresetMidiChannel(snap.supersaw.preset.midi_channel, &supersaw_midi_channel_);
+            ssw_loaded_slot_ = snap.supersaw.slot;
+            MarkSupersawClean();
+        }
+    }
+
     bool kit_missing = false;
     if(sample_synth_)
     {
@@ -9258,7 +9388,7 @@ void Ui::DrawSnapScreen()
     {
         // Grid order; 4 is DXD-B, 5 the Organ, 3/6 SMPVO/SMPDR (see
         // LiveSnapEngineName()).
-        static const int kRows[kSnapRows] = {0, 1, 4, 2, 5, 3, 6};
+        static const int kRows[kSnapRows] = {0, 1, 4, 2, 5, 3, 6, 7};
         // An older snapshot holds one Sampler face only (the other
         // column shows "-").
         const bool pair      = shown && shown->sampler_pair.present != 0;
@@ -9289,6 +9419,9 @@ void Ui::DrawSnapScreen()
                 case 3:
                     on = shown ? shown->info.sampler_voice_on : sample_synth_voice_enabled_;
                     break;
+                case 7:
+                    on = shown ? shown->supersaw.present && shown->supersaw.on : supersaw_enabled_;
+                    break;
                 default:
                     on = shown ? shown->info.sampler_drum_on : sample_synth_drum_enabled_;
                     break;
@@ -9306,6 +9439,9 @@ void Ui::DrawSnapScreen()
                 else if(e == 5)
                     snprintf(name, sizeof(name), "%s",
                               shown->organ.present ? shown->organ.name : "-");
+                else if(e == 7)
+                    snprintf(name, sizeof(name), "%s",
+                              shown->supersaw.present ? shown->supersaw.name : "-");
                 else
                     snprintf(name, sizeof(name), "%s", shown->info.names[e]);
             }
@@ -9457,7 +9593,7 @@ const char* Ui::SdMgmtFolderName(SdMgmtFolder f)
         case SdMgmtFolder::Global: return "Global";
         case SdMgmtFolder::GranularPresets: return "Grains Presets";
         case SdMgmtFolder::DexedPresets: return "Dexed Presets";
-        case SdMgmtFolder::EnsemblePresets: return "Ens/Organ Presets";
+        case SdMgmtFolder::EnsemblePresets: return "Ens/Org/SSaw Presets";
         case SdMgmtFolder::SampleSynthCaptures: return "Captures";
         case SdMgmtFolder::SampleSynthImports: return "Sampler Imports";
         case SdMgmtFolder::SampleSynthVoiceUserPresets: return "SMPVO User";
@@ -9473,7 +9609,7 @@ const char* Ui::SdMgmtFolderShortLabel(SdMgmtFolder f)
         case SdMgmtFolder::Global: return "GLOBAL";
         case SdMgmtFolder::GranularPresets: return "GRAINS";
         case SdMgmtFolder::DexedPresets: return "DEXED";
-        case SdMgmtFolder::EnsemblePresets: return "ENS/ORG"; // 28 px, fits the 32 px box
+        case SdMgmtFolder::EnsemblePresets: return "SYNTH"; // Ensemble/Organ/Supersaw
         case SdMgmtFolder::SampleSynthCaptures: return "CAPT";
         case SdMgmtFolder::SampleSynthImports: return "SMPIMP"; // sampler imports -- sounds, kits, breaks
         case SdMgmtFolder::SampleSynthVoiceUserPresets: return "SMPVO";
@@ -9593,8 +9729,10 @@ void Ui::DrawSdMgmtScreen()
         else if(SdMgmtGlobalBox() && sd_mgmt_global_kind_ >= 0)
             snprintf(line1, sizeof(line1), "%s:", SdMgmtSnapshots() ? "Snapshots" : "Performances");
         else if(SdMgmtEnsembleBox() && sd_mgmt_ens_kind_ >= 0)
-            snprintf(line1, sizeof(line1), "%s:", sd_mgmt_ens_kind_ == 1 ? "Organ Presets"
-                                                                         : "Ensemble Presets");
+            snprintf(line1, sizeof(line1), "%s:",
+                     sd_mgmt_ens_kind_ == 2   ? "Supersaw Presets"
+                     : sd_mgmt_ens_kind_ == 1 ? "Organ Presets"
+                                              : "Ensemble Presets");
         else if(sd_mgmt_folder_ == SdMgmtFolder::SampleSynthImports && sd_mgmt_smp_kind_ == 0)
             snprintf(line1, sizeof(line1), "%s:",
                       sd_mgmt_smp_sub_kind_ < 0  ? "Voice Imports"
@@ -9664,9 +9802,12 @@ void Ui::DrawSdMgmtScreen()
                     snprintf(line2, sizeof(line2), "(empty)");
             }
             else if(SdMgmtEnsembleBox() && sd_mgmt_ens_kind_ < 0)
-                snprintf(line2, sizeof(line2), "%s", sd_mgmt_list_cursor_ > 0 ? "Organ" : "Ensemble");
+                snprintf(line2, sizeof(line2), "%s",
+                         sd_mgmt_list_cursor_ >= 2   ? "Supersaw"
+                         : sd_mgmt_list_cursor_ == 1 ? "Organ"
+                                                     : "Ensemble");
             else if(SdMgmtEnsembleBox() && slots && count > 0)
-                snprintf(line2, sizeof(line2), "%s%d", EnsembleSlotPrefix(), slots[sd_mgmt_cursor_]);
+                snprintf(line2, sizeof(line2), "%s%d", SdMgmtItemPrefix(), slots[sd_mgmt_cursor_]);
             else if(SdMgmtDrumUserBox() && sd_mgmt_drum_kind_ < 0)
             {
                 int k = sd_mgmt_list_cursor_ > 0 ? 1 : 0;
@@ -10099,6 +10240,7 @@ int* Ui::MidiDefaultChannel(int engine)
         case 3: return &ensemble_midi_channel_;
         case 4: return &organ_midi_channel_;
         case 5: return &sample_synth_midi_channel_;
+        case 7: return &supersaw_midi_channel_;
         default: return &sample_drum_midi_channel_;
     }
 }
@@ -10125,6 +10267,7 @@ int* Ui::MidiRowChannel(int row)
         case 3: return &ensemble_midi_channel_;
         case 4: return &organ_midi_channel_;
         case 5: return &sample_synth_midi_channel_;
+        case 7: return &supersaw_midi_channel_;
         default: return &sample_drum_midi_channel_;
     }
 }
@@ -10173,6 +10316,7 @@ void Ui::DrawMidiScreen()
             case 3: on = ensemble_enabled_; break;
             case 4: on = organ_enabled_; break;
             case 5: on = sample_synth_voice_enabled_; break;
+            case 7: on = supersaw_enabled_; break;
             default: on = sample_synth_drum_enabled_; break;
         }
         const int   ch    = *MidiRowChannel(r);
@@ -10182,13 +10326,13 @@ void Ui::DrawMidiScreen()
         if(sel)
             disp_->DrawRect(x, 10, x + kEngineColW - 2, 44, true, true);
         TomThumbDrawText(disp_, x + (kEngineColW - TomThumbInkWidth(label)) / 2, 17, label, !sel);
-        disp_->DrawRect(x + 7, 21, x + 9, 23, !sel, on); // filled = engine on
+        disp_->DrawRect(x + 6, 21, x + 8, 23, !sel, on); // filled = engine on
         char ch_txt[8];
         if(ch < 0)
             snprintf(ch_txt, sizeof(ch_txt), "Omni");
         else
             snprintf(ch_txt, sizeof(ch_txt), "%d", ch + 1);
-        // Centred under the on/off dot (x + 8). Tom Thumb's "1" has its
+        // Centred under the on/off dot (x + 7). Tom Thumb's "1" has its
         // stem in its right column, so "1" and "10".."16" sit a pixel
         // further left to line that stem up.
         int ch_x = x + (kEngineColW - TomThumbInkWidth(ch_txt)) / 2 - (ch_txt[0] == '1' ? 1 : 0);
@@ -10478,7 +10622,7 @@ void Ui::DrawGranularScreen()
         {
             // Same layout as every engine's Mix page: scope + output
             // meter, Level/Pan, Gain.
-            DrawMixPageScope(12, granular_scope_buf_, granular_scope_capacity_, 4);
+            DrawMixPageScope(12, granular_scope_buf_, granular_scope_capacity_, kMixGr);
             if(granular_mix_target_gain_)
             {
                 char gain_val[12];
@@ -10539,7 +10683,7 @@ void Ui::DrawGranularScreen()
             else
                 snprintf(chan_val, sizeof(chan_val), "%d", granular_midi_channel_ + 1);
             // No body text of its own needed (title already says "MIDI").
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Channel", chan_val, "", "");
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "MIDI Ch", chan_val, "", "");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
             break;
         }
@@ -10901,6 +11045,45 @@ void Ui::DrawGranularScreen()
     }
 }
 
+int Ui::MixerEngineChannel(int seq_engine)
+{
+    // MidiSequencer::Engine order.
+    static const int kIds[MidiSequencer::kNumEngines]
+        = {kMixGr, kMixDxa, kMixDxb, kMixEns, kMixOrg, kMixSmv, kMixSmd, kMixSsw};
+    return seq_engine >= 0 && seq_engine < MidiSequencer::kNumEngines ? kIds[seq_engine] : kMixGr;
+}
+
+int Ui::MixerSetChannel(int pos) const
+{
+    if(mixer_set_ == 1) // Global:Synths
+    {
+        static const int kSynths[kMixSynthsCount] = {kMixGr,  kMixDxa, kMixDxb, kMixEns, kMixOrg,
+                                                     kMixSmv, kMixSmd, kMixSsw, kMixByp, kMixMas};
+        return kSynths[pos < 0 ? 0 : (pos >= kMixSynthsCount ? kMixSynthsCount - 1 : pos)];
+    }
+    // Global:Tracks: L1-L4, M1-M8 (each its engine's channel), Bypass, Master.
+    if(pos < 4)
+        return kMixL1 + (pos < 0 ? 0 : pos);
+    if(pos < 12)
+        return MixerEngineChannel(seq_ ? seq_->GetEngine(pos - 4) : 0);
+    return pos == 12 ? kMixByp : kMixMas;
+}
+
+const char* Ui::MixerSetName(int pos, bool engine) const
+{
+    if(mixer_set_ == 0 && pos >= 4 && pos < 12)
+    {
+        static char buf[12];
+        if(engine)
+            snprintf(buf, sizeof(buf), "M%d>%s", pos - 3,
+                     MixerChannelName(MixerSetChannel(pos)));
+        else
+            snprintf(buf, sizeof(buf), "M%d", pos - 3);
+        return buf;
+    }
+    return MixerChannelName(MixerSetChannel(pos));
+}
+
 const char* Ui::MixerChannelName(int ch) const
 {
     switch(ch)
@@ -10910,13 +11093,15 @@ const char* Ui::MixerChannelName(int ch) const
         case 2: return "L3";
         case 3: return "L4";
         case 4: return "GR";
-        case 5: return "DXD";
-        case 6: return "ESB";
-        case 7: return "ORG";
-        case 8: return "VOI";
-        case 9: return "DRM";
-        case 10: return "BYP";
-        case 11: return "MAS";
+        case 5: return "DXA";
+        case 6: return "DXB";
+        case 7: return "ESB";
+        case 8: return "ORG";
+        case 9: return "VOI";
+        case 10: return "DRM";
+        case 11: return "SSW";
+        case 12: return "BYP";
+        case 13: return "MAS";
         default: return "?";
     }
 }
@@ -10927,13 +11112,15 @@ float Ui::MixerGetVolume01(int ch) const
     {
         case 0: case 1: case 2: case 3: return layers_[ch].GetVolume01();
         case 4: return granular_ ? granular_->GetOutputLevel01() : 0.f;
-        case 5: return dexed_ ? dexed_->GetOutputLevel01() : 0.f;
-        case 6: return ensemble_engines_[0] ? ensemble_engines_[0]->GetOutputLevel01() : 0.f;
-        case 7: return ensemble_engines_[1] ? ensemble_engines_[1]->GetOutputLevel01() : 0.f;
-        case 8: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetOutputLevel01() : 0.f;
-        case 9: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetOutputLevel01() : 0.f;
-        case 10: return bypass_mix_volume01_;
-        case 11: return master_volume01_;
+        case 5: return dexed_engines_[0] ? dexed_engines_[0]->GetEngineLevel01() : 0.f;
+        case 6: return dexed_engines_[1] ? dexed_engines_[1]->GetEngineLevel01() : 0.f;
+        case 7: return ensemble_engines_[0] ? ensemble_engines_[0]->GetOutputLevel01() : 0.f;
+        case 8: return ensemble_engines_[1] ? ensemble_engines_[1]->GetOutputLevel01() : 0.f;
+        case 9: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetOutputLevel01() : 0.f;
+        case 10: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetOutputLevel01() : 0.f;
+        case 11: return supersaw_ ? supersaw_->GetOutputLevel01() : 0.f;
+        case 12: return bypass_mix_volume01_;
+        case 13: return master_volume01_;
         default: return 0.f;
     }
 }
@@ -10944,12 +11131,14 @@ float Ui::MixerGetPan01(int ch) const
     {
         case 0: case 1: case 2: case 3: return layers_[ch].GetPan01();
         case 4: return granular_ ? granular_->GetPan01() : 0.5f;
-        case 5: return dexed_ ? dexed_->GetPan01() : 0.5f;
-        case 6: return ensemble_engines_[0] ? ensemble_engines_[0]->GetPan01() : 0.5f;
-        case 7: return ensemble_engines_[1] ? ensemble_engines_[1]->GetPan01() : 0.5f;
-        case 8: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetPan01() : 0.5f;
-        case 9: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetPan01() : 0.5f;
-        case 10: return bypass_pan01_;
+        case 5: return dexed_engines_[0] ? dexed_engines_[0]->GetEnginePan01() : 0.5f;
+        case 6: return dexed_engines_[1] ? dexed_engines_[1]->GetEnginePan01() : 0.5f;
+        case 7: return ensemble_engines_[0] ? ensemble_engines_[0]->GetPan01() : 0.5f;
+        case 8: return ensemble_engines_[1] ? ensemble_engines_[1]->GetPan01() : 0.5f;
+        case 9: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetPan01() : 0.5f;
+        case 10: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetPan01() : 0.5f;
+        case 11: return supersaw_ ? supersaw_->GetPan01() : 0.5f;
+        case 12: return bypass_pan01_;
         default: return 0.5f; // Master has none
     }
 }
@@ -10960,12 +11149,14 @@ float Ui::MixerGetSend01(int ch) const
     {
         case 0: case 1: case 2: case 3: return layers_[ch].GetReverbSend01();
         case 4: return granular_ ? granular_->GetReverbSend01() : 0.f;
-        case 5: return dexed_ ? dexed_->GetReverbSend01() : 0.f;
-        case 6: return ensemble_engines_[0] ? ensemble_engines_[0]->GetReverbSend01() : 0.f;
-        case 7: return ensemble_engines_[1] ? ensemble_engines_[1]->GetReverbSend01() : 0.f;
-        case 8: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetReverbSend01() : 0.f;
-        case 9: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetReverbSend01() : 0.f;
-        case 10: return bypass_reverb_send01_;
+        case 5: // the two engines share the Dexed bus's sends
+        case 6: return dexed_ ? dexed_->GetReverbSend01() : 0.f;
+        case 7: return ensemble_engines_[0] ? ensemble_engines_[0]->GetReverbSend01() : 0.f;
+        case 8: return ensemble_engines_[1] ? ensemble_engines_[1]->GetReverbSend01() : 0.f;
+        case 9: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetReverbSend01() : 0.f;
+        case 10: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetReverbSend01() : 0.f;
+        case 11: return supersaw_ ? supersaw_->GetReverbSend01() : 0.f;
+        case 12: return bypass_reverb_send01_;
         default: return 0.f; // Master uses Reverb Size instead (see reverb_size01_)
     }
 }
@@ -10976,12 +11167,14 @@ float Ui::MixerGetDelaySend01(int ch) const
     {
         case 0: case 1: case 2: case 3: return layers_[ch].GetDelaySend01();
         case 4: return granular_ ? granular_->GetDelaySend01() : 0.f;
-        case 5: return dexed_ ? dexed_->GetDelaySend01() : 0.f;
-        case 6: return ensemble_engines_[0] ? ensemble_engines_[0]->GetDelaySend01() : 0.f;
-        case 7: return ensemble_engines_[1] ? ensemble_engines_[1]->GetDelaySend01() : 0.f;
-        case 8: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetDelaySend01() : 0.f;
-        case 9: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetDelaySend01() : 0.f;
-        case 10: return bypass_delay_send01_;
+        case 5:
+        case 6: return dexed_ ? dexed_->GetDelaySend01() : 0.f;
+        case 7: return ensemble_engines_[0] ? ensemble_engines_[0]->GetDelaySend01() : 0.f;
+        case 8: return ensemble_engines_[1] ? ensemble_engines_[1]->GetDelaySend01() : 0.f;
+        case 9: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetDelaySend01() : 0.f;
+        case 10: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetDelaySend01() : 0.f;
+        case 11: return supersaw_ ? supersaw_->GetDelaySend01() : 0.f;
+        case 12: return bypass_delay_send01_;
         default: return 0.f;
     }
 }
@@ -10992,12 +11185,14 @@ void Ui::MixerSetDelaySend01(int ch, float v01)
     {
         case 0: case 1: case 2: case 3: layers_[ch].SetDelaySend01(v01); break;
         case 4: if(granular_) granular_->SetDelaySend01(v01); break;
-        case 5: if(dexed_) dexed_->SetDelaySend01(v01); break;
-        case 6: if(ensemble_engines_[0]) ensemble_engines_[0]->SetDelaySend01(v01); break;
-        case 7: if(ensemble_engines_[1]) ensemble_engines_[1]->SetDelaySend01(v01); break;
-        case 8: if(sample_synth_engines_[0]) sample_synth_engines_[0]->SetDelaySend01(v01); break;
-        case 9: if(sample_synth_engines_[1]) sample_synth_engines_[1]->SetDelaySend01(v01); break;
-        case 10: bypass_delay_send01_ = Clampf(v01, 0.f, 1.f); break;
+        case 5:
+        case 6: if(dexed_) dexed_->SetDelaySend01(v01); break;
+        case 7: if(ensemble_engines_[0]) ensemble_engines_[0]->SetDelaySend01(v01); break;
+        case 8: if(ensemble_engines_[1]) ensemble_engines_[1]->SetDelaySend01(v01); break;
+        case 9: if(sample_synth_engines_[0]) sample_synth_engines_[0]->SetDelaySend01(v01); break;
+        case 10: if(sample_synth_engines_[1]) sample_synth_engines_[1]->SetDelaySend01(v01); break;
+        case 11: if(supersaw_) supersaw_->SetDelaySend01(Clampf(v01, 0.f, 1.f)); break;
+        case 12: bypass_delay_send01_ = Clampf(v01, 0.f, 1.f); break;
         default: break;
     }
 }
@@ -11008,13 +11203,15 @@ void Ui::MixerSetVolume01(int ch, float v01)
     {
         case 0: case 1: case 2: case 3: layers_[ch].SetVolume01(v01); break;
         case 4: if(granular_) granular_->SetOutputLevel01(v01); break;
-        case 5: if(dexed_) dexed_->SetOutputLevel01(v01); break;
-        case 6: if(ensemble_engines_[0]) ensemble_engines_[0]->SetOutputLevel01(v01); break;
-        case 7: if(ensemble_engines_[1]) ensemble_engines_[1]->SetOutputLevel01(v01); break;
-        case 8: if(sample_synth_engines_[0]) sample_synth_engines_[0]->SetOutputLevel01(v01); break;
-        case 9: if(sample_synth_engines_[1]) sample_synth_engines_[1]->SetOutputLevel01(v01); break;
-        case 10: SetBypassMixVolume01(v01); break;
-        case 11:
+        case 5: if(dexed_engines_[0]) dexed_engines_[0]->SetEngineLevel01(v01); break;
+        case 6: if(dexed_engines_[1]) dexed_engines_[1]->SetEngineLevel01(v01); break;
+        case 7: if(ensemble_engines_[0]) ensemble_engines_[0]->SetOutputLevel01(v01); break;
+        case 8: if(ensemble_engines_[1]) ensemble_engines_[1]->SetOutputLevel01(v01); break;
+        case 9: if(sample_synth_engines_[0]) sample_synth_engines_[0]->SetOutputLevel01(v01); break;
+        case 10: if(sample_synth_engines_[1]) sample_synth_engines_[1]->SetOutputLevel01(v01); break;
+        case 11: if(supersaw_) supersaw_->SetOutputLevel01(v01); break;
+        case 12: SetBypassMixVolume01(v01); break;
+        case 13:
             master_volume01_ = Clampf(v01, 0.f, 1.f);
             master_volume_   = powf(master_volume01_, 2.5f) * 1.43f;
             if(master_volume_ < 0.f)
@@ -11030,12 +11227,14 @@ void Ui::MixerSetPan01(int ch, float v01)
     {
         case 0: case 1: case 2: case 3: layers_[ch].SetPan01(v01); break;
         case 4: if(granular_) granular_->SetPan01(v01); break;
-        case 5: if(dexed_) dexed_->SetPan01(v01); break;
-        case 6: if(ensemble_engines_[0]) ensemble_engines_[0]->SetPan01(v01); break;
-        case 7: if(ensemble_engines_[1]) ensemble_engines_[1]->SetPan01(v01); break;
-        case 8: if(sample_synth_engines_[0]) sample_synth_engines_[0]->SetPan01(v01); break;
-        case 9: if(sample_synth_engines_[1]) sample_synth_engines_[1]->SetPan01(v01); break;
-        case 10: SetBypassPan01(v01); break;
+        case 5: if(dexed_engines_[0]) dexed_engines_[0]->SetEnginePan01(v01); break;
+        case 6: if(dexed_engines_[1]) dexed_engines_[1]->SetEnginePan01(v01); break;
+        case 7: if(ensemble_engines_[0]) ensemble_engines_[0]->SetPan01(v01); break;
+        case 8: if(ensemble_engines_[1]) ensemble_engines_[1]->SetPan01(v01); break;
+        case 9: if(sample_synth_engines_[0]) sample_synth_engines_[0]->SetPan01(v01); break;
+        case 10: if(sample_synth_engines_[1]) sample_synth_engines_[1]->SetPan01(v01); break;
+        case 11: if(supersaw_) supersaw_->SetPan01(v01); break;
+        case 12: SetBypassPan01(v01); break;
         default: break; // Master has no Pan -- no-op
     }
 }
@@ -11046,12 +11245,14 @@ void Ui::MixerSetSend01(int ch, float v01)
     {
         case 0: case 1: case 2: case 3: layers_[ch].SetReverbSend01(v01); break;
         case 4: if(granular_) granular_->SetReverbSend01(v01); break;
-        case 5: if(dexed_) dexed_->SetReverbSend01(v01); break;
-        case 6: if(ensemble_engines_[0]) ensemble_engines_[0]->SetReverbSend01(v01); break;
-        case 7: if(ensemble_engines_[1]) ensemble_engines_[1]->SetReverbSend01(v01); break;
-        case 8: if(sample_synth_engines_[0]) sample_synth_engines_[0]->SetReverbSend01(v01); break;
-        case 9: if(sample_synth_engines_[1]) sample_synth_engines_[1]->SetReverbSend01(v01); break;
-        case 10: bypass_reverb_send01_ = Clampf(v01, 0.f, 1.f); break;
+        case 5:
+        case 6: if(dexed_) dexed_->SetReverbSend01(v01); break;
+        case 7: if(ensemble_engines_[0]) ensemble_engines_[0]->SetReverbSend01(v01); break;
+        case 8: if(ensemble_engines_[1]) ensemble_engines_[1]->SetReverbSend01(v01); break;
+        case 9: if(sample_synth_engines_[0]) sample_synth_engines_[0]->SetReverbSend01(v01); break;
+        case 10: if(sample_synth_engines_[1]) sample_synth_engines_[1]->SetReverbSend01(v01); break;
+        case 11: if(supersaw_) supersaw_->SetReverbSend01(Clampf(v01, 0.f, 1.f)); break;
+        case 12: bypass_reverb_send01_ = Clampf(v01, 0.f, 1.f); break;
         default: break; // Master uses Reverb Size instead, set directly in ApplyKnobs()
     }
 }
@@ -11062,7 +11263,7 @@ bool Ui::MixerChannelHasPan(int ch) const
     // control after a user report that its live output, having no pan
     // stage at all, reached the mix disproportionately loud next to
     // every other source's own center-pan-attenuated signal.
-    return ch != kNumMixerChannels - 1;
+    return ch != kMixMas;
 }
 
 float Ui::MixerGetLevel01(int ch) const
@@ -11079,13 +11280,15 @@ float Ui::MixerGetLevel01(int ch) const
         // stacked on top of each other between "the engine is working
         // hard" and what that bar would have shown.
         case 4: return granular_ ? granular_->GetPreLimiterLevel01() : 0.f;
-        case 5: return dexed_ ? dexed_->GetPreLimiterLevel01() : 0.f;
-        case 6: return ensemble_engines_[0] ? ensemble_engines_[0]->GetPreLimiterLevel01() : 0.f;
-        case 7: return ensemble_engines_[1] ? ensemble_engines_[1]->GetPreLimiterLevel01() : 0.f;
-        case 8: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetPreLimiterLevel01() : 0.f;
-        case 9: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetPreLimiterLevel01() : 0.f;
-        case 10: return g_bypass_level;
-        case 11: return g_master_level;
+        case 5: // the shared bus's meter
+        case 6: return dexed_ ? dexed_->GetPreLimiterLevel01() : 0.f;
+        case 7: return ensemble_engines_[0] ? ensemble_engines_[0]->GetPreLimiterLevel01() : 0.f;
+        case 8: return ensemble_engines_[1] ? ensemble_engines_[1]->GetPreLimiterLevel01() : 0.f;
+        case 9: return sample_synth_engines_[0] ? sample_synth_engines_[0]->GetPreLimiterLevel01() : 0.f;
+        case 10: return sample_synth_engines_[1] ? sample_synth_engines_[1]->GetPreLimiterLevel01() : 0.f;
+        case 11: return supersaw_ ? supersaw_->GetPreLimiterLevel01() : 0.f;
+        case 12: return g_bypass_level;
+        case 13: return g_master_level;
         default: return 0.f;
     }
 }
@@ -11105,13 +11308,15 @@ bool Ui::MixerIsClipping(int ch) const
         // engine itself. Bypass/Master have no such internal limiter,
         // so those two keep using the plain post-chain check.
         case 4: return granular_ && granular_->IsLimiting();
-        case 5: return dexed_ && dexed_->IsLimiting();
-        case 6: return ensemble_engines_[0] && ensemble_engines_[0]->IsLimiting();
-        case 7: return ensemble_engines_[1] && ensemble_engines_[1]->IsLimiting();
-        case 8: return sample_synth_engines_[0] && sample_synth_engines_[0]->IsLimiting();
-        case 9: return sample_synth_engines_[1] && sample_synth_engines_[1]->IsLimiting();
-        case 10: return g_bypass_clip_hold > 0.f;
-        case 11: return g_master_clip_hold > 0.f;
+        case 5:
+        case 6: return dexed_ && dexed_->IsLimiting();
+        case 7: return ensemble_engines_[0] && ensemble_engines_[0]->IsLimiting();
+        case 8: return ensemble_engines_[1] && ensemble_engines_[1]->IsLimiting();
+        case 9: return sample_synth_engines_[0] && sample_synth_engines_[0]->IsLimiting();
+        case 10: return sample_synth_engines_[1] && sample_synth_engines_[1]->IsLimiting();
+        case 11: return supersaw_ && supersaw_->IsLimiting();
+        case 12: return g_bypass_clip_hold > 0.f;
+        case 13: return g_master_clip_hold > 0.f;
         default: return false;
     }
 }
@@ -11168,16 +11373,19 @@ void Ui::DrawMixerOverviewGrid(int top_y)
 {
     // Live peak level, not the Volume fader's own setting (see
     // MixerGetLevel01()'s own comment): this grid answers "what's
-    // loud/clipping right now". 2 rows of 6 cells, each a name centred
-    // over a horizontal meter -- 12 channels across one row left the
-    // 3-letter names touching. The second row's meters end at y=36,
-    // clear of Global:Mixer's own "PUSH ENC TO OPEN" caption beneath.
-    constexpr int kCols = 6, kCellW = 21, kBarW = 19, kBarH = 5, kRowH = 14;
-    for(int ch = 0; ch < kNumMixerChannels; ch++)
+    // loud/clipping right now". Two rows of cells, each a name centred
+    // over a horizontal meter: Tracks' 14 in rows of 7, Synths' 10 in
+    // rows of 5. The second row's meters end at y=36, clear of the
+    // "PUSH ENC TO OPEN" caption beneath.
+    const int n     = MixerSetCount();
+    const int kCols = n > 10 ? 7 : 5, kCellW = 126 / kCols, kBarW = kCellW - 2;
+    constexpr int kBarH = 5, kRowH = 14;
+    for(int pos = 0; pos < n; pos++)
     {
-        const int   x    = 1 + (ch % kCols) * kCellW;
-        const int   base = top_y + (ch / kCols) * kRowH;
-        const char* name = MixerChannelName(ch);
+        const int   ch   = MixerSetChannel(pos);
+        const int   x    = 1 + (pos % kCols) * kCellW;
+        const int   base = top_y + (pos / kCols) * kRowH;
+        const char* name = MixerSetName(pos);
         TomThumbDrawText(disp_, x + (kBarW - TomThumbInkWidth(name)) / 2, base, name, true);
         DrawMixerHBar(x, base + 2, kBarW, kBarH, MeterBar01(MixerGetLevel01(ch)),
                       MixerIsClipping(ch));
@@ -11330,7 +11538,7 @@ void Ui::DrawDexedScreen()
                 const int cx = 112;
                 int       nw = TomThumbAdvanceWidth("OUT");
                 TomThumbDrawText(disp_, cx - nw / 2, 17, "OUT", true);
-                DrawMixerVBar(cx - 6, 20, 13, 17, MeterBar01(MixerGetLevel01(5)), MixerIsClipping(5));
+                DrawMixerVBar(cx - 6, 20, 13, 17, MeterBar01(MixerGetLevel01(kMixDxa)), MixerIsClipping(kMixDxa));
             }
             if(dexed_mix_target_gain_)
             {
@@ -11432,7 +11640,7 @@ void Ui::DrawDexedScreen()
                 TomThumbDrawText(disp_, 64, 17, line, true);
             }
             DrawOscilloscope(20, kFooterDividerY - 2, dexed_scope_buf_, dexed_scope_capacity_);
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Channel", chan_val, voices_val,
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "MIDI Ch", chan_val, voices_val,
                              "Voices");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
                              dexed_midi_lock_ ? "Lock:On* Off" : "Lock:On Off*", "", "", "");
@@ -11698,6 +11906,8 @@ void Ui::DrawEnsembleScreen()
         case EnsembleParamPage::Click: page_name = "Click"; break;
         case EnsembleParamPage::Env: page_name = "Env"; break;
         case EnsembleParamPage::Ensemble: page_name = "Chorus"; break;
+        case EnsembleParamPage::Lfo: page_name = "LFO"; break;
+        case EnsembleParamPage::LfoDepth: page_name = "LFODep"; break;
         case EnsembleParamPage::Filter: page_name = "Filter"; break;
         case EnsembleParamPage::Mix: page_name = "Mix"; break;
         case EnsembleParamPage::FX: page_name = "FX"; break;
@@ -11848,6 +12058,8 @@ void Ui::DrawEnsembleScreen()
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
             break;
         }
+        case EnsembleParamPage::Lfo: DrawLfoPage(ensemble_->Lfo()); break;
+        case EnsembleParamPage::LfoDepth: DrawLfoDepthPage(ensemble_->Lfo(), ensemble_lfo_dest_); break;
         case EnsembleParamPage::Filter:
         {
             DrawFilterCurve(ensemble_->GetFilterMode(), ensemble_->GetFilterCutoff01(),
@@ -11864,28 +12076,16 @@ void Ui::DrawEnsembleScreen()
         }
         case EnsembleParamPage::Mix:
         {
-            // Mixer channel 6 is the Ensemble, 7 the Organ.
+            // The Ensemble's or the Organ's mixer channel.
             DrawMixPageScope(12, ensemble_scope_buf_, ensemble_scope_capacity_,
-                             ensemble_active_ == 1 ? 7 : 6);
-            if(ensemble_mix_target_gain_)
-            {
-                char gain_val[12];
-                FormatGainDb(ensemble_->GetGain01(), gain_val, sizeof(gain_val));
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Gain", gain_val, "", "");
-            }
-            else
-            {
-                char out_val[8], pan_val[8];
-                snprintf(out_val, sizeof(out_val), "%d%%",
-                          (int)(ensemble_->GetOutputLevel01() * 100.f + 0.5f));
-                snprintf(pan_val, sizeof(pan_val), "%d%%",
-                          (int)(ensemble_->GetPan01() * 100.f + 0.5f));
-                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, pan_val,
-                                 "Pan");
-            }
-            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
-                             ensemble_mix_target_gain_ ? "Level" : "Level*", "", "",
-                             ensemble_mix_target_gain_ ? "Gain*" : "Gain");
+                             ensemble_active_ == 1 ? kMixOrg : kMixEns);
+            // K1 Level, K2 Gain into the limiter; Pan is on the Mixer.
+            char out_val[8], gain_val[12];
+            snprintf(out_val, sizeof(out_val), "%d%%",
+                     (int)(ensemble_->GetOutputLevel01() * 100.f + 0.5f));
+            FormatGainDb(ensemble_->GetGain01(), gain_val, sizeof(gain_val));
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Level", out_val, gain_val, "Gain");
+            DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
             break;
         }
         case EnsembleParamPage::FX:
@@ -11929,9 +12129,21 @@ void Ui::DrawEnsembleScreen()
             DrawOscilloscope(18, kFooterDividerY - 2, ensemble_scope_buf_, ensemble_scope_capacity_);
             char voices_val[8];
             snprintf(voices_val, sizeof(voices_val), "%d", ensemble_->GetMaxVoices());
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Channel", chan_val, voices_val,
-                             "Voices");
+            const bool organ = ensemble_->IsOrgan();
+            if(ensemble_midi_vel_ && !organ)
+            {
+                char vel_val[8];
+                snprintf(vel_val, sizeof(vel_val), "%d%%",
+                         (int)(ensemble_->GetVelSens01() * 100.f + 0.5f));
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Velocity",
+                               ensemble_->GetVelSens01() > 0.f ? vel_val : "Off", "", "");
+            }
+            else
+                DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "MIDI Ch", chan_val,
+                               voices_val, "Voices");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Cycle wheel tgt", "", "", "");
+            if(!organ)
+                DrawStarToggle(false, "Ch/Vel", ensemble_midi_vel_);
             break;
         }
         case EnsembleParamPage::Preset:
@@ -12180,7 +12392,7 @@ void Ui::DrawSampleSynthScreen()
         {
             // Same layout as EnsembleParamPage::Mix.
             DrawMixPageScope(12, sample_synth_scope_buf_, sample_synth_scope_capacity_,
-                               sample_synth_mode_ == SampleSynthMode::Drum ? 9 : 8); // VOI/DRM
+                               sample_synth_mode_ == SampleSynthMode::Drum ? kMixSmd : kMixSmv);
             if(sample_synth_mix_target_gain_)
             {
                 char gain_val[12];
@@ -12305,7 +12517,7 @@ void Ui::DrawSampleSynthScreen()
             char sens_val[8];
             snprintf(sens_val, sizeof(sens_val), "%d%%",
                       (int)(sample_synth_->GetVelSens01() * 100.f + 0.5f));
-            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Channel", chan_val, sens_val,
+            DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "MIDI Ch", chan_val, sens_val,
                              "VelSens");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
             break;
@@ -13358,7 +13570,7 @@ void Ui::DrawMixerScreen()
     DrawBeatIndicator(disp_->Width() - 41, 0, 3);
     disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
-    if(mixer_position_ == kNumMixerChannels) // Scope stop
+    if(mixer_position_ >= MixerSetCount()) // Scope stop
     {
         disp_->SetCursor(0, 0);
         WriteUpper("Mixer:Scope");
@@ -13373,9 +13585,10 @@ void Ui::DrawMixerScreen()
     // not 4, so each channel gets a real 3rd bar for Peak alongside its
     // existing Vol/Rev pair -- see DrawMixerVBar()'s own doc comment for
     // why Peak lives on this page instead of a separate one).
-    bool is_master = mixer_position_ == kNumMixerChannels - 1;
-    char title[24];
-    snprintf(title, sizeof(title), "Mixer:%s", MixerChannelName(mixer_position_));
+    const int sel_ch    = MixerSetChannel(mixer_position_);
+    bool      is_master = sel_ch == kMixMas;
+    char      title[24];
+    snprintf(title, sizeof(title), "Mixer:%s", MixerSetName(mixer_position_, true));
     disp_->SetCursor(0, 0);
     WriteUpper(title);
 
@@ -13391,16 +13604,17 @@ void Ui::DrawMixerScreen()
 
     for(int col = 0; col < 2; col++)
     {
-        int ch = group_start + col;
+        const int pos = group_start + col;
         // 9 real channels (odd) since Ensemble was added -- the last
         // group has only one real channel (Master, alone); leave the
         // second column blank rather than reading/drawing channel 9
         // (out of range, MixerChannelName()/MixerGet*01() would all
         // silently fall through to their own "?"/0.f defaults, a real
         // but confusing-looking bug rather than a crash).
-        if(ch >= kNumMixerChannels)
+        if(pos >= MixerSetCount())
             break;
-        bool selected = ch == mixer_position_;
+        const int ch       = MixerSetChannel(pos);
+        bool      selected = pos == mixer_position_;
         int  col_x    = kColW * col;
         int  bars_w   = kBarW * 3 + kBarGap * 2;
         int  bars_x0  = col_x + (kColW - bars_w) / 2;
@@ -13408,12 +13622,12 @@ void Ui::DrawMixerScreen()
         if(selected)
             disp_->DrawRect(col_x + 1, 11, col_x + kColW - 2, 44, true, false);
 
-        const char* name   = MixerChannelName(ch);
+        const char* name   = MixerSetName(pos, true);
         int         nw     = TomThumbAdvanceWidth(name);
         int         name_x = col_x + (kColW - nw) / 2;
         TomThumbDrawText(disp_, name_x, 17, name, true);
 
-        bool  channel_is_master = ch == kNumMixerChannels - 1;
+        bool  channel_is_master = ch == kMixMas;
         float vol01             = MixerGetVolume01(ch);
         float second01          = channel_is_master ? reverb_size01_ : MixerGetSend01(ch);
 
@@ -13438,7 +13652,7 @@ void Ui::DrawMixerScreen()
 
     char vol_val[8], second_val[8];
     snprintf(vol_val, sizeof(vol_val), "%d%%",
-              (int)(MixerGetVolume01(mixer_position_) * 100.f + 0.5f));
+              (int)(MixerGetVolume01(sel_ch) * 100.f + 0.5f));
     if(is_master)
     {
         snprintf(second_val, sizeof(second_val), "%d%%", (int)(reverb_size01_ * 100.f + 0.5f));
@@ -13447,11 +13661,11 @@ void Ui::DrawMixerScreen()
     }
     else if(!mixer_target_reverb_)
     {
-        if(MixerChannelHasPan(mixer_position_))
+        if(MixerChannelHasPan(sel_ch))
         {
             char pan_val[8];
             snprintf(pan_val, sizeof(pan_val), "%d%%",
-                      (int)(MixerGetPan01(mixer_position_) * 100.f + 0.5f));
+                      (int)(MixerGetPan01(sel_ch) * 100.f + 0.5f));
             DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Vol", vol_val, pan_val, "Pan");
             DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Vol/Pan*", "", "", "Rev");
         }
@@ -13467,7 +13681,7 @@ void Ui::DrawMixerScreen()
     else
     {
         snprintf(second_val, sizeof(second_val), "%d%%",
-                  (int)(MixerGetSend01(mixer_position_) * 100.f + 0.5f));
+                  (int)(MixerGetSend01(sel_ch) * 100.f + 0.5f));
         DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Rev", second_val, "", "");
         DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "Vol/Pan", "", "", "Rev*");
     }
@@ -14097,6 +14311,13 @@ const int* Ui::SdMgmtSlots(int* out_count)
             *out_count = dexed_preset_user_slot_count_;
             return dexed_preset_user_slots_;
         case SdMgmtFolder::EnsemblePresets:
+            if(sd_mgmt_ens_kind_ == 2)
+            {
+                if(ssw_slots_dirty_)
+                    RefreshSupersawPresetSlots();
+                *out_count = ssw_user_count_;
+                return ssw_user_slots_;
+            }
             if(ensemble_preset_slots_dirty_)
                 RefreshEnsemblePresetSlots();
             *out_count = ensemble_preset_user_slot_count_;
@@ -14240,7 +14461,7 @@ int Ui::SdMgmtListCount()
     if(SdMgmtGlobalBox() && sd_mgmt_global_kind_ < 0)
         return 2; // Perf / Snapshots
     if(SdMgmtEnsembleBox() && sd_mgmt_ens_kind_ < 0)
-        return 2; // Ensemble / Organ
+        return 3; // Ensemble / Organ / Supersaw
     if(SdMgmtDrumUserBox())
     {
         int n = 0;
@@ -14541,8 +14762,11 @@ void Ui::TriggerSdMgmtDuplicate()
             ok = PerformanceStore::DuplicateDexedPreset(slot, &new_slot, &Ui::OnSaveLoadProgress);
             break;
         case SdMgmtFolder::EnsemblePresets:
-            ok = PerformanceStore::DuplicateEnsemblePreset(slot, &new_slot,
-                                                              &Ui::OnSaveLoadProgress);
+            ok = sd_mgmt_ens_kind_ == 2
+                     ? PerformanceStore::DuplicateSupersawPreset(slot, &new_slot,
+                                                                 &Ui::OnSaveLoadProgress)
+                     : PerformanceStore::DuplicateEnsemblePreset(slot, &new_slot,
+                                                                 &Ui::OnSaveLoadProgress);
             break;
         case SdMgmtFolder::SampleSynthVoiceUserPresets:
             ok = PerformanceStore::DuplicateSampleSynthVoiceUserPreset(slot, &new_slot,
@@ -14576,7 +14800,10 @@ void Ui::TriggerSdMgmtDuplicate()
                 dexed_preset_slots_dirty_ = true;
                 dexed_browse_name_slot_   = -2; // a slot number may now hold a different save
                 break;
-            case SdMgmtFolder::EnsemblePresets: ensemble_preset_slots_dirty_ = true; break;
+            case SdMgmtFolder::EnsemblePresets:
+                ensemble_preset_slots_dirty_ = true;
+                ssw_slots_dirty_             = true;
+                break;
             case SdMgmtFolder::SampleSynthVoiceUserPresets:
                 sample_synth_voice_user_dirty_ = true;
                 break;
@@ -14626,7 +14853,9 @@ void Ui::TriggerSdMgmtDelete()
             ok = PerformanceStore::DeleteDexedPreset(slot, &dexed_loaded_preset_slot_);
             break;
         case SdMgmtFolder::EnsemblePresets:
-            ok = PerformanceStore::DeleteEnsemblePreset(slot, &ensemble_loaded_preset_slot_);
+            ok = sd_mgmt_ens_kind_ == 2
+                     ? PerformanceStore::DeleteSupersawPreset(slot, &ssw_loaded_slot_)
+                     : PerformanceStore::DeleteEnsemblePreset(slot, &ensemble_loaded_preset_slot_);
             break;
         case SdMgmtFolder::SampleSynthVoiceUserPresets:
             ok = PerformanceStore::DeleteSampleSynthVoiceUserPreset(
@@ -14654,7 +14883,10 @@ void Ui::TriggerSdMgmtDelete()
                 dexed_preset_slots_dirty_ = true;
                 dexed_browse_name_slot_   = -2; // a slot number may now hold a different save
                 break;
-            case SdMgmtFolder::EnsemblePresets: ensemble_preset_slots_dirty_ = true; break;
+            case SdMgmtFolder::EnsemblePresets:
+                ensemble_preset_slots_dirty_ = true;
+                ssw_slots_dirty_             = true;
+                break;
             case SdMgmtFolder::SampleSynthVoiceUserPresets:
                 sample_synth_voice_user_dirty_ = true;
                 break;
@@ -16965,6 +17197,13 @@ Ui::EditSnapshot Ui::EnsembleSnapshotFor(int engine) const
     s.Add(p.perc_decay01);
     s.Add(p.perc_level01);
     s.Add(p.click01);
+    s.Add(p.vel_sens01);
+    s.Add(p.lfo_wave);
+    s.Add(p.lfo_rate01);
+    s.Add(p.lfo_sync);
+    s.Add(p.lfo_sync_index);
+    s.Add(p.lfo_fade01);
+    s.Add(p.lfo_depth01);
     s.Add(engine == 1 ? organ_midi_channel_ : ensemble_midi_channel_);
     return s;
 }

@@ -4,5 +4,6 @@ src/build/
 # macOS
 .DS_Store
 
-# Python
+# Quick Start guide build output (tools/manual/build.sh)
+tools/manual/build/
 __pycache__/

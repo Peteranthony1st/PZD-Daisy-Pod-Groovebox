@@ -50,7 +50,7 @@
 class Arpeggiator
 {
   public:
-    static constexpr int kEngines  = 7;  // main.cpp's SustainEngine
+    static constexpr int kEngines  = 8;  // main.cpp's SustainEngine
     static constexpr int kTracks   = 8;  // MidiSequencer::kTracks
     static constexpr int kPatterns = 8;  // MidiSequencer::kPatterns
     static constexpr int kInstances = kEngines + kTracks;
@@ -207,8 +207,11 @@ class Arpeggiator
     // without arps loading). Main loop: the silencing is left to Tick(), so
     // a note off never lands mid-way through an engine's voice allocation.
     void Reset();
-    // Saving with a performance: every engine's settings, then every
-    // track's patterns', kSaveEntries of SaveEntry.
+    // Saving with a performance: the first kSavedFirst engines' settings,
+    // then every track's patterns', then the engines added since (the
+    // Supersaw) -- so a file from before them still lines up.
+    // kSaveEntries of SaveEntry.
+    static constexpr int kSavedFirst = 7;
     struct SaveEntry
     {
         uint8_t on, mode, rate, latch, steps, jump, shape, repeat;

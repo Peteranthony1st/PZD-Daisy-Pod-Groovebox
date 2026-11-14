@@ -638,11 +638,13 @@ void FromSave(const Arpeggiator::SaveEntry& i, Arpeggiator::Settings* s)
 
 void Arpeggiator::Save(SaveEntry* out) const
 {
-    for(int e = 0; e < kEngines; e++)
+    for(int e = 0; e < kSavedFirst; e++)
         ToSave(settings_[e], true, &out[e]);
     for(int t = 0; t < kTracks; t++)
         for(int p = 0; p < kPatterns; p++)
-            ToSave(pattern_[t][p], own_[t][p], &out[kEngines + t * kPatterns + p]);
+            ToSave(pattern_[t][p], own_[t][p], &out[kSavedFirst + t * kPatterns + p]);
+    for(int e = kSavedFirst; e < kEngines; e++)
+        ToSave(settings_[e], true, &out[kSavedFirst + kTracks * kPatterns + e - kSavedFirst]);
 }
 
 void Arpeggiator::Load(const SaveEntry* in, int n)
@@ -650,14 +652,17 @@ void Arpeggiator::Load(const SaveEntry* in, int n)
     Reset();
     for(int i = 0; i < n && i < kSaveEntries; i++)
     {
-        if(i < kEngines)
+        constexpr int kLater = kSavedFirst + kTracks * kPatterns; // see Save()
+        if(i < kSavedFirst)
             FromSave(in[i], &settings_[i]);
-        else
+        else if(i < kLater)
         {
-            const int t = (i - kEngines) / kPatterns, p = (i - kEngines) % kPatterns;
+            const int t = (i - kSavedFirst) / kPatterns, p = (i - kSavedFirst) % kPatterns;
             FromSave(in[i], &pattern_[t][p]);
             own_[t][p] = in[i].own != 0;
         }
+        else
+            FromSave(in[i], &settings_[kSavedFirst + i - kLater]);
     }
 }
 

@@ -41,6 +41,7 @@ class MidiSequencer
         kOrgan,
         kSmpvo,
         kSmpdr,
+        kSupersaw, // added after the others, so saved tracks keep their engine
         kNumEngines
     };
     static const char* EngineName(int engine); // "GR", "DXA", ...

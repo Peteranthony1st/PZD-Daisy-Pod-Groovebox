@@ -24,73 +24,117 @@
 //  attack01, decay01, sustain01, release01,
 //  filter_mode, filter_cutoff01, filter_res01, output_level01, pan01,
 //  reverb_send01, delay_send01, gain01}
+// Gain and Level are matched so each is as loud as the Ensemble's New
+// sound (Gain +3 dB, set by ear on the Pod) -- K-weighted loudness of a
+// four-note chord at velocity 100; Glass Bells, which rings away, is left
+// as it was.
 const EnsembleFactoryPreset kEnsembleFactoryPresets[] = {
     // --- the original eight, re-voiced -------------------------------
     // Soft, fundamental-heavy pad: slow-ish swell, long tail, darkened
     // just enough to take the edge off, slow wide chorus.
     {"Warm Pad",        {0.85f, 0.10f, 0.45f, 0.00f, 0.15f, 0.00f, 0.05f}, 0.60f, 0.18f,
-     0.72f, 0.60f, 0.90f, 0.82f, 1, 0.78f, 0.10f, 0.85f, 0.5f, 0.45f, 0.00f, 0.55f},
+     0.72f, 0.60f, 0.90f, 0.82f, 1, 0.78f, 0.10f, 0.70f, 0.5f, 0.45f, 0.00f, 0.00f},
     // Classic bright string-machine section: 8'+4'+2' saws, deep chorus.
     {"Bright Ensemble", {0.75f, 0.00f, 0.65f, 0.15f, 0.45f, 0.10f, 0.20f}, 0.80f, 0.32f,
-     0.55f, 0.50f, 0.90f, 0.70f, 0, 1.00f, 0.00f, 0.85f, 0.5f, 0.35f, 0.00f, 0.40f},
+     0.55f, 0.50f, 0.90f, 0.70f, 0, 1.00f, 0.00f, 0.56f, 0.5f, 0.35f, 0.00f, 0.00f},
     // Hollow keys: squares for the hollow tone, instant attack and
     // release, a touch of slow chorus, a little room.
     {"Hollow Keys",     {0.20f, 0.85f, 0.10f, 0.65f, 0.00f, 0.40f, 0.20f}, 0.25f, 0.55f,
-     0.05f, 0.30f, 1.00f, 0.25f, 0, 1.00f, 0.00f, 0.85f, 0.5f, 0.20f, 0.00f, 0.45f},
+     0.05f, 0.30f, 1.00f, 0.25f, 0, 1.00f, 0.00f, 0.54f, 0.5f, 0.20f, 0.00f, 0.00f},
     // Airy upper strings: 4'/2' without much body, slower attack,
     // band of resonance at the top of the low-pass.
     {"Thin Strings",    {0.25f, 0.00f, 0.70f, 0.00f, 0.55f, 0.00f, 0.25f}, 0.70f, 0.25f,
-     0.75f, 0.60f, 0.85f, 0.85f, 1, 0.82f, 0.25f, 0.85f, 0.5f, 0.50f, 0.00f, 0.35f},
+     0.75f, 0.60f, 0.85f, 0.85f, 1, 0.82f, 0.25f, 0.65f, 0.5f, 0.50f, 0.00f, 0.00f},
     // Deep 8' swell that blooms over ~1.3s and rings on.
     {"Sub Swell",       {0.90f, 0.55f, 0.25f, 0.00f, 0.00f, 0.00f, 0.00f}, 0.70f, 0.12f,
-     0.85f, 0.70f, 0.95f, 0.88f, 1, 0.62f, 0.20f, 0.85f, 0.5f, 0.55f, 0.00f, 0.45f},
+     0.85f, 0.70f, 0.95f, 0.88f, 1, 0.62f, 0.20f, 0.57f, 0.5f, 0.55f, 0.00f, 0.00f},
     // Mono-style lead: fast attack, singing chorus vibrato, resonant
     // low-pass.
     {"Chorus Lead",     {0.80f, 0.30f, 0.55f, 0.00f, 0.25f, 0.00f, 0.10f}, 0.85f, 0.55f,
-     0.25f, 0.55f, 0.85f, 0.55f, 1, 0.80f, 0.40f, 0.85f, 0.5f, 0.25f, 0.00f, 0.80f},
+     0.25f, 0.55f, 0.85f, 0.55f, 1, 0.80f, 0.40f, 0.58f, 0.5f, 0.25f, 0.00f, 0.00f},
     // Soft "aah" choir: squares + 4' saw through a gentle band-pass
     // for a vocal formant, slow swell, generous hall.
     {"Mellow Choir",    {0.55f, 0.60f, 0.40f, 0.30f, 0.10f, 0.00f, 0.00f}, 0.65f, 0.20f,
-     0.78f, 0.60f, 0.90f, 0.85f, 3, 0.68f, 0.30f, 0.85f, 0.5f, 0.60f, 0.00f, 0.75f},
+     0.78f, 0.60f, 0.90f, 0.85f, 3, 0.68f, 0.30f, 0.73f, 0.5f, 0.60f, 0.00f, 0.00f},
     // Percussive pluck: instant attack, short decay onto a low
     // sustain, bright filter with a little bite, a little room.
     {"Bright Pluck",    {0.70f, 0.00f, 0.60f, 0.20f, 0.40f, 0.10f, 0.30f}, 0.35f, 0.40f,
-     0.02f, 0.62f, 0.25f, 0.62f, 1, 0.88f, 0.30f, 0.85f, 0.5f, 0.30f, 0.00f, 0.55f},
+     0.02f, 0.62f, 0.25f, 0.62f, 1, 0.88f, 0.30f, 0.85f, 0.5f, 0.30f, 0.00f, 0.14f},
 
     // --- new ---------------------------------------------------------
     // The ARP Solina sound: 8'+4' saws, very deep, slow-ish ensemble
     // chorus, half-second bloom, long release.
     {"Solina Strings",  {0.85f, 0.00f, 0.75f, 0.00f, 0.20f, 0.00f, 0.00f}, 0.95f, 0.28f,
-     0.70f, 0.60f, 0.92f, 0.85f, 1, 0.86f, 0.10f, 0.85f, 0.5f, 0.45f, 0.00f, 0.50f},
+     0.70f, 0.60f, 0.92f, 0.85f, 1, 0.86f, 0.10f, 0.59f, 0.5f, 0.45f, 0.00f, 0.00f},
     // Bell / glass: bright upper squares and saws, instant strike, a
     // ~1.3s decay to nothing, long ring-out.
     {"Glass Bells",     {0.10f, 0.00f, 0.25f, 0.70f, 0.55f, 0.65f, 0.50f}, 0.40f, 0.60f,
-     0.00f, 0.85f, 0.00f, 0.82f, 2, 0.30f, 0.10f, 0.85f, 0.5f, 0.55f, 0.00f, 0.40f},
+     0.00f, 0.85f, 0.00f, 0.82f, 2, 0.30f, 0.10f, 0.85f, 0.5f, 0.55f, 0.00f, 0.19f},
     // Short synth stab for chords on the beat: everything open, snappy
     // decay, resonant low-pass for punch.
     {"Poly Stab",       {0.80f, 0.40f, 0.60f, 0.30f, 0.45f, 0.20f, 0.30f}, 0.30f, 0.45f,
-     0.00f, 0.50f, 0.30f, 0.40f, 1, 0.80f, 0.45f, 0.85f, 0.5f, 0.25f, 0.00f, 0.35f},
+     0.00f, 0.50f, 0.30f, 0.40f, 1, 0.80f, 0.45f, 0.74f, 0.5f, 0.25f, 0.00f, 0.00f},
     // Dark, slowly breathing drone: ~3s fade-in, 4s fade-out, low
     // cutoff with resonance, slowest deepest chorus, big hall.
     {"Dark Drone",      {0.85f, 0.75f, 0.20f, 0.10f, 0.00f, 0.00f, 0.00f}, 0.90f, 0.05f,
-     0.95f, 0.80f, 1.00f, 1.00f, 1, 0.55f, 0.45f, 0.85f, 0.5f, 0.65f, 0.00f, 0.55f},
+     0.95f, 0.80f, 1.00f, 1.00f, 1, 0.55f, 0.45f, 0.48f, 0.5f, 0.65f, 0.00f, 0.00f},
     // Nasal reed: square-heavy registration, firm attack, almost no
     // chorus, a slightly nasal band-pass.
     {"Nasal Reed",      {0.30f, 0.90f, 0.15f, 0.55f, 0.00f, 0.25f, 0.00f}, 0.10f, 0.40f,
-     0.35f, 0.40f, 0.95f, 0.45f, 3, 0.80f, 0.20f, 0.85f, 0.5f, 0.30f, 0.00f, 0.65f},
+     0.35f, 0.40f, 0.95f, 0.45f, 3, 0.80f, 0.20f, 0.70f, 0.5f, 0.30f, 0.00f, 0.00f},
     // Shimmering high pad: only the upper registers, high-passed so it
     // floats above a mix, fastest chorus, lots of reverb.
     {"Shimmer Pad",     {0.00f, 0.00f, 0.35f, 0.20f, 0.70f, 0.30f, 0.60f}, 1.00f, 0.60f,
-     0.80f, 0.65f, 0.90f, 0.92f, 2, 0.45f, 0.15f, 0.85f, 0.5f, 0.70f, 0.00f, 0.20f},
+     0.80f, 0.65f, 0.90f, 0.92f, 2, 0.45f, 0.15f, 0.57f, 0.5f, 0.70f, 0.00f, 0.00f},
     // Brass-like swell: bright saws with a ~0.3s attack and a resonant
     // low-pass that gives it the "blat", light chorus.
     {"Brass Swell",     {0.90f, 0.20f, 0.70f, 0.10f, 0.45f, 0.00f, 0.25f}, 0.30f, 0.35f,
-     0.65f, 0.55f, 0.85f, 0.55f, 1, 0.72f, 0.50f, 0.85f, 0.5f, 0.30f, 0.00f, 0.45f},
+     0.65f, 0.55f, 0.85f, 0.55f, 1, 0.72f, 0.50f, 0.51f, 0.5f, 0.30f, 0.00f, 0.00f},
     // Round sub bass: just the 8' saw and square, dark low-pass, tight
     // envelope, dry -- for bass lines under everything else.
     {"Sub Bass",        {0.90f, 0.70f, 0.10f, 0.00f, 0.00f, 0.00f, 0.00f}, 0.00f, 0.20f,
-     0.10f, 0.45f, 0.85f, 0.35f, 1, 0.55f, 0.30f, 0.85f, 0.5f, 0.00f, 0.00f, 0.90f},
+     0.10f, 0.45f, 0.85f, 0.35f, 1, 0.55f, 0.30f, 0.59f, 0.5f, 0.00f, 0.00f, 0.00f},
+
+    // --- made for the LFO (see kEnsembleFactoryExtras) ----------------
+    // Solina strings chopped in 1/16s by the LFO -- the trance gate.
+    {"Gated Strings",   {0.85f, 0.00f, 0.75f, 0.00f, 0.20f, 0.00f, 0.00f}, 0.80f, 0.28f,
+     0.00f, 0.50f, 1.00f, 0.40f, 1, 0.86f, 0.10f, 0.67f, 0.5f, 0.45f, 0.00f, 0.00f},
+    // Hollow keys with a steady tremolo.
+    {"Tremolo Keys",    {0.20f, 0.85f, 0.10f, 0.65f, 0.00f, 0.40f, 0.20f}, 0.25f, 0.55f,
+     0.05f, 0.30f, 1.00f, 0.30f, 0, 1.00f, 0.00f, 0.58f, 0.5f, 0.30f, 0.00f, 0.00f},
+    // A warm pad pulsing in 1/8s.
+    {"Pulse Pad",       {0.85f, 0.10f, 0.45f, 0.00f, 0.15f, 0.00f, 0.05f}, 0.60f, 0.18f,
+     0.10f, 0.60f, 0.95f, 0.70f, 1, 0.78f, 0.10f, 0.73f, 0.5f, 0.45f, 0.00f, 0.00f},
 };
+
+// {vel, wave (0 Tri, 2 Square), rate, sync, sync note (2 = 1/16, 4 = 1/8),
+//  fade, pitch, filter, amp} -- velocity most on the keys and plucks, none
+// on Solina Strings (a string machine's keys never were); vibrato fading
+// in on the strings, choir and leads; slow breathing on the drones.
+const EnsembleFactoryExtra kEnsembleFactoryExtras[] = {
+    {0.30f, 0, 0.45f, 0, 2, 0.55f, 0.55f, 0.50f, 0.50f}, // Warm Pad
+    {0.35f, 0, 0.40f, 0, 2, 0.00f, 0.50f, 0.50f, 0.50f}, // Bright Ensemble
+    {0.70f, 0, 0.40f, 0, 2, 0.00f, 0.50f, 0.50f, 0.50f}, // Hollow Keys
+    {0.35f, 0, 0.50f, 0, 2, 0.60f, 0.55f, 0.50f, 0.50f}, // Thin Strings
+    {0.30f, 0, 0.15f, 0, 2, 0.00f, 0.50f, 0.62f, 0.50f}, // Sub Swell
+    {0.60f, 0, 0.55f, 0, 2, 0.50f, 0.56f, 0.50f, 0.50f}, // Chorus Lead
+    {0.30f, 0, 0.48f, 0, 2, 0.60f, 0.55f, 0.50f, 0.50f}, // Mellow Choir
+    {0.80f, 0, 0.40f, 0, 2, 0.00f, 0.50f, 0.50f, 0.50f}, // Bright Pluck
+    {0.00f, 0, 0.40f, 0, 2, 0.00f, 0.50f, 0.50f, 0.50f}, // Solina Strings
+    {0.70f, 0, 0.40f, 0, 2, 0.00f, 0.50f, 0.50f, 0.50f}, // Glass Bells
+    {0.75f, 0, 0.40f, 0, 2, 0.00f, 0.50f, 0.50f, 0.50f}, // Poly Stab
+    {0.00f, 0, 0.10f, 0, 2, 0.00f, 0.50f, 0.68f, 0.50f}, // Dark Drone
+    {0.45f, 0, 0.50f, 0, 2, 0.40f, 0.55f, 0.50f, 0.50f}, // Nasal Reed
+    {0.25f, 0, 0.50f, 0, 2, 0.00f, 0.50f, 0.50f, 0.62f}, // Shimmer Pad
+    {0.70f, 0, 0.40f, 0, 2, 0.00f, 0.50f, 0.50f, 0.50f}, // Brass Swell
+    {0.50f, 0, 0.40f, 0, 2, 0.00f, 0.50f, 0.50f, 0.50f}, // Sub Bass
+    {0.30f, 2, 0.40f, 1, 2, 0.00f, 0.50f, 0.50f, 1.00f}, // Gated Strings
+    {0.70f, 0, 0.55f, 0, 2, 0.00f, 0.50f, 0.50f, 0.70f}, // Tremolo Keys
+    {0.30f, 2, 0.40f, 1, 4, 0.00f, 0.50f, 0.50f, 0.92f}, // Pulse Pad
+};
+static_assert(sizeof(kEnsembleFactoryExtras) / sizeof(kEnsembleFactoryExtras[0])
+                  == sizeof(kEnsembleFactoryPresets) / sizeof(kEnsembleFactoryPresets[0]),
+              "one kEnsembleFactoryExtras entry per Ensemble factory preset");
 const int kEnsembleNumFactoryPresets
     = sizeof(kEnsembleFactoryPresets) / sizeof(kEnsembleFactoryPresets[0]);
 

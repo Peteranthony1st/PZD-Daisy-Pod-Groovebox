@@ -1854,7 +1854,9 @@ struct EnsemblePresetFileHeader
     char     magic[4]; // "ENSP"
     uint32_t version;
 };
-constexpr uint32_t kEnsemblePresetFileVersion   = 4; // v4: + wave
+constexpr uint32_t kEnsemblePresetFileVersion   = 6; // v6: + the LFO
+constexpr uint32_t kEnsemblePresetFileVersionV5 = 5; // v5: + vel_sens01
+constexpr uint32_t kEnsemblePresetFileVersionV4 = 4; // v4: + max_voices, Organ fields
 constexpr uint32_t kEnsemblePresetFileVersionV3 = 3; // v3: + mod_wheel_target/midi_channel
 constexpr uint32_t kEnsemblePresetFileVersionV2 = 2; // v2: + gain01
 constexpr uint32_t kEnsemblePresetFileVersionV1 = 1;
@@ -1864,6 +1866,10 @@ constexpr size_t   kEnsemblePresetDataV2Size
     = offsetof(EnsembleSynth::EnsemblePresetData, mod_wheel_target);
 constexpr size_t   kEnsemblePresetDataV3Size
     = offsetof(EnsembleSynth::EnsemblePresetData, max_voices);
+constexpr size_t   kEnsemblePresetDataV4Size
+    = offsetof(EnsembleSynth::EnsemblePresetData, vel_sens01);
+constexpr size_t   kEnsemblePresetDataV5Size
+    = offsetof(EnsembleSynth::EnsemblePresetData, lfo_wave);
 } // namespace
 
 namespace
@@ -2653,6 +2659,8 @@ bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
     if(ok
        && (memcmp(hdr.magic, "ENSP", 4) != 0
            || (hdr.version != kEnsemblePresetFileVersion
+               && hdr.version != kEnsemblePresetFileVersionV5
+               && hdr.version != kEnsemblePresetFileVersionV4
                && hdr.version != kEnsemblePresetFileVersionV3
                && hdr.version != kEnsemblePresetFileVersionV2
                && hdr.version != kEnsemblePresetFileVersionV1)))
@@ -2676,6 +2684,8 @@ bool LoadEnsemblePreset(int slot, EnsembleSynth::EnsemblePresetData* out_preset)
         UINT want = hdr.version == kEnsemblePresetFileVersionV1   ? (UINT)kEnsemblePresetDataV1Size
                     : hdr.version == kEnsemblePresetFileVersionV2 ? (UINT)kEnsemblePresetDataV2Size
                     : hdr.version == kEnsemblePresetFileVersionV3 ? (UINT)kEnsemblePresetDataV3Size
+                    : hdr.version == kEnsemblePresetFileVersionV4 ? (UINT)kEnsemblePresetDataV4Size
+                    : hdr.version == kEnsemblePresetFileVersionV5 ? (UINT)kEnsemblePresetDataV5Size
                                                                   : (UINT)sizeof(data);
         fr = f_read(&file, &data, want, &br);
         ok = fr == FR_OK && br == want;
@@ -2744,6 +2754,166 @@ bool DuplicateEnsemblePreset(int slot, int* out_new_slot, ProgressFn on_progress
     }
     char dst[24];
     EnsemblePresetFilename(new_slot, dst, sizeof(dst));
+    if(!CopyFileChunked(src, dst, on_progress))
+        return false;
+    *out_new_slot = new_slot;
+    return true;
+}
+
+// --- Supersaw presets: SUPERSAW/PRESnnn.DAT, "SSWP" + version + the
+// SupersawPresetData. The struct only grows by appending, so a shorter
+// file from older firmware reads as a prefix (the rest keeps its
+// defaults) and a longer one from newer firmware is cut to fit.
+namespace
+{
+void SupersawPresetFilename(int slot, char* out, size_t out_size)
+{
+    snprintf(out, out_size, "SUPERSAW/PRES%03d.DAT", slot);
+}
+struct SupersawPresetFileHeader
+{
+    char     magic[4]; // "SSWP"
+    uint32_t version;
+    uint32_t size; // bytes of SupersawPresetData that follow
+};
+constexpr uint32_t kSupersawPresetFileVersion = 1;
+} // namespace
+
+bool SaveSupersawPreset(int slot, const SupersawSynth::SupersawPresetData& preset)
+{
+    if(!card_ready || slot < kSupersawFirstUserSlot || slot > kMaxSupersawPresets)
+        return false;
+    char fname[28];
+    SupersawPresetFilename(slot, fname, sizeof(fname));
+    FRESULT mkdir_res = f_mkdir("SUPERSAW");
+    if(mkdir_res != FR_OK && mkdir_res != FR_EXIST)
+    {
+        SetError("mkdir", mkdir_res);
+        return false;
+    }
+    ClearError();
+    static FIL file; // see the DTCMRAM/DMA comment on Save() above
+    FRESULT    fr = f_open(&file, fname, FA_CREATE_ALWAYS | FA_WRITE);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+    static SupersawPresetFileHeader hdr;
+    hdr = SupersawPresetFileHeader{};
+    memcpy(hdr.magic, "SSWP", 4);
+    hdr.version = kSupersawPresetFileVersion;
+    hdr.size    = sizeof(SupersawSynth::SupersawPresetData);
+    static SupersawSynth::SupersawPresetData data;
+    data = preset;
+    UINT bw;
+    fr      = f_write(&file, &hdr, sizeof(hdr), &bw);
+    bool ok = fr == FR_OK && bw == sizeof(hdr);
+    if(ok)
+    {
+        fr = f_write(&file, &data, sizeof(data), &bw);
+        ok = fr == FR_OK && bw == sizeof(data);
+    }
+    if(!ok)
+        SetError("data", fr);
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+bool LoadSupersawPreset(int slot, SupersawSynth::SupersawPresetData* out_preset)
+{
+    if(slot < kSupersawFirstUserSlot || slot > kMaxSupersawPresets || !out_preset || !card_ready)
+        return false;
+    char fname[28];
+    SupersawPresetFilename(slot, fname, sizeof(fname));
+    ClearError();
+    static FIL file;
+    FRESULT    fr = f_open(&file, fname, FA_READ);
+    if(fr != FR_OK)
+    {
+        SetError("open", fr);
+        return false;
+    }
+    static SupersawPresetFileHeader hdr;
+    hdr = SupersawPresetFileHeader{};
+    UINT br;
+    fr      = f_read(&file, &hdr, sizeof(hdr), &br);
+    bool ok = fr == FR_OK && br == sizeof(hdr);
+    if(ok && (memcmp(hdr.magic, "SSWP", 4) != 0 || hdr.version != kSupersawPresetFileVersion))
+    {
+        ok = false;
+        SetError("magic", FR_OK); // not a FatFS error -- file content itself is wrong
+    }
+    else if(!ok)
+        SetError("hdr", fr);
+    static SupersawSynth::SupersawPresetData data;
+    data = SupersawSynth::SupersawPresetData{};
+    if(ok)
+    {
+        UINT want = hdr.size < sizeof(data) ? (UINT)hdr.size : (UINT)sizeof(data);
+        fr        = f_read(&file, &data, want, &br);
+        ok        = fr == FR_OK && br == want;
+        if(!ok)
+            SetError("data", fr);
+    }
+    if(ok)
+        *out_preset = data;
+    FRESULT close_res = f_close(&file);
+    if(close_res != FR_OK)
+        SetError("close", close_res);
+    return ok && close_res == FR_OK;
+}
+
+int ListSupersawPresets(int* out_numbers, int max_out)
+{
+    return ListSlotFolder("SUPERSAW", "PRES", kSupersawFirstUserSlot, kMaxSupersawPresets,
+                          out_numbers, max_out);
+}
+
+int NextFreeSupersawPresetSlot()
+{
+    return NextFreeSlotFolder("SUPERSAW", "PRES", kSupersawFirstUserSlot, kMaxSupersawPresets);
+}
+
+bool DeleteSupersawPreset(int slot, int* loaded_slot_inout)
+{
+    if(!card_ready || slot < kSupersawFirstUserSlot || slot > kMaxSupersawPresets)
+        return false;
+    char fname[28];
+    SupersawPresetFilename(slot, fname, sizeof(fname));
+    if(!DeleteFileGeneric(fname))
+        return false;
+    if(loaded_slot_inout && *loaded_slot_inout == slot)
+        *loaded_slot_inout = 0;
+    CompactSlotsAfterDelete(slot, kMaxSupersawPresets, SupersawPresetFilename, loaded_slot_inout);
+    return true;
+}
+
+bool DuplicateSupersawPreset(int slot, int* out_new_slot, ProgressFn on_progress)
+{
+    if(!out_new_slot)
+        return false;
+    *out_new_slot = -1;
+    if(!card_ready || slot < kSupersawFirstUserSlot || slot > kMaxSupersawPresets)
+        return false;
+    char    src[28];
+    FILINFO fno;
+    SupersawPresetFilename(slot, src, sizeof(src));
+    if(f_stat(src, &fno) != FR_OK)
+    {
+        SetError("dupsrc", FR_NO_FILE);
+        return false;
+    }
+    int new_slot = NextFreeSupersawPresetSlot();
+    if(new_slot < 0)
+    {
+        SetError("dupslot", FR_OK);
+        return false;
+    }
+    char dst[28];
+    SupersawPresetFilename(new_slot, dst, sizeof(dst));
     if(!CopyFileChunked(src, dst, on_progress))
         return false;
     *out_new_slot = new_slot;
@@ -3996,7 +4166,7 @@ constexpr uint32_t kSynthSnapshotFileVersion = 1;
 // one from newer firmware is cut to what this build knows -- the same
 // rule each engine's own preset file already follows, without a
 // snapshot version bump every time an engine gains a field.
-constexpr uint32_t kSynthSnapshotNumSections = 10;
+constexpr uint32_t kSynthSnapshotNumSections = 11;
 
 void SynthSnapshotSections(SynthSnapshot* s, void** ptrs, uint32_t* sizes)
 {
@@ -4010,6 +4180,7 @@ void SynthSnapshotSections(SynthSnapshot* s, void** ptrs, uint32_t* sizes)
     ptrs[7] = &s->dexed_b;       sizes[7] = sizeof(s->dexed_b);
     ptrs[8] = &s->organ;         sizes[8] = sizeof(s->organ);
     ptrs[9] = &s->sampler_pair;  sizes[9] = sizeof(s->sampler_pair);
+    ptrs[10] = &s->supersaw;     sizes[10] = sizeof(s->supersaw);
 }
 } // namespace
 

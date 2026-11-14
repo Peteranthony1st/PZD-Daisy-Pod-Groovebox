@@ -7,6 +7,7 @@
 #include "granular_engine.h"
 #include "dexed_synth.h"
 #include "ensemble_synth.h"
+#include "supersaw_synth.h"
 #include "sample_synth.h"
 #include "sequencer.h"
 #include "scenes.h"
@@ -310,6 +311,18 @@ int  NextFreeEnsemblePresetSlot();
 // factory slots, same gap-closing renumbering.
 bool DeleteEnsemblePreset(int slot, int* loaded_slot_inout = nullptr);
 bool DuplicateEnsemblePreset(int slot, int* out_new_slot, ProgressFn on_progress = nullptr);
+
+// The Supersaw's User saves: SUPERSAW/PRES001..099.DAT, the same
+// functions as the Ensemble's above. Factory sounds aren't files (see
+// SupersawSynth::GetFactoryPreset()).
+constexpr int kSupersawFirstUserSlot = 1;
+constexpr int kMaxSupersawPresets    = 99;
+bool SaveSupersawPreset(int slot, const SupersawSynth::SupersawPresetData& preset);
+bool LoadSupersawPreset(int slot, SupersawSynth::SupersawPresetData* out_preset);
+int  ListSupersawPresets(int* out_numbers, int max_out);
+int  NextFreeSupersawPresetSlot();
+bool DeleteSupersawPreset(int slot, int* loaded_slot_inout = nullptr);
+bool DuplicateSupersawPreset(int slot, int* out_new_slot, ProgressFn on_progress = nullptr);
 
 // Importing a user-supplied DX7 SysEx file (.syx, from a computer,
 // dropped into DEXED IMPORT/ on the SD card) as new Dexed USER presets
@@ -708,6 +721,18 @@ struct SynthSnapshot
         char    drum_name[24] = {};
     };
     SamplerPair sampler_pair;
+    // The Supersaw, one more section after those -- an older snapshot
+    // reads back with `present` 0: Supersaw off, its sound left as it is.
+    // The preset goes last so the section can keep growing with it.
+    struct Supersaw
+    {
+        int32_t                           present = 0;
+        int32_t                           on      = 0;
+        int32_t                           slot    = 0;
+        char                              name[24] = {};
+        SupersawSynth::SupersawPresetData preset;
+    };
+    Supersaw supersaw;
 };
 constexpr int kMaxSynthSnapshots = 99;
 
@@ -1033,7 +1058,7 @@ bool LoadPedalReversed(bool* out_reversed);
 // (-1 = Omni, 0..15), in Global:MIDI's column order, in its own
 // MIDICH.DAT. Load fills only as many as the file holds (a future
 // engine keeps its default) and returns false when there's no file.
-constexpr int kMidiDefaultEngines = 7;
+constexpr int kMidiDefaultEngines = 8; // a 7-entry file from before the Supersaw still loads
 bool SaveMidiDefaults(const int channels[kMidiDefaultEngines]);
 bool LoadMidiDefaults(int channels[kMidiDefaultEngines]);
 

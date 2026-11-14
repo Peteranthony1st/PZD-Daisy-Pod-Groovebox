@@ -25,6 +25,7 @@ extern const uint8_t kGlobalIconDexedA[kGlobalIconBytes];   // DX7-style algorit
 extern const uint8_t kGlobalIconDexedB[kGlobalIconBytes];   // ... and B badge
 extern const uint8_t kGlobalIconEnsemble[kGlobalIconBytes]; // registration tabs
 extern const uint8_t kGlobalIconOrgan[kGlobalIconBytes];    // nine drawbars on a rail
+extern const uint8_t kGlobalIconSupersaw[kGlobalIconBytes]; // three detuned saws
 extern const uint8_t kGlobalIconSmpvo[kGlobalIconBytes];    // one-octave keyboard
 extern const uint8_t kGlobalIconSmpdr[kGlobalIconBytes];    // 4x2 drum pads
 extern const uint8_t kGlobalIconExport[kGlobalIconBytes];   // waveform into an SD card

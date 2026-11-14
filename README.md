@@ -30,7 +30,7 @@ Video and looper generated WAV file below!
 # PZD-Daisy-Pod-Groovebox
 
 A pocket, **multitimbral** groovebox for the [Electrosmith Daisy
-Pod](https://daisy.audio/products/pod): a 4-track stereo looper, seven
+Pod](https://daisy.audio/products/pod): a 4-track stereo looper, eight
 synth/sampler engines and an **8-track MIDI sequencer**, every engine
 playable together at the same time on one small board — not
 one-at-a-time — each independently switchable and MIDI-played alongside
@@ -44,6 +44,11 @@ display gives it a full on-device menu: live waveform/level display,
 per-layer filter/effects/reverb, tempo-locked recording, and SD card
 save/load, all controlled from the Pod's two knobs, two buttons, and one
 clickable encoder.
+
+**New here?** Start with the **[Quick Start guide](docs/quick-start.pdf)**
+(8 pages, also on the root of the SD card template): setting up the card,
+the demo song, your first loop, playing from a MIDI keyboard, and making
+and saving a song.
 
 ## Engines
 
@@ -75,17 +80,31 @@ clickable encoder.
   <img alt="Global:Grains page" src="images/global-grains.png" />
 
 - **Ensemble** — a divide-down string machine in the ARP Solina
-  lineage: 7 real drawbars (saws and squares), built-in chorus, pitch
-  bend, and a mod wheel. *Polyphony: 10 voices (1–16, MIDI page K2).*
+  lineage: 7 real drawbars (saws and squares), a built-in stereo chorus,
+  an LFO (vibrato, filter sweep, tremolo or a tempo-synced gate),
+  velocity on level, tone and attack, pitch bend and a mod wheel.
+  *Polyphony: 10 voices (1–16, MIDI page K2).*
 
   <img alt="Global:Ensmbl page" src="images/global-ensemble.png" />
 
 - **Organ** — a tonewheel-style drawbar organ: 9 drawbars of pure sines
   in Hammond order (16' to 1'), single-trigger percussion (2nd or 3rd
-  harmonic) and key click, with the same chorus, filter and Mix as the
-  Ensemble. *Polyphony: 10 voices (1–16, MIDI page K2).*
+  harmonic) and key click, with the same stereo chorus, filter and Mix
+  as the Ensemble. *Polyphony: 10 voices (1–16, MIDI page K2).*
 
   <img alt="Global:Organ page" src="images/global-organ.png" />
+
+- **Supersaw** — modelled on the Roland JP-8000's Super Saw voice: seven
+  detuned saws with the JP's own detune spacing, knob curve and Mix law,
+  plus a second oscillator (saw, square or triangle), a resonant
+  low/high/band-pass filter per voice (12 or 24 dB) with its own
+  envelope, an LFO (vibrato, filter, tremolo or a tempo-synced gate),
+  Poly/Mono/Legato with portamento, velocity on level, brightness and
+  attack, and a stereo chorus. 42 factory sounds, from trance leads and
+  plucks to future-bass chords and synthwave brass. *Polyphony: 10
+  voices (1–16, MIDI page K2).*
+
+  <img alt="Global:SSaw page" src="images/global-supersaw.png" /><img alt="SSaw:SSaw page" src="images/ssaw-supersaw.png" />
 
 - **Sample Drum (SMPDR)** — a multi-pad one-shot drum sampler for Kits
   and Breaks, up to 24 slices each, with live re-slicing and direct
@@ -110,7 +129,8 @@ Each engine has its own voices — polyphony isn't shared, so a big Dexed
 chord never takes notes away from Ensemble or the Sampler, however many
 engines are playing. (The one exception is the pair DXD-A and DXD-B,
 which share a ceiling of 24.) What they do share is the CPU — the meter in
-`Global:Mixer`'s footer shows how much is left (see **CPU tips** below).
+the footer of `Global:Tracks` and `Global:Synths` shows how much is left
+(see **CPU tips** below).
 
 ## MIDI sequencer, scenes and song
 
@@ -123,7 +143,7 @@ track's state — ▶ playing, ‖ paused, ● recording, ○ counting in, – e
 — and a playhead along the bottom; a MIDI box also shows its engine and
 the pattern playing. After M8 come the **Scenes** and **Song** pages.
 
-**MIDI tracks** play any of the seven engines. They behave like audio
+**MIDI tracks** play any of the eight engines. They behave like audio
 tracks: hold B1 to count in and record one pass, tap to pause/play, hold
 again to overdub; on the track's own pages B2 undoes the last pass. While a track is
 selected the keyboard plays its engine. Each track has:
@@ -332,8 +352,9 @@ saved channels every engine starts on channel 1, except SMPDR on
 channel 10.
 
 **MIDI** (`Global:MIDI`) lists every engine's MIDI channel in one place,
-one column each: Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO and SMPDR
-(GR, DXA, DXB, ENS, ORG, SMV, SMD), each with its on/off dot and channel.
+one column each: Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR and
+Supersaw (GR, DXA, DXB, ENS, ORG, SMV, SMD, SSW), each with its on/off
+dot and channel.
 K1 picks an engine (its column is highlighted) and K2 sets its channel
 (Omni, 1–16); these are the same settings as each engine's own MIDI
 page. While DXD-B is locked to DXD-A it shows "=A"; giving it a
@@ -343,7 +364,7 @@ engine's channel as its power-on default (`MIDICH.DAT`) — separate from
 
 **Sustain pedal** — a pedal sending CC 64 (the sustain jack on most
 controllers) holds notes on every keyboard engine: Grains, DXD-A, DXD-B,
-Ensemble, Organ, SMPVO and SMPDR. Each engine follows the pedal on its own MIDI
+Ensemble, Organ, SMPVO, SMPDR and Supersaw. Each engine follows the pedal on its own MIDI
 channel. Releasing the pedal lets go of every held note except keys
 still pressed; playing a held note again restarts it. If your pedal works
 backwards (some controllers detect pedal polarity at power-on), tap B1
@@ -359,7 +380,8 @@ which engines are on, and both Sampler engines (SMPVO and SMPDR). For
 Dexed that's both DXD-A and DXD-B, plus how the pair is set up: their
 Level and Pan on the Mix page, the MIDI Lock, and the Split page.
 Snapshots saved before DXD-B existed load as the single Dexed they were
-(B off, Layer), ones from before the Organ load with it off, and ones
+(B off, Layer), ones from before the Organ or the Supersaw load with
+that engine off, and ones
 from before the Sampler split bring back only the Sampler face they
 saved. Grains' audio goes into the snapshot itself; the
 Sampler's Sound and Kit are referenced by name, as in their User presets.
@@ -367,7 +389,7 @@ Saving works like a User page: B1, then K1 picks Overwrite (the snapshot
 last loaded or saved) or Save New, and holding B2 confirms. B2 opens the
 list, K2 scrolls and B2 loads; the snapshot number shows next to K2. A
 list shows the engines in two columns — Grains, DXD-A, DXD-B and Ensemble,
-then Organ, SMPVO and SMPDR — each with its on/off box (filled = on) and
+then Organ, SMPVO, SMPDR and Supersaw — each with its on/off box (filled = on) and
 its sound's name; a long name scrolls sideways after a second. It
 shows what's live now, or while browsing, what the highlighted snapshot
 holds (MIDI channels are on `Global:MIDI`). Snapshots live in
@@ -406,20 +428,29 @@ with no knob, button or encoder touched (Off, 1, 2, 5, 10 or 30 minutes;
 in. The first touch only wakes it. K1 sets the time, B1 puts it to sleep
 now, B2 saves the time as the power-up default (`SCREEN.DAT`).
 
-**Mixer** (`Global:Mixer`) — one screen with Volume/Pan/Reverb-send for
-all 4 layers plus every engine and Bypass, a live oscilloscope of the
-final mix, per-channel peak meters in dB (−48 dB to 0 dBFS, with clip
-indicators), and a live CPU meter. `Global:Mixer` — the first Global
-page — shows all 12 channels in two rows of six, each name over its own
-level meter, and puts **Master
-Vol** and **Bypass Vol** on K1/K2, so you can pull a live mic down
-without touching the mix (Bypass starts at 60% at power-on). Every
+**Mixer** — two Global pages, the first two in Global:
+**`Global:Tracks`** shows the four audio tracks and the eight MIDI
+tracks (L1–L4, M1–M8), **`Global:Synths`** the eight engines; both end
+with Bypass and Master. Each shows its channels as names over live peak
+meters in dB (−48 dB to 0 dBFS, with clip indicators), puts **Master
+Vol** and **Bypass Vol** on K1/K2 — so you can pull a live mic down
+without touching the mix (Bypass starts at 60% at power-on) — and the
+live CPU meter on the bottom row. Click into either for Volume, Pan and
+Reverb send per channel, and a live oscilloscope of the final mix. A
+MIDI track's channel **is** its engine's: M1 playing DXD-A shows and
+sets DXD-A's level, so turning one turns the other (the detail page
+names it, e.g. `M1>DXA`). DXD-A and DXD-B each have their own fader and
+pan into the Dexed bus, and share its sends and meter.
+
+<img alt="Global:Tracks page" src="images/global-tracks.png" /><img alt="Global:Synths page" src="images/global-synths.png" /> Every
 channel pans with an equal-power law (−3 dB in the centre), and a soft
 limiter on the master output catches loud peaks instead of clipping.
 
-**Mix pages** — Dexed, Ensemble, Organ, SMPVO/SMPDR and Grains each have a Mix
-page with that engine's output meter (clip cap at the top). Ensemble, Organ,
-the Sampler and Grains show a live scope beside it; Dexed shows four
+**Mix pages** — every engine has a Mix page with its output meter (clip
+cap at the top). On the Ensemble, Organ and Supersaw, K1 is Level and K2
+is Gain (Pan is on the Mixer); on Dexed, Grains and the Sampler, B1/B2
+switch the knobs between Level+Pan and Gain. Ensemble, Organ,
+the Sampler and Grains show a live scope beside the meter; Dexed shows four
 bars instead — DXD-A, DXD-B, the shared Dexed bus, and the OUT meter
 (see the Dexed table below). Every engine has a **Gain** (0 to +12 dB) before
 its limiter, for lifting quiet patches and samples: turn it up until the
@@ -439,13 +470,14 @@ haze after each for Dly-Rev; beat ticks when synced). Each engine's and
 layer's FX page shows both small, at its own sends ("DLY OFF" while the
 delay's Time is Off).
 
-**Sends** (`Global:Sends`, after the Mixer) — every channel's reverb and
+**Sends** (`Global:Sends`, after the two Mixer pages) — every channel's reverb and
 delay send on one page: the layers, each engine (DXD-A and DXD-B share the
 Dexed bus's) and Bypass, each with two bars. K1 picks the channel, B1/B2
 point K2 at its Reverb or Delay send.
 
 **SD card management** (`Global:SdMgmt`) — a grid of all 8 save
-categories (Global, Grains/Dexed/Ensemble-and-Organ user presets, Captures,
+categories (Global, Grains/Dexed user presets, the SYNTH box for
+Ensemble, Organ and Supersaw user presets, Captures,
 Sampler imports, and the SMPVO/SMPDR user presets) — duplicate or delete
 any file directly on the device, no computer needed. **GLOBAL** opens to
 a choice of Performances or Snapshots; Captures opens to a
@@ -518,14 +550,16 @@ playing costs almost nothing. With all engines playing chords over four
 looping layers with effects, the load peaks in the mid-80s %. A few
 habits keep headroom on your side:
 
-- Looper, DXD-A, DXD-B, Ensemble, Organ, Grains, and SampleSynth are each
+- Looper, DXD-A, DXD-B, Ensemble, Organ, Supersaw, Grains, and SampleSynth are each
   independently switchable from their own `Global:` page — switching
   one off frees its CPU share entirely, not just its output.
 - Each Dexed engine's **Voices** (its MIDI page) is the biggest CPU
   lever there: every held voice costs, so lower it when both engines or
-  several other engines are playing. Ensemble and Organ have the same
-  Voices setting; the Organ is the cheaper of the two (about 8% at 10
-  voices against the Ensemble's 15%).
+  several other engines are playing. Ensemble, Organ and Supersaw have
+  the same Voices setting; the Organ is the cheapest of the three. The
+  Supersaw measured about 18–19% at its worst (10 voices all sounding,
+  full Detune and Mix, OSC2, 24 dB filter, pitch and filter LFOs moving);
+  everyday patches cost less.
 - SMPVO and SMPDR are separate engines; each costs CPU only while it's
   on and playing.
 - Record your synth parts into loop layers first, then switch those
@@ -533,11 +567,12 @@ habits keep headroom on your side:
 - Dial in reverb/delay last, once you know what's actually being kept —
   several engines sending into effects at once is the heaviest realistic
   combination.
-- `Global:Mixer`'s bottom row shows a live CPU meter (average and
-  peak) if you want to check headroom directly. Press Button 1 there
-  for a per-part breakdown — Grains, Dexed, Ensemble, Organ, SMPVO, SMPDR,
-  Looper, Delay, Reverb and everything else — each as average/peak % of
-  the time available per audio block.
+- The bottom row of `Global:Tracks` and `Global:Synths` shows a live
+  CPU meter (average and peak) if you want to check headroom directly.
+  Press Button 1 there for a per-part breakdown — Grains, Dexed,
+  Ensemble, Organ, SMPVO, SMPDR, Supersaw, Looper, Delay, Reverb and
+  everything else — each as average/peak % of the time available per
+  audio block.
 - A layer's Drive and Tremolo cost nothing while they're at 0.
 
 ## How to use it
@@ -666,7 +701,8 @@ capture in progress.
 | Layer: Drive | Drive (0 = off) | Trim (centre = unchanged) | — | — |
 | Layer: Tremolo | Depth (0 = off) | Rate (0.5–10 Hz) | — | — |
 | Layer: LYR-FX | Reverb send | Delay send | — | — |
-| Global: Mixer | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer screen; bottom row shows CPU avg/peak) |
+| Global: Tracks | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer for L1–L4, M1–M8, Bypass, Master; bottom row shows CPU avg/peak) |
+| Global: Synths | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer for the eight engines, Bypass, Master) |
 | Global: Sends | Pick a channel | Its Reverb or Delay send | Knob 2 → Reverb | Knob 2 → Delay |
 | Global: Tempo | BPM (50–240) | Bars (1–16, lower-capped at slower BPM) | Toggle metronome | Hold 800ms = Save as startup default |
 | Global: Speed | Vari-speed | — | Cycle Normal/Scrub/Freeze | Reset to 1.0x |
@@ -683,11 +719,12 @@ capture in progress.
 | Global: SD Mgmt | Scroll (category grid, folder lists) | Scroll (file list) | Back, Hold = Duplicate | Open, Hold 1500ms = Delete (file list) |
 | Global: Export | Audio Loop / Audio+MIDI Loop / Song | Loops (Audio+MIDI Loop, 1–8) | Tap = Export, native 48kHz ("Studio"); while running = stop | Tap = Export, 44.1kHz for MicroDexed ("CD"); while running = stop |
 | Global: Display | Screen saver time (Off, 1–30 min) | — | Sleep now | Save the time as power-up default |
-| Global: MIDI | Pick an engine (Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR) | That engine's MIDI channel (Omni, 1-16) | Sus-Pedal: Norm/Rev toggle (saved immediately) | Hold 800ms = Save every channel as power-on default |
+| Global: MIDI | Pick an engine (Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR, Supersaw) | That engine's MIDI channel (Omni, 1-16) | Sus-Pedal: Norm/Rev toggle (saved immediately) | Hold 800ms = Save every channel as power-on default |
 | Global: Arp | Pick an engine | — | Its arp on/off | Generator/Phrase (push encoder to edit its arp) |
 | Global: DXD-A | — | — | Toggle DXD-A on/off (off by default) | — (push encoder to enter Screen::Dexed, editing DXD-A) |
 | Global: DXD-B | — | — | Toggle DXD-B on/off (off by default) | — (push encoder to enter Screen::Dexed, editing DXD-B) |
 | Global: Ensemble | — | — | Toggle Ensemble on/off (off by default) | — (push encoder to enter Screen::Ensemble) |
+| Global: SSaw | — | — | Toggle the Supersaw on/off (off by default) | — (push encoder to enter Screen::Supersaw) |
 | Global: Organ | — | — | Toggle Organ on/off (off by default) | — (push encoder to enter the same pages, editing the Organ) |
 | Global: Granular | — | — | Toggle Grains on/off | — (push encoder to enter Screen::Granular) |
 | Global: SMPVO | — | — | Toggle SMPVO on/off | — (push encoder to enter Screen::SampleSynth) |
@@ -841,16 +878,29 @@ long-press goes all the way to Home.
 | Click (Organ only) | Key click amount (0 = off) | — | — | — |
 | Env | Attack / Sustain | Decay / Release | — | Toggle AD/SR |
 | Ensemble (Chorus) | Chorus depth | Chorus rate | — | — |
+| LFO (Ensemble only) | Rate (a note value when synced) | Fade (0–5 s to full depth) | Cycle wave: Tri/Saw/Square/S&H | Free/Sync |
+| LFODep (Ensemble only) | Pick Pitch / Filter / Amp | That depth (centre = off, either side = opposite directions) | — | — |
 | Filter | Cutoff | Resonance | Cycle filter mode | — |
-| Mix | Output level / Gain (0 to +12 dB into the limiter) | Pan | Knobs → Level+Pan | Knobs → Gain |
+| Mix | Output level | Gain (0 to +12 dB into the limiter) | — | — |
 | FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
-| MIDI | MIDI channel (Omni, 1-16) | Voices (1-16, default 10) | Cycle mod wheel target (Off/Chorus/Level/Filter) | — |
+| MIDI | MIDI channel (Omni, 1-16) / Velocity | Voices (1-16, default 10) | Cycle mod wheel target (Off/Chorus/Level/Filter) | Ch/Vel: K1 → MIDI channel or Velocity (Ensemble only) |
 | Preset | — | Scroll the factory sounds | Back | Load (tap, stays in list) |
 | User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
 
 Clicking the encoder on any Ensemble page goes back to
 `Global:Ensemble`. Boots with all 7 drawbars flat at 60% before any preset is
 loaded.
+
+**Velocity** (Ensemble, MIDI page, B2 then K1): 0 plays every note alike, as
+a string machine's keys never were touch-sensitive. Turned up, softer notes
+are quieter (the usual MIDI velocity curve), darker — their upper footages
+and a per-note low-pass close down — and swell in more slowly; harder ones
+play the registration as set, with a snappier attack. The **LFO** moves the
+pitch of each note (with Fade, so vibrato comes in after the note starts),
+the Ensemble's filter (when its mode isn't Off), or the level — a Square
+synced to 1/16 is a trance gate. The factory bank has 19 sounds, each with
+its own velocity and LFO settings, including Gated Strings, Tremolo Keys
+and Pulse Pad.
 
 The **Organ** uses these same pages (titled `Organ:`), entered from
 `Global:Organ`, plus its own **Perc** and **Click** pages after
@@ -862,7 +912,48 @@ carries it -- so a struck chord pings on every note, and legato lines
 have none. The factory bank has eight
 classic registrations (Jazz 888, Full Organ, Soul 8888, Gospel, Ballad,
 Flute 8', Rock Drive, Cathedral); User saves go in `ORGAN/` as ORGN9,
-ORGN10… In `Global:SdMgmt` the ENS/ORG box asks Ensemble or Organ first.
+ORGN10… The Organ has no LFO pages and doesn't respond to velocity. In
+`Global:SdMgmt` the SYNTH box asks Ensemble, Organ or Supersaw first.
+
+**Supersaw (`Screen::Supersaw`, rotate to cycle pages)**
+
+| Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
+|---|---|---|---|---|
+| SSaw | Detune | Mix | — | — |
+| Osc2 | Coarse (±24 semitones) | Fine (±50 cents) | Cycle wave: Saw/Square/Tri | — |
+| Balance | OSC1 ↔ OSC2 (centre = both full) | — | — | — |
+| Filter | Cutoff | Resonance | Cycle type: LPF/HPF/BPF | 12/24 dB |
+| FltEnv | Attack / Sustain | Decay / Release | Knobs → Attack+Decay | Knobs → Sustain+Release |
+| FltMod | Envelope depth (centre = none) | Key follow | — | — |
+| AmpEnv | Attack / Sustain | Decay / Release | Knobs → Attack+Decay | Knobs → Sustain+Release |
+| LFO | Rate (a note value when synced) | Fade (0–5 s to full depth) | Cycle wave: Tri/Saw/Square/S&H | Free/Sync |
+| LFODep | Pick Pitch / Filter / Amp | That depth (centre = off) | — | — |
+| Voice | Portamento time | — | Cycle Poly/Mono/Legato | Porta: On/Off |
+| Chorus | Depth | Rate | — | — |
+| Mix | Output level | Gain (0 to +12 dB into the limiter) | — | — |
+| FX | Reverb send / Delay send | Shared reverb size / delay time | Reverb | Delay |
+| MIDI | MIDI channel (Omni, 1-16) / Velocity | Voices (1-16, default 10) | Cycle mod wheel target (Off/Detune/Cutoff/Level) | Ch/Vel: K1 → MIDI channel or Velocity |
+| Preset | — | Scroll the factory sounds | Back | Load (tap, stays in list) |
+| User | Saving: Overwrite/Save New | Scroll New + your saves | Save / Back | Load (tap) / Hold 800ms = confirm Save |
+
+The **SSaw** page draws the seven saws as bars: they spread out as you turn
+Detune (with the JP-8000's own uneven spacing), their height follows Mix
+(the centre saw is solid, the outer pair dotted), and **Spread** shows how
+far the outer saws are detuned from the centre one, in cents — the JP's
+Detune curve climbs slowly, then steeply at the top, to ±202 cents at 100%.
+Mix raises the six side saws from almost silent to louder than the centre
+one, as on the JP.
+
+**Velocity** (MIDI page, B2 then K1): harder than the JP's standard
+velocity (80) is louder (the usual MIDI velocity curve), brighter — the
+cutoff opens and the filter envelope sweeps further — and snappier, softer
+is quieter, darker and slower to swell. The **LFO** is one for the whole
+engine, so a synced one stays on the beat with the looper; Pitch has a
+Fade per note. **Mono** plays the last key held and returns to the one
+still down when you let go; **Legato** doesn't restart the envelopes on an
+overlapping note; **Portamento** glides over its time in Poly as well.
+User saves go in `SUPERSAW/` as SSAW1, SSAW2… The engine starts off; turn
+it on from `Global:SSaw`.
 
 **Grains (`Screen::Granular`, rotate to cycle pages)**
 
@@ -947,15 +1038,16 @@ Sounds get onto the card.
 
 **Mixer (`Screen::Mixer`, rotate to step through channels)**
 
-Each of the 12 channels (Layer 1–4, Grains, Dexed — DXD-A and DXD-B
-together, after their shared bus — Ensemble, Organ, SMPVO (VOI), SMPDR
-(DRM), Bypass, Master)
-gets its own stop; rotating past the last one shows a
-live oscilloscope of the final output mix, then wraps back to Layer 1.
+Entered from `Global:Tracks` it steps through L1–L4, M1–M8, Bypass and
+Master; from `Global:Synths` through Grains, DXD-A, DXD-B, Ensemble (ESB),
+Organ, SMPVO (VOI), SMPDR (DRM), Supersaw (SSW), Bypass and Master. A
+MIDI track's stop is its engine's channel (titled e.g. `Mixer:M1>DXA`).
+Rotating past the last one shows a live oscilloscope of the final output
+mix, then wraps back to the first.
 
 | Channel | Knob 1 | Knob 2 | Button 1 | Button 2 |
 |---|---|---|---|---|
-| Layer 1–4 / Grains / Dexed / Ensemble / Organ / VOI / DRM / Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
+| Layer 1–4 / M1–M8 / every engine / Bypass | Volume | Pan | Knobs → Volume+Pan | Knobs → Reverb send |
 | Master | Volume | Reverb size | — | — |
 
 ## Building and flashing

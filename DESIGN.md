@@ -5913,3 +5913,173 @@ out of it.
 ### Memory
 About 20 KB of AXI SRAM for the 15 arps' state (AXI 73.7% → 77.6%).
 
+
+## Supersaw
+
+An engine modelled on the Roland JP-8000's Super Saw voice
+(`supersaw_synth.h/.cpp`, pages in `ui_supersaw.cpp`): OSC1 Super Saw,
+OSC2, a filter and two envelopes per voice, an LFO, then a stereo chorus
+on the summed mix. Called **Supersaw** (`SSW` in short labels) — the
+generic name, not Roland's.
+
+### How the JP-8000 does it
+
+From Adam Szabo's thesis *How to Emulate the Super Saw* (KTH, 2010) and a
+2026 decode of the JP-8000 DSP code (atosynth.blogspot.com, "The super saw
+code"):
+
+- **Seven plain saws**, not band-limited, summed and sent through a
+  high-pass filter. There is no chorus and no phase trick inside the
+  oscillator. The hardware ran at 88.2 kHz, which hid most of the
+  aliasing.
+- **Phase:** 24-bit accumulators that are never reset, so each note
+  starts at an effectively random phase.
+- **Detune:** an offset added to the pitch increment, so in Hz, not
+  cents. The table is {0, +128, −128, +408, −412, +704, −720}: the
+  outer pairs sit at about 0.18, 0.57 and 1.0 of the spread. At full
+  Detune the outer pair is ±11% (about ±190 cents). The knob's curve is
+  piecewise linear and slow for the first half: +1 per 2 steps (0–63),
+  +1 per step (64–80), +2 per step (81–120), then +8, +16, +32 and +96
+  for the last steps. That curve is a large part of the sound.
+- **Mix:** the centre saw is fixed at 25/128. Each of the six side saws
+  is (Mix + 1)/128, rising linearly to 33/128, about 1.3x the centre.
+- **High-pass:** Szabo reports its cutoff follows the note's pitch.
+  The DSP decode doesn't show the cutoff, so this is to be checked by
+  ear against recordings.
+- **Rest of the voice:** OSC2 is Saw, Square or Triangle with coarse and
+  fine tuning, and an OSC Balance control sets OSC1 against OSC2. The
+  filter is LPF, HPF or BPF at 12 or 24 dB, with resonance, key follow
+  and its own ADSR with depth. The amp has its own ADSR. 8 voices.
+
+### The voice
+
+Per voice:
+
+- **7 Super Saw phases + 1 OSC2 phase**, each a `uint32_t` that wraps by
+  itself, at increments from the JP's detune table and knob curve
+  (`SetVoiceIncrements()`, redone only when the pitch actually moves).
+- **Saws a chunk at a time.** Between wraps a saw is a straight line, so
+  a sum of saws is one too: each 16-sample chunk starts as A + j·B, and
+  each saw that wraps inside it adds its fall of 2 from that sample on,
+  plus a PolyBLEP on the samples either side (`AddWraps()`). Most chunks
+  have no wraps. Square is a saw minus the same saw half a cycle on;
+  Triangle is naive (its corners alias very little).
+- **Mix:** the centre saw at 25/128, each side saw at (Mix + 1)/128, as on
+  the JP; then Balance against OSC2.
+- **High-pass:** one-pole at the note's fundamental, on OSC1.
+- **Filter:** two trapezoidal SVF stages (the second only at 24 dB, the
+  first then a Butterworth stage), coefficients once per chunk from a
+  Padé tan approximation with both stages sharing one division.
+- **Envelopes:** two `Adsr`s per voice at sample rate / 16; the amp
+  ramps linearly across each chunk.
+- **Velocity** (`SetVelSens01()`): level on the DLS/MIDI curve
+  (1 − s·(1 − v²); at full amount, 40 is 19 dB under 120), the cutoff ±4
+  octaves around the JP's standard velocity 80, the filter envelope's
+  depth, and both attacks (×0.5 to ×2), all set at note start.
+
+Each voice renders the whole block (state in registers, the per-sample
+loop templated on filter type and slope so it has no branches), into one
+mono mix; then the shared chorus (`fast_chorus.h`, stereo), Gain, the
+soft limiter, Level, Pan and the sends.
+
+**LFO** (`synth_lfo.h`, shared with the Ensemble): the JP's LFO1 —
+Triangle, Saw, Square or Sample & Hold, free Rate or a synced note value
+(on the loop's grid while the looper runs), Fade per voice, bipolar
+Pitch, Filter and Amp depths. One for the engine, so voices move together.
+
+**Voice modes:** Poly, Mono (last-note priority, back to the key still
+held), Legato (no envelope restart on an overlapping note), and a
+constant-time Portamento (in Poly, from the last note played).
+
+Phases run free, as on the JP: no two notes start alike.
+
+### CPU: measured on the Pod
+
+The test build (`make SUPERSAW_CPU_TEST=1`) holds the worst case from
+power-on: 10 voices, full Detune and Mix, OSC2 on, 24 dB filter swept by
+its envelope and LFO, pitch LFO (new increments every step), chorus on.
+Peak CPU, read from Global:Mixer's per-part profile:
+
+| Version | Peak CPU |
+|---|---|
+| First: 7 BLEP saws per sample, control every 8 samples | 32% |
+| Saws as straight-line chunks with wrap corrections | 28% |
+| Control every 16 samples; one-division filter coefficients | 20–21% |
+| Per-sample loop templated by filter; the chorus rewritten (below) | 16% |
+| Chorus made properly stereo | 18–19% |
+
+The first estimate (9–11%) was a guess from the Mac, whose timings don't
+carry over: splitting the cost four ways on the Pod (a temporary build)
+showed per-chunk control at 10% — more than the saws themselves — which
+is what led to the second half of the table.
+
+### The chorus (`fast_chorus.h`)
+
+daisysp::Chorus runs two engines panned 25/75, but every setter the
+Ensemble used gave both the same values and they start alike, so they
+always computed the same signal: its "stereo" output was mono (left =
+right, checked sample for sample). `FastChorus` computes it once (wraps
+with a compare instead of three `%`s, all inline) — the same output to
+-84 dB — and then adds the right side's own voice sweeping the same
+delay the other way (the classic stereo chorus, as on the Juno and the
+JP-8000). Heard side by side on all three engines, stereo was much
+better, so the Ensemble, Organ and Supersaw all use it; the Ensemble's
+filter runs a second channel only for the right side.
+
+### Levels
+
+Matched by ear on the Pod with the Organ's default as the reference:
+New on the Supersaw and the Ensemble is Gain +3 dB. The 42 factory sounds
+were then levelled offline against each other (`kFactoryGain`): peak
+meter level first, then K-weighted loudness (BS.1770), because a
+supersaw's spiky peaks carry less energy than the same peak of sines and
+sounded quieter at an equal meter reading. LFO sounds were checked for
+drop-outs — only the gates may fall to silence (a looping saw on the
+filter once snapped Riser shut every 4 bars).
+
+### Fitting into the rest
+
+`Supersaw` goes at the **end** of every engine list, so saved indexes keep
+meaning what they did: `MidiSequencer::Engine` and `SustainEngine`,
+`Prof::kSupersaw` (the profile view is now three columns of four),
+Global:MIDI (8 columns of 16 px, `MIDICH.DAT` 8 entries — a 7-entry file
+still loads), the Global:Arp grid's free cell (its save entries keep the
+first 7 engines, then the tracks, then the Supersaw, so an older
+performance lines up), Global:Snap's 8th slot, and the SYNTH box in
+SdMgmt (Ensemble, Organ or Supersaw).
+
+Saved data: user presets in `SUPERSAW/PRESnnn.DAT` ("SSWP", a size field,
+then `SupersawPresetData`, which only grows by appending); one more
+SynthSnapshot section, so older snapshots and performances read it as
+absent — the Supersaw off, its sound left as it was.
+
+## Mixer: Global:Tracks and Global:Synths
+
+Global:Mixer became two pages. Both draw from one list of channel IDs
+(`kMix*`: the layers, each engine, Bypass, Master) through
+`MixerSetChannel()`. **Tracks** is L1–L4, M1–M8, Bypass, Master: a MIDI
+track has no audio of its own, so its channel **is** its engine's
+(`MixerEngineChannel()`), and moving one moves the other — a per-track
+velocity scale was considered and rejected, since the Supersaw and the
+Ensemble's default ignore velocity, and it changes tone as well as level.
+**Synths** is the eight engines, Bypass, Master. DXD-A and DXD-B each get
+their own fader and pan (their engine level/pan into the Dexed bus) and
+share the bus's sends and meter; the bus's own Level stays on the Dexed
+Mix page. Both pages keep Master/Bypass on the knobs and the CPU profile
+on B1.
+
+## Ensemble: velocity, LFO, and its Mix page
+
+- **Velocity** (`SetVelSens01()`, preset file v5/v6): the level curve as
+  the Supersaw's, the attack ×0.5–×2, and tone — a soft note's upper
+  footages scale down (4' × b, 2' × b², 1' × b³) and it plays through its
+  own 12 dB/octave low-pass (two one-poles), up to 6 octaves closed. The
+  footage scaling alone was inaudible (the 8' saw carries the high
+  harmonics too): measured, the spectral centroid didn't move until the
+  per-note low-pass went in. Not on the Organ.
+- **LFO:** the shared `SynthLfo` — Pitch per voice with Fade, the bus
+  filter, Amp. Not on the Organ (its LFO pages are skipped there).
+- **Bank:** 19 sounds, velocity and LFO per sound in
+  `kEnsembleFactoryExtras`, levelled by loudness to New.
+- **Mix pages** of the Ensemble, Organ and Supersaw: K1 Level, K2 Gain,
+  Pan only on the Mixer.

@@ -3,6 +3,8 @@
 #include "svf_setup.h"
 #include <cstddef>
 #include "daisysp.h"
+#include "fast_chorus.h"
+#include "synth_lfo.h"
 #include "looper_layer.h" // FilterMode, kFilterMinHz/kFilterMaxHz
 #include "ensemble_factory_data.h"
 
@@ -126,9 +128,8 @@ class EnsembleSynth
     // GetPreLimiterLevel01() -- Screen::Mixer's own clip indicator/Peak
     // bar need this, not a post-tanhf()/post-output_level_/post-pan
     // check (see Process(), where this is tracked against max(|l|,|r|)
-    // right before the limiter -- genuinely stereo here, unlike Dexed's
-    // own mono-then-panned signal, so the louder of the two channels is
-    // what actually risks clipping).
+    // right before the limiter -- the chorus is stereo, so the louder of
+    // the two channels is what risks clipping).
     bool  IsLimiting() const { return pre_limiter_clip_hold_ > 0.f; }
     float GetPreLimiterLevel01() const { return pre_limiter_level_; }
 
@@ -190,6 +191,32 @@ class EnsembleSynth
     // Key click: a ~3 ms burst of filtered noise at every note start,
     // like a tonewheel organ's key contacts. 0 = off.
     void  SetClick01(float v01) { click01_ = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01); }
+    // Velocity to level, 0..1: 0 plays every note alike (a string
+    // machine's keys aren't touch-sensitive, so that's the default); 1
+    // takes the softest notes all the way down. The Organ stays at 0.
+    void  SetVelSens01(float v01) { vel_sens01_ = v01 < 0.f ? 0.f : (v01 > 1.f ? 1.f : v01); }
+    float GetVelSens01() const { return vel_sens01_; }
+    // The Ensemble also takes velocity on its attack (harder than the
+    // standard velocity, 80, is up to twice as fast, softer up to twice as
+    // slow to swell in, as the Supersaw does) and on its tone: a soft note
+    // plays its upper footages quieter -- 4' a little, 2' more, 1' most --
+    // so it's darker and rounder, and a hard one the registration as set --
+    // and through a low-pass of its own (two one-pole stages, 12 dB/octave),
+    // up to 6 octaves closed for the softest note at full Velocity, wide
+    // open at the hardest. The footage scaling alone was too subtle to hear
+    // (the 8' saw carries the high harmonics too); the low-pass is two
+    // multiply-adds a sample per voice, well under 1% CPU at 10 voices.
+
+    // The Ensemble's LFO (see synth_lfo.h): vibrato (Pitch, per voice with
+    // its own Fade), Filter (the engine's one filter, when its mode isn't
+    // Off) and Amp (tremolo, or a gate when synced). The Organ doesn't use
+    // it. SetClock() once per block, before Process().
+    SynthLfo&       Lfo() { return lfo_; }
+    const SynthLfo& Lfo() const { return lfo_; }
+    void            SetClock(float beat_pos, float bpm, bool locked)
+    {
+        lfo_.SetClock(beat_pos, bpm, locked);
+    }
     float GetClick01() const { return click01_; }
     int  NumDrawbars() const { return organ_ ? kNumOrganDrawbars : kNumDrawbars; }
 
@@ -200,6 +227,7 @@ class EnsembleSynth
     float GetChorusDepth01() const { return chorus_depth01_; }
     void  SetChorusRate01(float v01);
     float GetChorusRate01() const { return chorus_rate01_; }
+
 
     // Same explicit-Button-target-toggle convention
     // SampleSynthParamPage::Env/DexedParamPage::FX already use: one
@@ -245,7 +273,7 @@ class EnsembleSynth
         float   filter_res01         = 0.f;
         float   output_level01       = 0.70f;
         float   pan01                = 0.5f;
-        float   reverb_send01        = 0.f;
+        float   reverb_send01        = 0.3f; // New/power-on: a little space (the Organ: 20%)
         float   delay_send01         = 0.f;
         // Added in preset file v2 -- 0 = unity (how every v1 preset
         // sounded), see SetGain01().
@@ -269,6 +297,17 @@ class EnsembleSynth
         float   perc_decay01          = 0.3f;
         float   perc_level01          = 0.7f;
         float   click01               = 0.f;
+        // Added in preset file v5: velocity amount (see SetVelSens01()),
+        // 0 for every older preset -- how they always played.
+        float   vel_sens01            = 0.f;
+        // Added in preset file v6: the LFO (see Lfo()). Depths at 0.5 are
+        // off, so every older preset plays as it did.
+        int32_t lfo_wave              = 0;
+        float   lfo_rate01            = 0.4f;
+        int32_t lfo_sync              = 0;
+        int32_t lfo_sync_index        = 2;
+        float   lfo_fade01            = 0.f;
+        float   lfo_depth01[SynthLfo::kNumDests] = {0.5f, 0.5f, 0.5f};
     };
     void ApplyPreset(const EnsemblePresetData& p)
     {
@@ -305,6 +344,16 @@ class EnsembleSynth
         SetPercDecay01(p.perc_decay01);
         SetPercLevel01(p.perc_level01);
         SetClick01(p.click01);
+        SetVelSens01(p.vel_sens01);
+        lfo_.SetWave((SynthLfo::Wave)(p.lfo_wave >= 0 && p.lfo_wave < (int)SynthLfo::Wave::kCount
+                                          ? p.lfo_wave
+                                          : 0));
+        lfo_.SetRate01(p.lfo_rate01);
+        lfo_.SetSync(p.lfo_sync != 0);
+        lfo_.SetSyncIndex(p.lfo_sync_index);
+        lfo_.SetFade01(p.lfo_fade01);
+        for(int d = 0; d < SynthLfo::kNumDests; d++)
+            lfo_.SetDepth01(d, p.lfo_depth01[d]);
     }
     EnsemblePresetData CapturePreset() const;
 
@@ -359,6 +408,10 @@ class EnsembleSynth
         int      click_left = 0;
         uint32_t click_rng  = 22222;
         float    click_lp   = 0.f;
+        float    lfo_fade    = 1.f; // the LFO's fade-in, 0..1 (see SynthLfo::FadeStep())
+        float    bright      = 1.f; // velocity's tone, 0..1 (see SetVelSens01())
+        float    vel_lp_a    = 1.f; // its low-pass's coefficient, 1 = open
+        float    vel_lp_y    = 0.f, vel_lp_y2 = 0.f;
         int      held_note   = -1; // -1 = free
         int      pitch_note  = 60; // the note it plays, kept for its release tail (pitch bend)
         uint8_t  velocity     = 100;
@@ -389,12 +442,18 @@ class EnsembleSynth
     float perc_coef_    = 0.f; // per envelope step, see SetPercDecay01()
     float perc_env_     = 0.f; // the one shared percussion envelope
     float click01_      = 0.f;
+    float vel_sens01_   = 0.f;
+    SynthLfo lfo_;
+    bool     lfo_pitch_was_on_ = false; // to put the pitch back when its depth goes to 0
     // The Organ's per-drawbar peak level (drawbar level x kVoiceGain --
     // the same peak a full-level saw drawbar has), kept with
     // drawbar_levels_.
     float sine_amp_[kMaxDrawbars] = {};
     // Sets voice v's pitch for the bank and the Organ (SetVoiceFreq()).
     void SetVoiceFreq(Voice& v, float hz);
+    // The drawbars into voice v's bank, its upper footages scaled by its
+    // velocity's tone (v.bright -- see SetVelSens01()).
+    void SetVoiceRegistration(Voice& v);
     // Every voice plays the same registration, so the Organ mixes its
     // drawbars into one cycle and each voice reads that with a single
     // table lookup per sample. A drawbar change only sets
@@ -406,11 +465,8 @@ class EnsembleSynth
     int           sine_wave_cur_   = 0;
 
     // ONE shared instance, not one per voice -- see the class's own
-    // doc comment for the real measured reason. Genuinely stereo
-    // (GetLeft()/GetRight()), not collapsed back to mono -- the actual
-    // point of including it at all was real ensemble width, not just a
-    // mono color filter.
-    daisysp::Chorus chorus_;
+    // doc comment for the real measured reason. Stereo: see fast_chorus.h.
+    FastChorus chorus_;
     float            chorus_depth01_ = 0.5f;
     float            chorus_depth_smoothed_ = 0.5f; // what the chorus runs at, see Process()
     float            chorus_rate01_  = 0.3f;
@@ -421,7 +477,7 @@ class EnsembleSynth
     float release01_ = 0.3f;
 
     float sample_rate_   = 48000.f;
-    float reverb_send01_ = 0.f;
+    float reverb_send01_ = 0.3f; // power-on; the Organ starts at 20% (SetOrgan())
     float delay_send01_  = 0.f;
 
     // Same curve every other engine's own Output Level uses
@@ -444,10 +500,9 @@ class EnsembleSynth
     float pan_l_gain_ = 0.7071f; // EqualPowerPan(pan01_), control-rate cache
     float pan_r_gain_ = 0.7071f;
 
-    // Stereo, unlike Dexed's own mono-then-panned filter pair -- each
-    // channel processes its own real signal (post-Chorus, genuinely
-    // different L/R content), not the same mono input twice.
-    TptSvf filter_l_, filter_r_;
+    // The chorus is stereo, so each side has its own filter (one would
+    // do if it were switched to mono, see Process()).
+    TptSvf filter_, filter_r_;
     FilterMode   filter_mode_     = FilterMode::Off;
     float        filter_cutoff01_ = 1.f;
     float        filter_res01_    = 0.f;

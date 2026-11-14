@@ -29,6 +29,14 @@ constexpr float kSineFoldLimit = 0.45f;
 // Adsr runs at sample_rate / kEnvStep) and ramped linearly in between --
 // inaudible, and most of each voice's per-sample cost gone.
 constexpr int kEnvStep = 8;
+// The Ensemble's divide-down bank sat well below every other engine on the
+// Mixer meter, so it gets +6 dB over kVoiceGain (the Organ's sines don't
+// use the bank, so it's unchanged). Its factory sounds' Gains were then
+// matched to peak near -3 dB.
+constexpr float kStringsBoost = 2.f;
+// New's Gain on the Ensemble: +3 dB, set by ear on the Pod against the
+// Organ (the factory sounds are matched to it, see ensemble_factory_data.cpp).
+constexpr float kEnsembleNewGain = 3.f / 12.04f;
 // Key click length: ~3 ms at 48 kHz.
 constexpr int kClickSamples = 144;
 // Every voice renders a whole block into this, one voice at a time,
@@ -75,10 +83,11 @@ void EnsembleSynth::Init(float sample_rate)
     for(int i = 0; i < kMaxVoices; i++)
     {
         voices_[i].osc.Init(sample_rate_);
-        voices_[i].osc.SetGain(kVoiceGain);
-        voices_[i].osc.SetAmplitudes(drawbar_levels_);
+        voices_[i].osc.SetGain(kVoiceGain * kStringsBoost);
+        SetVoiceRegistration(voices_[i]);
         voices_[i].adsr.Init(sample_rate_, kEnvStep);
     }
+    lfo_.Init(sample_rate_, kEnvStep);
     SetAttack01(attack01_);
     SetDecay01(decay01_);
     SetSustain01(sustain01_);
@@ -90,11 +99,13 @@ void EnsembleSynth::Init(float sample_rate)
     chorus_.SetLfoDepth(chorus_depth_smoothed_);
     SetChorusRate01(chorus_rate01_);
 
-    filter_l_.Init(sample_rate_);
+    filter_.Init(sample_rate_);
     filter_r_.Init(sample_rate_);
 
     SetOutputLevel01(output_level01_);
     SetPan01(pan01_);
+    if(!organ_)
+        SetGain01(kEnsembleNewGain); // power-on matches New
 }
 
 // Same 3-tier shape as DexedSynth::FindVoiceForNote(): reuse a voice
@@ -152,7 +163,29 @@ void EnsembleSynth::NoteOn(uint8_t note, uint8_t velocity)
     // landing mid-cycle (a click, clearest on low notes). A voice still
     // sounding keeps its phase -- resetting that would click instead.
     if(!v.adsr.IsRunning())
+    {
         v.sine_phase = 0;
+        v.lfo_fade   = 0.f; // the LFO fades in from each new note
+    }
+    if(!organ_)
+    {
+        // Velocity on the attack and the tone (see SetVelSens01()).
+        const float vn  = (float)velocity * (1.f / 127.f);
+        const float att = FastExp2(vel_sens01_ * (80.f / 127.f - vn) * 2.5f);
+        v.adsr.SetAttackTime(GetAttackSeconds() * att);
+        v.bright = 1.f - vel_sens01_ * (1.f - vn);
+        SetVoiceRegistration(v);
+        // The note's low-pass: 20 kHz (open) for the hardest note, down
+        // to 6 octaves lower for the softest at full Velocity.
+        const float octs = vel_sens01_ * (1.f - vn) * 6.f;
+        if(octs < 0.05f)
+            v.vel_lp_a = 1.f;
+        else
+        {
+            const float fc = 20000.f * FastExp2(-octs);
+            v.vel_lp_a     = 1.f - FastExp2(-6.2831853f * 1.4426950f * fc / sample_rate_);
+        }
+    }
     if(organ_)
     {
         // Single-trigger percussion: only when no other key is held.
@@ -192,6 +225,23 @@ void EnsembleSynth::SetPitchBend14bit(uint16_t raw14)
         SetVoiceFreq(v, note_hz * pitch_bend_ratio_);
         __enable_irq();
     }
+}
+
+void EnsembleSynth::SetVoiceRegistration(Voice& v)
+{
+    // 0 Saw8', 1 Sq8' as set; 2/3 the 4's x bright; 4/5 the 2's x bright^2;
+    // 6 the 1' x bright^3 -- the higher the footage, the more a soft note
+    // takes it down.
+    const float b = v.bright, b2 = b * b;
+    float       amps[kNumDrawbars];
+    amps[0] = drawbar_levels_[0];
+    amps[1] = drawbar_levels_[1];
+    amps[2] = drawbar_levels_[2] * b;
+    amps[3] = drawbar_levels_[3] * b;
+    amps[4] = drawbar_levels_[4] * b2;
+    amps[5] = drawbar_levels_[5] * b2;
+    amps[6] = drawbar_levels_[6] * b2 * b;
+    v.osc.SetAmplitudes(amps);
 }
 
 void EnsembleSynth::SetVoiceFreq(Voice& v, float hz)
@@ -298,7 +348,7 @@ void EnsembleSynth::SetDrawbarLevel(int idx, float level01)
     sine_amp_[idx]       = drawbar_levels_[idx] * kVoiceGain;
     sine_wave_dirty_     = true; // Process() rebuilds and crossfades
     for(int i = 0; i < kMaxVoices; i++)
-        voices_[i].osc.SetAmplitudes(drawbar_levels_);
+        SetVoiceRegistration(voices_[i]);
 }
 
 float EnsembleSynth::GetDrawbarLevel(int idx) const
@@ -334,6 +384,7 @@ void EnsembleSynth::SetOrgan(bool on)
     sustain01_      = 1.f;
     release01_      = 0.25f;
     chorus_depth01_ = 0.2f; // a touch of movement, not the strings' wash
+    reverb_send01_  = 0.2f; // a little room
     SetGain01(0.5f);
 }
 
@@ -446,6 +497,14 @@ EnsembleSynth::EnsemblePresetData EnsembleSynth::CapturePreset() const
     p.perc_decay01         = perc_decay01_;
     p.perc_level01         = perc_level01_;
     p.click01              = click01_;
+    p.vel_sens01           = vel_sens01_;
+    p.lfo_wave             = (int32_t)lfo_.GetWave();
+    p.lfo_rate01           = lfo_.GetRate01();
+    p.lfo_sync             = lfo_.GetSync() ? 1 : 0;
+    p.lfo_sync_index       = lfo_.GetSyncIndex();
+    p.lfo_fade01           = lfo_.GetFade01();
+    for(int d = 0; d < SynthLfo::kNumDests; d++)
+        p.lfo_depth01[d] = lfo_.GetDepth01(d);
     return p;
 }
 
@@ -453,7 +512,10 @@ EnsembleSynth::EnsemblePresetData EnsembleSynth::GetNewPreset() const
 {
     EnsemblePresetData p;
     if(!organ_)
+    {
+        p.gain01 = kEnsembleNewGain;
         return p;
+    }
     // The Organ's New matches its power-on sound (SetOrgan()).
     for(int i = 0; i < kNumDrawbars; i++)
         p.drawbar_levels[i] = kOrganNewDrawbar;
@@ -464,6 +526,7 @@ EnsembleSynth::EnsemblePresetData EnsembleSynth::GetNewPreset() const
     p.release01             = 0.25f;
     p.chorus_depth01        = 0.2f;
     p.gain01                = 0.5f;
+    p.reverb_send01         = 0.2f;
     return p;
 }
 
@@ -520,6 +583,16 @@ EnsembleSynth::EnsemblePresetData EnsembleSynth::GetFactoryPreset(int flat_index
         for(int i = 0; i < kNumDrawbars; i++)
             p.drawbar_levels[i] = f.drawbar_levels[i];
         FillFactoryCommon(p, f);
+        const EnsembleFactoryExtra& x = kEnsembleFactoryExtras[flat_index];
+        p.vel_sens01                  = x.vel_sens01;
+        p.lfo_wave                    = x.lfo_wave;
+        p.lfo_rate01                  = x.lfo_rate01;
+        p.lfo_sync                    = x.lfo_sync;
+        p.lfo_sync_index              = x.lfo_sync_index;
+        p.lfo_fade01                  = x.lfo_fade01;
+        p.lfo_depth01[SynthLfo::kPitch]  = x.lfo_pitch01;
+        p.lfo_depth01[SynthLfo::kFilter] = x.lfo_filter01;
+        p.lfo_depth01[SynthLfo::kAmp]    = x.lfo_amp01;
     }
     return p;
 }
@@ -531,6 +604,18 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
     // Per-block constants (were divisions every sample).
     const float meter_release = 1.f / (kMeterReleaseSeconds * sample_rate_);
     const float inv_sr        = 1.f / sample_rate_;
+    if(size > kMaxBlock)
+        size = kMaxBlock;
+
+    // The LFO, one value per envelope step -- run whether or not anything
+    // sounds, so a synced one stays on the beat. Not on the Organ.
+    float     lfo_at[kMaxBlock / kEnvStep + 2] = {};
+    const int lfo_steps                         = (int)((size + kEnvStep - 1) / kEnvStep);
+    if(!organ_)
+        lfo_.Render(lfo_steps, lfo_at);
+    const float lfo_amp   = organ_ ? 0.f : lfo_.Depth(SynthLfo::kAmp);
+    const float lfo_pitch = organ_ ? 0.f : lfo_.Depth(SynthLfo::kPitch);
+    const float lfo_filt  = organ_ ? 0.f : lfo_.Depth(SynthLfo::kFilter);
 
     // Silent and nothing pending: skip all the per-sample work (the same
     // rule as GranularEngine::Process()). Output is plain zero, the sends
@@ -593,12 +678,15 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
     if(filter_mode_ != FilterMode::Off)
     {
         float cutoff_hz = kFilterMinHz * powf(kFilterMaxHz / kFilterMinHz, eff_filter_cutoff01);
+        // The LFO's Filter depth: up to 4 octaves either way.
+        if(lfo_filt != 0.f)
+            cutoff_hz *= FastExp2(lfo_at[0] * lfo_filt * 4.f);
         float nyquist_guard = sample_rate_ / 3.f - 1.f;
         cutoff_hz = cutoff_hz < kFilterMinHz ? kFilterMinHz
                     : cutoff_hz > nyquist_guard ? nyquist_guard
                                                 : cutoff_hz;
-        filter_l_.SetFreq(cutoff_hz);
-        filter_l_.SetRes(filter_res01_ * 0.9f);
+        filter_.SetFreq(cutoff_hz);
+        filter_.SetRes(filter_res01_ * 0.9f);
         filter_r_.SetFreq(cutoff_hz);
         filter_r_.SetRes(filter_res01_ * 0.9f);
     }
@@ -636,6 +724,25 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
     perc_env_ = perc_at[n_steps] < 1e-4f ? 0.f : perc_at[n_steps];
     const float click_gain = click01_ * kVoiceGain * 3.f;
 
+    // The LFO's vibrato: each sounding voice's pitch, once a block, with
+    // its own fade -- up to 12 semitones (a squared curve, fine near 0).
+    // Once more after the depth goes back to 0, to put the pitch back.
+    if(lfo_pitch != 0.f || lfo_pitch_was_on_)
+    {
+        const float semis = lfo_pitch * (lfo_pitch < 0.f ? -lfo_pitch : lfo_pitch) * 12.f;
+        for(int vi = 0; vi < kMaxVoices; vi++)
+        {
+            Voice& v = voices_[vi];
+            if(v.held_note < 0 && !v.adsr.IsRunning())
+                continue;
+            const float hz = 440.f * FastExp2(((float)v.pitch_note - 69.f
+                                               + lfo_at[0] * semis * v.lfo_fade)
+                                              * (1.f / 12.f));
+            SetVoiceFreq(v, hz * pitch_bend_ratio_);
+        }
+        lfo_pitch_was_on_ = lfo_pitch != 0.f;
+    }
+
     // Voices first, one at a time across the whole block: each sounding
     // voice's state stays in registers, and idle ones are skipped once
     // per block rather than once per sample.
@@ -647,11 +754,31 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
         const bool gate = v.held_note >= 0;
         if(!gate && !v.adsr.IsRunning())
             continue; // fully idle -- stop paying for this voice at all
+        // Velocity scales the envelope (see SetVelSens01()), so it costs
+        // nothing per sample.
+        // Velocity squared -- the usual DLS/MIDI curve, so at full Velocity
+        // 40 is about 19 dB under 120.
+        const float vn  = (float)v.velocity * (1.f / 127.f);
+        const float vel = 1.f - vel_sens01_ * (1.f - vn * vn);
         for(size_t i0 = 0; i0 < size; i0 += kEnvStep)
         {
             const size_t n      = size - i0 < (size_t)kEnvStep ? size - i0 : (size_t)kEnvStep;
+            // env_last is the level actually played (velocity and the
+            // LFO's Amp in it), so a change ramps across the step.
+            const int   lstep = (int)(i0 / kEnvStep);
+            const float fade  = v.lfo_fade;
+            v.lfo_fade        = fade + lfo_.FadeStep() > 1.f ? 1.f : fade + lfo_.FadeStep();
+            float ampf        = vel;
+            if(lfo_amp != 0.f)
+            {
+                // Full depth swings 1 -> 0 (tremolo, or a gate when the
+                // wave's Square); below centre the swing is inverted.
+                const float lf = lfo_amp >= 0.f ? lfo_at[lstep] : -lfo_at[lstep];
+                const float la = lfo_amp >= 0.f ? lfo_amp : -lfo_amp;
+                ampf *= 1.f - la * fade * (1.f - lf) * 0.5f;
+            }
             const float  e_from = v.env_last;
-            const float  e_to   = v.adsr.Process(gate);
+            const float  e_to   = v.adsr.Process(gate) * ampf;
             v.env_last          = e_to;
             const float  de     = (e_to - e_from) / (float)n;
             float        env    = e_from;
@@ -662,13 +789,29 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
             const float dp     = (perc_at[step + 1] * perc_gain - p_from) / (float)n;
             float       perc  = p_from;
             const bool  do_pc = sine && (p_from > 0.f) && v.sine_mult[perc_bar] != 0;
-            if(!sine)
+            if(!sine && v.vel_lp_a >= 1.f)
             {
                 for(size_t j = 0; j < n; j++)
                 {
                     env += de;
                     mix[j] += v.osc.Process() * env;
                 }
+            }
+            else if(!sine)
+            {
+                // Velocity's low-pass (see SetVelSens01()).
+                const float a  = v.vel_lp_a;
+                float       y  = v.vel_lp_y;
+                float       y2 = v.vel_lp_y2;
+                for(size_t j = 0; j < n; j++)
+                {
+                    env += de;
+                    y += a * (v.osc.Process() - y);
+                    y2 += a * (y - y2);
+                    mix[j] += y2 * env;
+                }
+                v.vel_lp_y  = y;
+                v.vel_lp_y2 = y2;
             }
             else if(!v.sine_folded)
             {
@@ -734,38 +877,36 @@ void EnsembleSynth::Process(size_t size, float* out_l, float* out_r, float* reve
 
         // Shared Chorus -- ONE instance on the summed mix, not one per
         // voice (see the class's own doc comment for the real measured
-        // reason). Genuinely stereo: GetLeft()/GetRight() feed two
-        // real, different signals into the filter pair below, not the
-        // same mono value processed twice the way Dexed's own
-        // filter_l_/filter_r_ do.
-        // Set only while it is still gliding: SetLfoDepth() lives in
-        // flash, not ITCM, and once the glide settles the value stops
-        // changing, so the call was the same write 64 times a block.
+        // reason). Stereo (see fast_chorus.h).
+        // Set only while it is still gliding: once the glide settles the
+        // value stops changing.
         const float depth_was = chorus_depth_smoothed_;
         chorus_depth_smoothed_ += (depth_target - chorus_depth_smoothed_) * depth_glide;
         if(chorus_depth_smoothed_ != depth_was)
             chorus_.SetLfoDepth(chorus_depth_smoothed_);
-        chorus_.Process(mix);
-        float l = chorus_.GetLeft();
-        float r = chorus_.GetRight();
+        float l, r;
+        chorus_.Process(mix, l, r);
+        const bool stereo = chorus_.GetStereo();
 
         if(filter_mode_ != FilterMode::Off)
         {
-            filter_l_.Process(l);
-            filter_r_.Process(r);
+            filter_.Process(l);
+            if(stereo)
+                filter_r_.Process(r);
             switch(filter_mode_)
             {
-                case FilterMode::LowPass: l = filter_l_.Low(); r = filter_r_.Low(); break;
-                case FilterMode::HighPass: l = filter_l_.High(); r = filter_r_.High(); break;
-                case FilterMode::BandPass: l = filter_l_.Band(); r = filter_r_.Band(); break;
+                case FilterMode::LowPass: l = filter_.Low(); r = filter_r_.Low(); break;
+                case FilterMode::HighPass: l = filter_.High(); r = filter_r_.High(); break;
+                case FilterMode::BandPass: l = filter_.Band(); r = filter_r_.Band(); break;
                 default: break;
             }
+            if(!stereo)
+                r = l;
         }
 
         // See IsLimiting()'s/GetPreLimiterLevel01()'s own comments --
-        // both read the PRE-limiter value, max(|l|,|r|) since this is
-        // genuinely stereo (unlike Dexed's own mono-then-panned
-        // signal). Same instant-attack/slow-release peak shape
+        // both read the PRE-limiter value, max(|l|,|r|) since the chorus
+        // is stereo. Same instant-attack/slow-release peak shape
         // main.cpp's own meters use.
         // Gain into the limiter (see SetGain01()) -- before the meter
         // below, so the Mixer's clip indicator shows when it's pushed.

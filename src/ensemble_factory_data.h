@@ -31,6 +31,21 @@ struct EnsembleFactoryPreset
 extern const EnsembleFactoryPreset kEnsembleFactoryPresets[];
 extern const int                    kEnsembleNumFactoryPresets;
 
+// What each Ensemble factory sound does with velocity and the LFO (added
+// after the bank), one per kEnsembleFactoryPresets entry, same order.
+// Depths are bipolar: 0.5 = off.
+struct EnsembleFactoryExtra
+{
+    float   vel_sens01;
+    int32_t lfo_wave; // SynthLfo::Wave
+    float   lfo_rate01;
+    int32_t lfo_sync; // 1 = synced, lfo_sync_index the note value
+    int32_t lfo_sync_index;
+    float   lfo_fade01;
+    float   lfo_pitch01, lfo_filter01, lfo_amp01;
+};
+extern const EnsembleFactoryExtra kEnsembleFactoryExtras[];
+
 // The Organ's own factory bank: the same fields, but 9 drawbars in
 // Hammond order (16', 5 1/3', 8', 4', 2 2/3', 2', 1 3/5', 1 1/3', 1'),
 // each a classic registration's 0..8 setting divided by 8.

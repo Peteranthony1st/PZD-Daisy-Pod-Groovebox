@@ -259,6 +259,7 @@ class Ui
     int GetGranularMidiChannel() const { return granular_midi_channel_; }
     int GetEnsembleMidiChannel() const { return ensemble_midi_channel_; }
     int GetOrganMidiChannel() const { return organ_midi_channel_; }
+    int GetSupersawMidiChannel() const { return supersaw_midi_channel_; }
     int GetSampleSynthMidiChannel() const { return sample_synth_midi_channel_; }
     int GetSampleDrumMidiChannel() const { return sample_drum_midi_channel_; }
     void SetSequencer(MidiSequencer* seq) { seq_ = seq; }
@@ -356,6 +357,9 @@ class Ui
     // main.cpp's AudioCallback()).
     bool IsEnsembleEnabled() const { return ensemble_enabled_; }
     bool IsOrganEnabled() const { return organ_enabled_; }
+    bool IsSupersawEnabled() const { return supersaw_enabled_; }
+    // The Supersaw engine, set once from main() after Init().
+    void SetSupersaw(SupersawSynth* s);
     // Screen::Ensemble's scope follows whichever engine its pages edit.
     bool EnsembleScopeIsOrgan() const { return ensemble_active_ == 1; }
     // Same real-CPU-saving on/off gate, for the two sampler engines --
@@ -423,7 +427,10 @@ class Ui
         // One engine's arpeggiator -- entered from Global:Arp (encoder
         // click), which picks the engine. Pages: Setup, Pattern (or
         // Phrase), Feel, Key.
-        Arp
+        Arp,
+        // Same treatment as Granular/Dexed/Ensemble, entered from
+        // Global:Supersaw. See SupersawParamPage for its own pages.
+        Supersaw
     };
     // Shared save/load interaction state for Global:File, Pad Preset, and
     // Grains Preset -- only one of those three pages is ever visible at
@@ -472,10 +479,12 @@ class Ui
     };
     enum class GlobalPage
     {
-        // First -- where Global opens. Entry point into Screen::Mixer
-        // (the real per-engine level controls live there), same "entry
-        // point only" idiom as Granular/Dexed below.
-        Mixer,
+        // First -- where Global opens. Entry points into Screen::Mixer
+        // for the tracks (audio and MIDI) and for the synth engines --
+        // see mixer_set_ -- same "entry point" idiom as Granular/Dexed
+        // below.
+        MixTracks,
+        MixSynths,
         // Every channel's reverb and delay send on one page: K1 picks the
         // channel, B1/B2 point K2 at its Reverb or Delay send.
         Sends,
@@ -542,6 +551,8 @@ class Ui
         // The Organ: the same Screen::Ensemble pages, entered with
         // ensemble_ pointing at the Organ engine (SelectEnsembleEngine()).
         Organ,
+        // Entry point into Screen::Supersaw, plus the on/off toggle.
+        Supersaw,
         // Entry point into Screen::SampleSynth, plus the on/off toggle --
         // same treatment as Granular/Dexed/Ensemble above. Two entries
         // (Voice/Drum, see Ui::SampleSynthMode's own comment), each its
@@ -756,6 +767,10 @@ class Ui
         // K1 = chorus depth, K2 = chorus rate -- the one shared Chorus
         // instance applied to the summed voice mix.
         Ensemble,
+        // Ensemble only (skipped on the Organ): the LFO and its depths --
+        // the shared LFO pages (ui_lfo.cpp).
+        Lfo,
+        LfoDepth,
         Filter, // Cutoff + Resonance, mode cycled by Button1
         Mix,    // Output Level + Pan
         // Button1/Button2 toggle between Reverb Send and Delay Send,
@@ -773,6 +788,29 @@ class Ui
         // Preset.
         Preset, // the factory sounds -- load only
         User,   // your own saves (+ New): save, overwrite, load
+        kCount
+    };
+
+    // Screen::Supersaw's own pages (see SupersawSynth for what each
+    // parameter does; ui_supersaw.cpp for the knobs and buttons).
+    enum class SupersawParamPage
+    {
+        SuperSaw, // K1 Detune, K2 Mix
+        Osc2,     // K1 Coarse, K2 Fine, B1 cycles the wave
+        Balance,  // K1 OSC1 <-> OSC2
+        Filter,   // K1 Cutoff, K2 Res, B1 cycles the type, B2 12/24 dB
+        FltEnv,   // B1 Attack+Decay / B2 Sustain+Release, as Env pages
+        FltMod,   // K1 Env Depth (bipolar), K2 Key Follow
+        AmpEnv,   // B1 Attack+Decay / B2 Sustain+Release
+        Lfo,      // K1 Rate (a note value synced), K2 Fade, B1 wave, B2 sync
+        LfoDepth, // K1 picks Pitch/Filter/Amp, K2 its depth (bipolar)
+        Voice,    // K1 Portamento Time, B1 Poly/Mono/Legato, B2 Portamento
+        Chorus,   // K1 Depth, K2 Rate
+        Mix,      // as the Ensemble's
+        FX,       // as the Ensemble's
+        MIDI,     // K1 channel, K2 Voices, B1 cycles the wheel target
+        Preset,   // the factory sounds -- load only
+        User,     // your own saves (+ New): save, overwrite, load
         kCount
     };
 
@@ -1094,11 +1132,33 @@ class Ui
         EnsembleEnsemble, // chorus depth + rate, no toggle needed
         EnsembleFilter,
         EnsembleMix,
-        EnsembleMixGain, // Mix page, B2 -- K1 Gain into the limiter
         // Same shape as DexedFxReverb/DexedFxDelay above.
         EnsembleFxReverb,
         EnsembleFxDelay,
         EnsembleMidi, // K1 only -- which MIDI channel this engine listens on
+        EnsembleMidiVel, // MIDI page, B2 (Ensemble only) -- K1 Velocity amount
+        // Screen::Supersaw's own pages -- see SupersawParamPage.
+        SupersawSuperSaw,
+        SupersawOsc2,
+        SupersawBalance,
+        SupersawFilter,
+        SupersawFltEnvAD,
+        SupersawFltEnvSR,
+        SupersawFltMod,
+        SupersawAmpEnvAD,
+        SupersawAmpEnvSR,
+        SupersawLfo,
+        SupersawLfoDepth,
+        SupersawVoice,
+        SupersawChorus,
+        SupersawMix,
+        SupersawFxReverb,
+        SupersawFxDelay,
+        SupersawMidi,
+        SupersawMidiVel, // MIDI page, B2 -- K1 Velocity amount
+        SupersawList, // Preset/User: browses a list directly, no pickup
+        EnsembleLfo,      // the shared LFO page (ui_lfo.cpp)
+        EnsembleLfoDepth, // ... and LFO Depth
         OrganPerc,    // K1 percussion Decay, K2 its Volume
         OrganClick,   // K1 key click amount
         // Screen::SampleSynth's own pages -- same shapes as Dexed/
@@ -1200,18 +1260,29 @@ class Ui
     void DrawMixerScreen();
     void DrawDexedScreen();
     void DrawSampleSynthScreen();
-    // Screen::Mixer's own per-channel accessors -- channel index 0..3 is
-    // Layer 1..4, 4 is Grains, 5 is Dexed, 6 is Ensemble, 7 is Organ, 8
-    // is SMPVO (VOI), 9 is SMPDR (DRM), 10 is Bypass, 11 is Master. Kept
-    // as small indexed switches rather than a polymorphic interface
-    // since there are only a dozen cases and they already read/write each engine's own real
-    // getters/setters directly -- no new state of its own, this is
-    // purely another view onto values that already exist.
-    static constexpr int kNumMixerChannels = 12;
-    // Total encoder "stops" in Screen::Mixer -- the real channels above
-    // plus the Scope stop (mixer_position_ == kNumMixerChannels). See
-    // Screen::Mixer's own comment.
-    static constexpr int kNumMixerPositions = kNumMixerChannels + 1;
+    // The mixer's channels, by ID (kMix*): Layers 1..4, then each engine
+    // (DXD-A and DXD-B each have their own Level and Pan into the Dexed
+    // bus, whose sends and meter they share), Bypass and Master. The
+    // accessors below are small switches on these, reading and writing
+    // each engine's own getters/setters -- no state of their own.
+    static constexpr int kMixL1 = 0, kMixGr = 4, kMixDxa = 5, kMixDxb = 6, kMixEns = 7,
+                         kMixOrg = 8, kMixSmv = 9, kMixSmd = 10, kMixSsw = 11, kMixByp = 12,
+                         kMixMas = 13;
+    static constexpr int kNumMixerChannels = 14;
+    // Global:Tracks and Global:Synths each show a set of these (see
+    // mixer_set_): Tracks the four audio tracks and the eight MIDI tracks
+    // -- a MIDI track's channel IS its engine's, so its level and the
+    // engine's are one control -- Synths the eight engines; both end with
+    // Bypass and Master. Screen::Mixer steps through the set, then the
+    // Scope stop (mixer_position_ == MixerSetCount()).
+    static constexpr int kMixTracksCount = 14, kMixSynthsCount = 10;
+    int         MixerSetCount() const { return mixer_set_ == 0 ? kMixTracksCount : kMixSynthsCount; }
+    int         MixerSetChannel(int pos) const; // -> kMix* ID
+    // Position `pos`'s name in the set: a MIDI track's own ("M3"), else
+    // MixerChannelName(); `engine` also names a MIDI track's engine.
+    const char* MixerSetName(int pos, bool engine = false) const;
+    // The engine a sequencer engine index plays through, as a kMix* ID.
+    static int  MixerEngineChannel(int seq_engine);
     const char* MixerChannelName(int ch) const;
     float       MixerGetVolume01(int ch) const;
     float       MixerGetPan01(int ch) const; // Master (last channel) has none -- returns 0.5f
@@ -1448,7 +1519,7 @@ class Ui
         if(SdMgmtGlobalBox())
             return SdMgmtSnapshots() ? "SNAP" : "PERF";
         if(SdMgmtEnsembleBox())
-            return EnsembleSlotPrefix(); // ENSM / ORGN
+            return sd_mgmt_ens_kind_ == 2 ? "SSAW" : EnsembleSlotPrefix(); // ENSM / ORGN
         return SdMgmtFolderShortLabel(sd_mgmt_folder_);
     }
     // SMPDR box: user saves split into Kits / Breaks folders first, same
@@ -1914,7 +1985,8 @@ class Ui
     void DrawTremoloCurve(float depth01, float rate01);
     // --- Global:Sends ------------------------------------------------------
     // The Mixer's channels 0..10 (the layers, every engine, Bypass).
-    static constexpr int kSendChannels = 11;
+    static constexpr int kSendChannels = 12;
+    static int           SendsChannel(int cell); // a Sends cell -> its kMix* channel
     int  sends_ch_           = 0;
     bool sends_target_delay_ = false;
     void DrawSendsPage();
@@ -2036,7 +2108,7 @@ class Ui
     Screen     screen_      = Screen::Home;
     int        cursor_layer_ = 0;
     LayerPage  layer_page_  = LayerPage::Status;
-    GlobalPage global_page_ = GlobalPage::Mixer;
+    GlobalPage global_page_ = GlobalPage::MixTracks;
 
     bool encoder_long_fired_ = false;
     bool button1_long_fired_ = false;
@@ -2135,6 +2207,7 @@ class Ui
     int granular_midi_channel_     = 0;
     int ensemble_midi_channel_     = 0;
     int organ_midi_channel_        = 0;
+    int supersaw_midi_channel_     = 0;
     int sample_synth_midi_channel_ = 0; // SMPVO
     int sample_drum_midi_channel_  = 9;  // SMPDR -- Ch10, the usual drum channel
     // The showing face's own channel -- what the sampler's MIDI page,
@@ -2155,14 +2228,17 @@ class Ui
     bool dexed_vibrato_target_sens_ = false;
     bool granular_fx_target_delay_ = false;
     bool ensemble_fx_target_delay_ = false;
-    // Ensemble Mix page: B1 = Level+Pan, B2 = Gain (see EnsembleSynth::SetGain01()).
-    bool ensemble_mix_target_gain_ = false;
+    // Ensemble MIDI page: B2 points K1 at the Velocity amount (not on the
+    // Organ, which plays without velocity).
+    bool ensemble_midi_vel_ = false;
+    int  ensemble_lfo_dest_ = 0; // LFO Depth page: which depth K2 sets
     // Same Level+Pan / Gain split on Dexed's and the Sampler's Mix pages.
     bool dexed_mix_target_gain_        = false;
     // Dexed Mix page: which bar K1/K2 set -- 0 = DXD-A, 1 = DXD-B, 2 = the
     // shared bus. Same whichever engine the page was entered from.
     int  dexed_mix_sel_                = 0;
     bool sample_synth_mix_target_gain_ = false;
+
     bool sample_synth_fx_target_delay_ = false;
     // Ensemble's own Env page toggle (Attack/Decay vs Sustain/Release) --
     // same idiom as GranularEnvAD/GranularEnvSR's own toggle.
@@ -2228,15 +2304,15 @@ class Ui
     volatile int pedal_state_    = -1;
     char         midi_status_[20] = "";
     int          midi_row_         = 0; // Global:MIDI's selected engine row
-    static constexpr int kMidiRows = 7; // Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR
-    // Global:Snap and Global:MIDI show one column per engine, 7 x 18px
+    static constexpr int kMidiRows = 8; // Grains, DXD-A, DXD-B, Ensemble, Organ, SMPVO, SMPDR, Supersaw
+    // Global:Snap and Global:MIDI show one column per engine, 8 x 16px
     // across the screen, between the title rule (y=9) and the footer
     // divider (y=46). kEngineColLabels are the short names on top.
-    static constexpr int kSnapRows      = 7;
-    static constexpr int kEngineColW    = 18;
+    static constexpr int kSnapRows      = 8;
+    static constexpr int kEngineColW    = 16;
     static constexpr int kEngineCol0X   = 1;
     static constexpr const char* kEngineColLabels[kSnapRows]
-        = {"GR", "DXA", "DXB", "ENS", "ORG", "SMV", "SMD"};
+        = {"GR", "DXA", "DXB", "ENS", "ORG", "SMV", "SMD", "SSW"};
     // Global:Snap lists the engines in two columns of rows -- short name,
     // on/off dot, sound name -- and a name longer than its kSnapNameW
     // scrolls sideways: kSnapNameHoldMs still at each end, a pixel every
@@ -2269,6 +2345,11 @@ class Ui
     // Same false default as Dexed's own -- see IsEnsembleEnabled().
     bool ensemble_enabled_ = false;
     bool organ_enabled_    = false;
+#ifdef SUPERSAW_CPU_TEST
+    bool supersaw_enabled_ = true; // the test build plays it from power-on
+#else
+    bool supersaw_enabled_ = false;
+#endif
     // Same false default as Dexed/Granular/Ensemble's own. One per
     // sampler engine (Global:SMPVO/Global:SMPDR's own Button1 toggle);
     // both can be on at once. See SampleSynthMode's own comment.
@@ -2435,6 +2516,7 @@ class Ui
     // an explicit pickup reseed, unlike every other rotate-driven index
     // in this project).
     int  mixer_position_       = 0;
+    int  mixer_set_            = 0; // 0 = Global:Tracks, 1 = Global:Synths
     // false = knobs control Volume+Pan, true = Reverb Send -- ignored on
     // Master and on the Overview/Scope stops (see MixerVolPan/
     // MixerReverb/MixerMaster/MixerNoKnobs's own KnobContext comment).
@@ -2691,6 +2773,47 @@ class Ui
     void DrawDexedOperatorScreen();
     void DrawEnsembleScreen();
 
+    // --- LFO and LFO Depth pages, shared (ui_lfo.cpp) ------------------
+    void LfoSyncPickup(const SynthLfo& lfo, bool depth_page, int dest, size_t i);
+    void LfoApplyKnobs(SynthLfo& lfo, bool depth_page, int* dest, float k1, float k2, size_t ci);
+    void LfoCycleWave(SynthLfo& lfo);
+    void LfoToggleSync(SynthLfo& lfo, KnobContext ctx);
+    void DrawLfoPage(const SynthLfo& lfo);
+    void DrawLfoDepthPage(const SynthLfo& lfo, int dest);
+
+    // --- Screen::Supersaw (ui_supersaw.cpp) ---------------------------
+    SupersawSynth*    supersaw_            = nullptr;
+    SupersawParamPage supersaw_page_       = SupersawParamPage::SuperSaw;
+    bool              ssw_fenv_sr_         = false; // FltEnv: knobs -> Sustain+Release
+    bool              ssw_aenv_sr_         = false; // AmpEnv: likewise
+    bool              ssw_fx_delay_        = false; // FX: knobs -> Delay
+    bool              ssw_midi_vel_        = false; // MIDI: knobs -> Velocity
+    int               ssw_lfo_dest_        = 0;     // LfoDepth: which depth K2 sets
+    int               ssw_loaded_slot_     = 0; // 0 none, 1.. user, kSswFactoryBase+i factory
+    int               ssw_preset_cursor_   = 0;
+    int               ssw_user_cursor_     = 0;
+    bool              ssw_slots_dirty_     = true;
+    static constexpr int kSswFactoryBase  = 1000;
+    static constexpr int kMaxSswSlots     = PerformanceStore::kMaxSupersawPresets;
+    int               ssw_user_slots_[kMaxSswSlots] = {};
+    int               ssw_user_count_      = 0;
+    char              ssw_status_[24]      = {};
+    static bool       SswIsFactorySlot(int s) { return s >= kSswFactoryBase; }
+    static bool       SswIsUserSlot(int s) { return s >= 1 && s < kSswFactoryBase; }
+    void              DrawSupersawScreen();
+    void              SupersawRotatePage(int inc);
+    KnobContext       SupersawKnobContext() const;
+    void              SupersawSyncPickup(KnobContext ctx, size_t i);
+    void              SupersawApplyKnobs(float k1, float k2, size_t ci);
+    void              SupersawButton1();
+    void              SupersawButton2Short(); // a B2 tap on a page with no hold action
+    bool              SupersawHandleButton2(const UiControlEvents& events); // Preset/User
+    void              RefreshSupersawPresetSlots();
+    void              TriggerSaveSupersawPreset(bool force_new);
+    void              TriggerNewSupersawPreset();
+    void              LoadSupersawSlot(int slot);
+    void              SupersawPresetName(int slot, char* out, size_t out_size) const;
+
     // --- Ensemble engine (Screen::Ensemble) ------------------------------
     EnsembleSynth*    ensemble_            = nullptr; // the engine the pages edit
     // [0] Ensemble (strings), [1] Organ -- same split as dexed_engines_:
@@ -2915,6 +3038,14 @@ class Ui
         return ensemble_baseline_.len > 0 && !(EnsembleSnapshot() == ensemble_baseline_);
     }
     EditSnapshot ensemble_baseline_ = {};
+    // Screen::Supersaw's unsaved-changes star, as the Ensemble's.
+    EditSnapshot SupersawSnapshot() const;
+    void         MarkSupersawClean() { supersaw_baseline_ = SupersawSnapshot(); }
+    bool         SupersawUnsaved() const
+    {
+        return supersaw_baseline_.len > 0 && !(SupersawSnapshot() == supersaw_baseline_);
+    }
+    EditSnapshot supersaw_baseline_ = {};
     EditSnapshot ensemble_parked_baseline_ = {}; // see SelectEnsembleEngine()
     EditSnapshot dexed_baseline_    = {};
     EditSnapshot dexed_parked_baseline_ = {}; // see SelectDexedEngine()

@@ -18,6 +18,7 @@ enum Stage
     kOrgan,
     kSampler, // SMPVO
     kSmpDrum, // SMPDR
+    kSupersaw,
     kLooper,
     kDelay,
     kReverb,
