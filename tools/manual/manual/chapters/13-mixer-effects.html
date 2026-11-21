@@ -35,6 +35,69 @@ turn 2</pre></figure>
   </div>
 </div>
 
+<h2>Sidechain: Global:Duck</h2>
+<div class="side">
+  <figure><pre class="shot" id="duck-entry">@demo
+hold enc 1200
+turn 3
+tap b1</pre></figure>
+  <div>
+  <p>A sidechain makes channels dip every time a <strong>source</strong> plays, usually the kick, then swell back: the pumping sound of dance music, or simply room in the mix for the kick. One source can duck as many channels as you like, each by its own amount.</p>
+  <p>B1 switches it on and off. Click the encoder for its three pages, and turn to move between them. On each, B1 is <strong>Duck:On/Off</strong>; click to come back here.</p>
+  <p>To hear it, load the template's second demo, <code>PERF002</code>: its kick ducks a Supersaw pad and a DXD-A part.</p>
+  </div>
+</div>
+
+<h3>Source</h3>
+<div class="side">
+  <figure><pre class="shot" id="duck-source">@demo
+hold enc 1200
+turn 3
+tap b1
+click
+knob 2 0.02
+tap b2</pre></figure>
+  <div>
+  <p>K1 picks the source: a MIDI track (M1–M8), an engine, an audio track (A1–A4) or the input (IN).</p>
+  <p><strong>A MIDI track or an engine</strong> ducks on every note it plays, or only the notes you choose. A track counts its recorded notes, its arp's notes and what you play live through it. With SMPDR, the kit's pads show as a grid, pad 1 (C2) at the bottom left: K2 moves the cursor and B2 turns that pad on or off (<strong>Pad:On/Off</strong>). Choose only the kick and the snare and hats won't duck anything. Other engines pick single notes the same way (<strong>Note:On/Off</strong>). With nothing chosen, every note ducks.</p>
+  </div>
+</div>
+<p><strong>An audio track or the input</strong> ducks on its kick, so a recorded break can pump the mix too. The page shows its level with the threshold (K2) marked on it; the dip starts when the level jumps above the threshold. B2 (<strong>Filter:On/Off</strong>) makes it listen only below 120 Hz, where the kick is, so snares and hats pass by. A held bass note ducks once, not over and over.</p>
+
+<h3>Shape</h3>
+<div class="side">
+  <figure><pre class="shot" id="duck-shape">@demo
+hold enc 1200
+turn 3
+tap b1
+click
+turn 1</pre></figure>
+  <div>
+  <p>How the dip moves, drawn over a bar with a kick on each beat. K1 is <strong>Hold</strong>, how long it stays down (0–250 ms). K2 is <strong>Release</strong>, how long it takes to come back: 10–1000 ms, or a note value from 1/32 to 1/2 with B2's <strong>Sync</strong> on, which follows the tempo. It drops in 2 ms, so it never clicks, and comes back fast at first, then settles gently.</p>
+  </div>
+</div>
+
+<h3>Amount</h3>
+<div class="side">
+  <figure><pre class="shot" id="duck-amount">@demo
+hold enc 1200
+turn 3
+tap b1
+click
+turn 2
+knob 1 0.04
+knob 1 0.3
+knob 1 0.5
+knob 1 0.71
+knob 2 0.0
+knob 2 0.4
+knob 2 0.85</pre></figure>
+  <div>
+  <p>The same channels as Global:Sends, each with a bar for how far it ducks: K1 picks the channel and K2 sets its amount, 0–100%. The source's own channel reads <strong>SRC</strong>. DXD-A and DXD-B share one amount, and a MIDI track ducks with its engine, as with its level and sends.</p>
+  </div>
+</div>
+<p>A ducked channel's reverb and delay sends dip with it, as a compressor on that channel would. Recording a loop, printing a track and Live export all capture the dip. The sidechain's settings save with the Performance.</p>
+
 <h2>The reverb</h2>
 <p>One shared plate reverb, in the Dattorro design. Its pages draw a decay graph: the pre-delay gap, the early reflections and the tail.</p>
 <table>
@@ -46,10 +109,10 @@ turn 2</pre></figure>
 <div class="row">
   <figure><pre class="shot" id="reverb">@demo
 hold enc 1200
-turn 11</pre><figcaption>Global:Reverb</figcaption></figure>
+turn 12</pre><figcaption>Global:Reverb</figcaption></figure>
   <figure><pre class="shot" id="revtone">@demo
 hold enc 1200
-turn 12</pre><figcaption>Global:RevTone</figcaption></figure>
+turn 13</pre><figcaption>Global:RevTone</figcaption></figure>
 </div>
 <p>On the graph, the tail's length is Size, its height PreFilter, its texture Decay Diffusion, and its thinning towards the end Damping.</p>
 
@@ -64,7 +127,7 @@ turn 12</pre><figcaption>Global:RevTone</figcaption></figure>
 <div class="side">
   <figure><pre class="shot" id="delay">@demo
 hold enc 1200
-turn 15</pre></figure>
+turn 16</pre></figure>
   <div><p>The timeline's spacing is Time, shrinking by Feedback, with ping-pong above and below the line, thinner repeats for a darker Tone, and a haze after each for Dly-Rev. Beat ticks show when it's synced. At 0% Ping-Pong the echoes follow the sound's pan; at 100% they always bounce left and right.</p></div>
 </div>
 

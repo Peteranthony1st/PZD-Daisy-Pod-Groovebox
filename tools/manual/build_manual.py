@@ -34,7 +34,7 @@ RENDER = os.path.join(HERE, 'host', 'render')
 SCALE  = 6                          # PNG pixels per screen pixel
 INK, PANEL = (24, 26, 30), (240, 241, 237)
 MACROS = {
-    '@demo': 'wait 2000\nhold enc 1200\nturn 4\ntap b2\nknob 2 1.0\ntap b2\nwait 3000\nhold enc 1200\nwait 500',
+    '@demo': 'wait 2000\nhold enc 1200\nturn 5\ntap b2\nknob 2 0.5\ntap b2\nwait 3000\nhold enc 1200\nwait 500',
     '@engine': 'wait 2000\nhold enc 1200\nturn {0}\ntap b1\nclick',
     '@airy': 'turn 13\ntap b2\ntap b2\ntap b2\nwait 3000\nturn -13',
     '@808': 'turn 7\ntap b2\ntap b2\ntap b2\ntap b2\nwait 3000\nturn -7',

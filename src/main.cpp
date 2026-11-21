@@ -23,6 +23,7 @@
 #include "live_export.h"
 #include "pod_oled.h"
 #include "dattorro_reverb.h"
+#include "duck.h"
 
 using namespace daisy;
 
@@ -515,8 +516,34 @@ static bool g_sus_pedal[kSusEngines];
 static bool g_sus_key_down[kSusEngines][128];
 static bool g_sus_held[kSusEngines][128];
 
-static void EngineNoteOn(int e, uint8_t note, uint8_t velocity)
+// Global:Duck's note source: every note it plays counts here, and the
+// audio callback starts a dip when the count moves (see Duck::Envelope).
+// `track` is the MIDI track the note belongs to (-1 = none: a key played
+// straight to its engine, a grid preview).
+static volatile uint32_t g_duck_note_triggers = 0;
+// The rest belongs to the audio callback: this block's dip (0..1 per
+// sample), each channel's amount for it, and the audio source's detector.
+static float          g_duck_depth[256];
+static bool           g_duck_dipping = false; // any of this block's g_duck_depth above 0
+static float          g_duck_amount[Duck::kChannels];
+static Duck::Envelope g_duck_envelope;
+static Duck::Detector g_duck_detector;
+static bool           g_duck_layer_hit = false; // the source track crossed it last block
+static void DuckNote(int track, int engine, uint8_t note)
 {
+    const Duck::Settings& d = ui.GetDuck();
+    if(!d.on || Duck::IsAudioSource(d.source))
+        return;
+    const bool from_source = d.source < Duck::kSrcEngines
+                                 ? track == d.source - Duck::kSrcTracks
+                                 : engine == d.source - Duck::kSrcEngines;
+    if(from_source && Duck::NoteDucks(d, note))
+        g_duck_note_triggers = g_duck_note_triggers + 1;
+}
+
+static void EngineNoteOn(int e, uint8_t note, uint8_t velocity, int track = -1)
+{
+    DuckNote(track, e, note);
     switch(e)
     {
         case kSusGrains: granular.NoteOn(note, velocity); break;
@@ -567,11 +594,11 @@ static void EngineAllNotesOff(int e)
     }
 }
 
-static void SustainNoteOn(int e, uint8_t note, uint8_t velocity)
+static void SustainNoteOn(int e, uint8_t note, uint8_t velocity, int track = -1)
 {
     g_sus_key_down[e][note] = true;
     g_sus_held[e][note]     = false;
-    EngineNoteOn(e, note, velocity);
+    EngineNoteOn(e, note, velocity, track);
 }
 
 static void SustainNoteOff(int e, uint8_t note)
@@ -644,7 +671,8 @@ static void ArpNote(int arp, uint8_t note, uint8_t velocity)
     {
         const int e = ArpEngine(arp);
         g_arp_note_engine[arp][note] = (int8_t)(e + 1);
-        EngineNoteOn(e, note, velocity);
+        EngineNoteOn(e, note, velocity,
+                     arp >= Arpeggiator::kEngines ? arp - Arpeggiator::kEngines : -1);
     }
     else
     {
@@ -662,7 +690,8 @@ static void KeyOn(int arp, int e, uint8_t note, uint8_t velocity)
     if(g_arp_key[arp][note])
         g_arp.KeyDown(arp, note, velocity);
     else
-        SustainNoteOn(e, note, velocity);
+        SustainNoteOn(e, note, velocity,
+                      arp >= Arpeggiator::kEngines ? arp - Arpeggiator::kEngines : -1);
 }
 
 static void KeyOff(int arp, int e, uint8_t note)
@@ -830,7 +859,7 @@ static void SeqNote(int track, int engine, uint8_t note, uint8_t velocity)
         if(g_seq_arp_note[track][note])
             g_arp.KeyDown(arp, note, velocity, true); // a chord's notes land together
         else
-            EngineNoteOn(engine, note, velocity);
+            EngineNoteOn(engine, note, velocity, track);
     }
     else if(g_seq_arp_note[track][note])
     {
@@ -1125,6 +1154,45 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     static float samp_l[256];
     static float samp_r[256];
 
+    // Global:Duck (see duck.h). The dip for this block, g_duck_depth, is
+    // worked out before any channel renders; DuckGain() turns it into one
+    // channel's gain. A ducked channel renders its sends into the ch_*
+    // buffers first, so DuckDone() can duck them with it.
+    static float duck_gain[256];
+    static float ch_rev_l[256], ch_rev_r[256], ch_dly_l[256], ch_dly_r[256];
+    auto DuckGain = [&](int ch, size_t n) -> bool {
+        const float a = g_duck_amount[ch];
+        if(a <= 0.f || !g_duck_dipping)
+            return false; // nothing to do: the block runs as if Duck were off
+        for(size_t i = 0; i < n; i++)
+            duck_gain[i] = 1.f - a * g_duck_depth[i];
+        return true;
+    };
+    auto DuckSends = [&](bool ducked, size_t n, float** rl, float** rr, float** dl, float** dr) {
+        if(!ducked)
+            return;
+        for(size_t i = 0; i < n; i++)
+            ch_rev_l[i] = ch_rev_r[i] = ch_dly_l[i] = ch_dly_r[i] = 0.f;
+        *rl = ch_rev_l;
+        *rr = ch_rev_r;
+        *dl = ch_dly_l;
+        *dr = ch_dly_r;
+    };
+    // The channel's dry signal through duck_gain, and its sends with it
+    // onto the shared busses.
+    auto DuckDone = [&](float* l, float* r, size_t n) {
+        for(size_t i = 0; i < n; i++)
+        {
+            const float g = duck_gain[i];
+            l[i] *= g;
+            r[i] *= g;
+            reverb_send_l[i] += ch_rev_l[i] * g;
+            reverb_send_r[i] += ch_rev_r[i] * g;
+            delay_send_l[i] += ch_dly_l[i] * g;
+            delay_send_r[i] += ch_dly_r[i] * g;
+        }
+    };
+
     const float sample_rate = hw.AudioSampleRate(); // needed by both paths below
     g_cpu_meter_avg.OnBlockStart();
     g_cpu_meter_peak.OnBlockStart();
@@ -1151,6 +1219,52 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     {
         g_fast_in[0][i] = in_hw[0][i];
         g_fast_in[1][i] = in_hw[1][i];
+    }
+
+    // The dip: started by the note source (counted in DuckNote()), the
+    // input crossing its threshold this block, or an audio track having
+    // crossed it last block (the tracks render after the engines).
+    {
+        const Duck::Settings& duck = ui.GetDuck();
+        static uint32_t       notes_seen = 0;
+        const uint32_t        notes      = g_duck_note_triggers;
+        int                   trig_at    = -1;
+        if(notes != notes_seen)
+        {
+            notes_seen = notes;
+            trig_at    = 0;
+        }
+        if(g_duck_layer_hit)
+        {
+            g_duck_layer_hit = false;
+            trig_at          = 0;
+        }
+        if(duck.on && duck.source == Duck::kSrcInput)
+        {
+            const int hit = g_duck_detector.Process(in[0], in[1], size, sample_rate, duck.filter,
+                                                    duck.thresh_db);
+            if(trig_at < 0)
+                trig_at = hit;
+        }
+        if(!duck.on)
+            g_duck_envelope.Reset();
+        g_duck_envelope.Render(g_duck_depth, size, sample_rate, duck.hold_ms,
+                               Duck::ReleaseMs(duck, tempo.GetBpm()), duck.on ? trig_at : -1);
+        g_duck_dipping = false;
+        for(size_t i = 0; i < size && !g_duck_dipping; i++)
+            g_duck_dipping = g_duck_depth[i] > 0.f;
+        // Each channel's amount, none for the source's own channel.
+        int src_ch = -1;
+        if(duck.source < Duck::kSrcEngines)
+            src_ch = Duck::EngineChannel(sequencer.GetEngine(duck.source - Duck::kSrcTracks));
+        else if(duck.source < Duck::kSrcLayers)
+            src_ch = Duck::EngineChannel(duck.source - Duck::kSrcEngines);
+        else if(duck.source < Duck::kSrcInput)
+            src_ch = Duck::kA1 + duck.source - Duck::kSrcLayers;
+        else
+            src_ch = Duck::kByp;
+        for(int c = 0; c < Duck::kChannels; c++)
+            g_duck_amount[c] = duck.on && c != src_ch ? duck.amount[c] : 0.f;
     }
 
     // Grains' Direct Record capture is applied further below, after
@@ -1224,8 +1338,12 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     if(ui.IsGranularEnabled())
     {
         prof_t = Prof::Now();
-        granular.Process(size, gran_l, gran_r, reverb_send_l, reverb_send_r, delay_send_l,
-                          delay_send_r);
+        const bool ducked = DuckGain(Duck::kGr, size);
+        float *    rl = reverb_send_l, *rr = reverb_send_r, *dl = delay_send_l, *dr = delay_send_r;
+        DuckSends(ducked, size, &rl, &rr, &dl, &dr);
+        granular.Process(size, gran_l, gran_r, rl, rr, dl, dr);
+        if(ducked)
+            DuckDone(gran_l, gran_r, size);
         prof[Prof::kGrains] = Prof::Now() - prof_t;
     }
     else
@@ -1281,8 +1399,13 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
                 active = dexed_b.Render(size, dexed_l, dexed_r) || active;
                 mono   = mono && dexed_b.IsCentred();
             }
-            dexed_bus.Process(size, dexed_l, dexed_r, mono, active, reverb_send_l, reverb_send_r,
-                              delay_send_l, delay_send_r);
+            const bool ducked = DuckGain(Duck::kDxd, size);
+            float *    rl = reverb_send_l, *rr = reverb_send_r, *dl = delay_send_l,
+                  *dr = delay_send_r;
+            DuckSends(ducked, size, &rl, &rr, &dl, &dr);
+            dexed_bus.Process(size, dexed_l, dexed_r, mono, active, rl, rr, dl, dr);
+            if(ducked)
+                DuckDone(dexed_l, dexed_r, size);
             prof[Prof::kDexed] = Prof::Now() - prof_t;
         }
     }
@@ -1305,8 +1428,12 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
         prof_t = Prof::Now();
         ensemble.SetClock((float)g_seq_tick / (float)MidiSequencer::kPpq, tempo.GetBpm(),
                           g_seq_running);
-        ensemble.Process(size, ensemble_l, ensemble_r, reverb_send_l, reverb_send_r,
-                          delay_send_l, delay_send_r);
+        const bool ducked = DuckGain(Duck::kEns, size);
+        float *    rl = reverb_send_l, *rr = reverb_send_r, *dl = delay_send_l, *dr = delay_send_r;
+        DuckSends(ducked, size, &rl, &rr, &dl, &dr);
+        ensemble.Process(size, ensemble_l, ensemble_r, rl, rr, dl, dr);
+        if(ducked)
+            DuckDone(ensemble_l, ensemble_r, size);
         prof[Prof::kEnsemble] = Prof::Now() - prof_t;
     }
     else
@@ -1328,8 +1455,12 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     if(organ_on)
     {
         prof_t = Prof::Now();
-        organ.Process(size, organ_l, organ_r, reverb_send_l, reverb_send_r, delay_send_l,
-                      delay_send_r);
+        const bool ducked = DuckGain(Duck::kOrg, size);
+        float *    rl = reverb_send_l, *rr = reverb_send_r, *dl = delay_send_l, *dr = delay_send_r;
+        DuckSends(ducked, size, &rl, &rr, &dl, &dr);
+        organ.Process(size, organ_l, organ_r, rl, rr, dl, dr);
+        if(ducked)
+            DuckDone(organ_l, organ_r, size);
         prof[Prof::kOrgan] = Prof::Now() - prof_t;
     }
 
@@ -1362,8 +1493,12 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
         supersaw.SetClock((float)g_seq_tick / (float)MidiSequencer::kPpq, tempo.GetBpm(),
                           g_seq_running);
         prof_t = Prof::Now();
-        supersaw.Process(size, ssw_l, ssw_r, reverb_send_l, reverb_send_r, delay_send_l,
-                         delay_send_r);
+        const bool ducked = DuckGain(Duck::kSsw, size);
+        float *    rl = reverb_send_l, *rr = reverb_send_r, *dl = delay_send_l, *dr = delay_send_r;
+        DuckSends(ducked, size, &rl, &rr, &dl, &dr);
+        supersaw.Process(size, ssw_l, ssw_r, rl, rr, dl, dr);
+        if(ducked)
+            DuckDone(ssw_l, ssw_r, size);
         prof[Prof::kSupersaw] = Prof::Now() - prof_t;
         for(size_t i = 0; i < size; i++)
         {
@@ -1383,8 +1518,12 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     if(smp_voice_on)
     {
         prof_t = Prof::Now();
-        sample_synth.Process(size, samp_l, samp_r, reverb_send_l, reverb_send_r, delay_send_l,
-                              delay_send_r);
+        const bool ducked = DuckGain(Duck::kSmv, size);
+        float *    rl = reverb_send_l, *rr = reverb_send_r, *dl = delay_send_l, *dr = delay_send_r;
+        DuckSends(ducked, size, &rl, &rr, &dl, &dr);
+        sample_synth.Process(size, samp_l, samp_r, rl, rr, dl, dr);
+        if(ducked)
+            DuckDone(samp_l, samp_r, size);
         prof[Prof::kSampler] = Prof::Now() - prof_t;
     }
     else
@@ -1396,8 +1535,12 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     if(smp_drum_on)
     {
         prof_t = Prof::Now();
-        sample_drum.Process(size, samp_drum_l, samp_drum_r, reverb_send_l, reverb_send_r,
-                             delay_send_l, delay_send_r);
+        const bool ducked = DuckGain(Duck::kSmd, size);
+        float *    rl = reverb_send_l, *rr = reverb_send_r, *dl = delay_send_l, *dr = delay_send_r;
+        DuckSends(ducked, size, &rl, &rr, &dl, &dr);
+        sample_drum.Process(size, samp_drum_l, samp_drum_r, rl, rr, dl, dr);
+        if(ducked)
+            DuckDone(samp_drum_l, samp_drum_r, size);
         prof[Prof::kSmpDrum] = Prof::Now() - prof_t;
     }
 
@@ -1559,6 +1702,13 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     {
         float* reverb_send_ptrs[2] = {reverb_send_l, reverb_send_r};
         float* delay_send_ptrs[2]  = {delay_send_l, delay_send_r};
+        // A track that's ducked, or is Global:Duck's audio source, plays
+        // into its own buffer first (its sends too, when ducked).
+        static float  lay_l[256], lay_r[256];
+        float*        lay_out[2]    = {lay_l, lay_r};
+        float*        ch_rev_ptrs[2] = {ch_rev_l, ch_rev_r};
+        float*        ch_dly_ptrs[2] = {ch_dly_l, ch_dly_r};
+        const Duck::Settings& duck  = ui.GetDuck();
         for(int L = 0; L < kNumLayers; L++)
         {
             LayerState st = layers[L].GetState();
@@ -1568,8 +1718,34 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
                                            || st == LayerState::ArmedOverdubCountIn;
             AudioHandle::InputBuffer layer_in
                 = !is_recording_ish ? in : L == print_layer ? print_in : mixed_in;
-            layers[L].Process(layer_in, out, reverb_send_ptrs, delay_send_ptrs, size, ticks,
-                               tempo, project_speed);
+            const bool ducked = DuckGain(Duck::kA1 + L, size);
+            const bool source = duck.on && duck.source == Duck::kSrcLayers + L;
+            if(!ducked && !source)
+            {
+                layers[L].Process(layer_in, out, reverb_send_ptrs, delay_send_ptrs, size, ticks,
+                                   tempo, project_speed);
+                continue;
+            }
+            for(size_t i = 0; i < size; i++)
+                lay_l[i] = lay_r[i] = 0.f;
+            if(ducked)
+                for(size_t i = 0; i < size; i++)
+                    ch_rev_l[i] = ch_rev_r[i] = ch_dly_l[i] = ch_dly_r[i] = 0.f;
+            layers[L].Process(layer_in, lay_out, ducked ? ch_rev_ptrs : reverb_send_ptrs,
+                               ducked ? ch_dly_ptrs : delay_send_ptrs, size, ticks, tempo,
+                               project_speed);
+            if(source
+               && g_duck_detector.Process(lay_l, lay_r, size, sample_rate, duck.filter,
+                                          duck.thresh_db)
+                      >= 0)
+                g_duck_layer_hit = true; // dips from the next block
+            if(ducked)
+                DuckDone(lay_l, lay_r, size);
+            for(size_t i = 0; i < size; i++)
+            {
+                out[0][i] += lay_l[i];
+                out[1][i] += lay_r[i];
+            }
         }
     }
     prof[Prof::kLooper] = Prof::Now() - prof_t;
@@ -1665,9 +1841,12 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     // perfectly in sync.
     const bool reverb_bypassed = ui.GetReverbSize01() < 0.005f;
     const bool delay_bypassed  = SharedDelay::IsOff(ui.GetDelaySettings().time01);
+    // Bypass's duck, on its dry signal and its sends alike.
+    const bool byp_ducked = DuckGain(Duck::kByp, size);
 
     for(size_t i = 0; i < size; i++)
     {
+        const float byp_duck = byp_ducked ? duck_gain[i] : 1.f;
         // Bypass's own Send into the shared reverb bus -- independent of
         // every layer's own Send, same bus though. Must happen BEFORE
         // the Process() call right below, which is what actually
@@ -1678,7 +1857,8 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
         // too" treatment LooperLayer::Process() uses for every layer.
         if(byp && bypass_reverb_send01 > 0.f)
         {
-            float byp_mono_base = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume;
+            float byp_mono_base
+                = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume * byp_duck;
             reverb_send_l[i] += byp_mono_base * bypass_pan_l * bypass_reverb_send01;
             reverb_send_r[i] += byp_mono_base * bypass_pan_r * bypass_reverb_send01;
         }
@@ -1686,7 +1866,8 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
         // the delay reads delay_send_l/r for this sample further down.
         if(byp && bypass_delay_send01 > 0.f)
         {
-            float byp_mono_base = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume;
+            float byp_mono_base
+                = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume * byp_duck;
             delay_send_l[i] += byp_mono_base * bypass_pan_l * bypass_delay_send01;
             delay_send_r[i] += byp_mono_base * bypass_pan_r * bypass_delay_send01;
         }
@@ -1749,7 +1930,7 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
             // (bypass_mix_volume/bypass_pan_l/r above) -- panning this
             // mono signal spreads it across the stereo field same as any
             // other mixer channel, same linear law as everything else.
-            float byp_mono = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume;
+            float byp_mono = (in[0][i] + in[1][i]) * bypass_gain * bypass_mix_volume * byp_duck;
             out[0][i] += byp_mono * bypass_pan_l;
             out[1][i] += byp_mono * bypass_pan_r;
             UpdateLevelMeter(g_bypass_level, g_bypass_clip_hold, byp_mono, sample_rate);
@@ -2093,6 +2274,7 @@ int main(void)
     ui.SetSupersaw(&supersaw);
     ui.SetSequencer(&sequencer);
     ui.SetArpeggiator(&g_arp);
+    ui.SetDuckDetector(&g_duck_detector);
     // Each float of an undo buffer holds one 16-bit stereo frame.
     g_live_export.seg[0]     = reinterpret_cast<int16_t*>(g_undo_backup_l);
     g_live_export.seg[1]     = reinterpret_cast<int16_t*>(g_undo_backup_r);

@@ -6085,3 +6085,118 @@ on B1.
   `kEnsembleFactoryExtras`, levelled by loudness to New.
 - **Mix pages** of the Ensemble, Organ and Supersaw: K1 Level, K2 Gain,
   Pan only on the Mixer.
+
+## Sidechain ducking (Global:Duck)
+
+One source dips any of the mixer's channels and lets them swell back:
+the pump, or room for the kick. Everything it needs is in `duck.h`
+(`Duck::Settings`, `Duck::Envelope`, `Duck::Detector`); `main.cpp` runs
+it, `Ui` edits it.
+
+### Sources and what triggers them
+
+- **A note source** (a MIDI track, or an engine) counts notes as they
+  happen. `EngineNoteOn()` carries the note's track (-1 for none):
+  `SeqNote()` passes its track, `ArpNote()` a track arp's, and `KeyOn()`
+  the track a live key plays through. `DuckNote()` (the control
+  interrupt) checks it against the source and the chosen notes and bumps
+  `g_duck_note_triggers`; the audio callback starts a dip at the next
+  block when the count moves. A track source is its sequenced notes, its
+  arp's notes and live keys played through it; an engine source is
+  everything that engine plays. The chosen notes are a 128-bit mask;
+  an empty mask means every note.
+- **An audio source** (an audio track, or the input) goes through
+  `Duck::Detector`: mono, a two-pole low-pass at 120 Hz (Filter:On/Off),
+  a peak follower (50 ms release). A hit is the level jumping 6 dB above
+  its lowest point since it re-armed, while above the threshold; it
+  re-arms after 40 ms once the level falls 6 dB below the peak it hit.
+  The threshold alone wasn't enough: the filtered 55 Hz cycle of one kick
+  crossed it twice, and on fast loud kicks the level never fell far
+  enough below the threshold to re-arm. Checked on the Mac (`duck.h` is
+  plain C++): a break with hats louder than its kick triggers on the 4
+  kicks only, 16th kicks at 140 BPM give 19 of 19, a held bass note
+  triggers once. The input is listened to at the top of the block; an
+  audio track as it renders, so its dip starts with the next block
+  (1.3 ms later).
+
+### The dip
+
+`Duck::Envelope::Render()` fills a block with the depth (0..1) per
+sample: a 2 ms linear ramp down (no click from a sudden drop), Hold, then
+Release along exp(-4t/R) rescaled to reach 0 exactly at R — back quickly,
+settling gently. A trigger while it's coming back ramps down from where
+it is. Release can be synced: 1/32–1/2 at the current tempo. Each
+channel's gain is `1 - amount × depth`.
+
+### Where it's applied
+
+Each ducked channel, right after it renders: Grains, the Dexed bus
+(DXD-A and DXD-B share one amount, as they share sends), Ensemble,
+Organ, Supersaw, SMPVO, SMPDR, each audio track, Bypass. The engines add
+their own reverb and delay sends inside `Process()`, so a ducked one is
+handed scratch send buffers instead, and `DuckDone()` adds them to the
+shared busses through the same gain — the sends dip with the channel, as
+a compressor on that channel would, without touching any engine. An
+audio track renders into its own buffer when it's ducked or is the
+source. The source's own channel is never ducked.
+
+Because it's applied where the channels render, everything after hears
+it: recording into a loop, printing a track, captures, Live export. The
+fast Audio Loop export renders the layers offline and doesn't duck.
+
+A block whose depth is 0 throughout skips all of it (`g_duck_dipping`):
+between kicks, and whenever nothing triggers, the channels render as if
+Duck were off.
+
+### Pages and saving
+
+`Global:Duck` (after Sends) is an entry page like an engine's: B1
+on/off, the encoder opens `Screen::Duck` — Source, Shape, Amount, with B1
+Duck:On/Off on each. Source shows SMPDR's loaded pads as a 4×4 (6 wide
+past 16) grid, pad 1 at the bottom left as on drum pads, or a note
+cursor for other engines, or the detector's meter and threshold for an
+audio source. Shape draws the dip over a bar from the same
+`Duck::Envelope`. Amount is Global:Sends' cells. The icon is three
+pumps with kick marks under them.
+
+The settings are one raw `Duck::Settings` in a `DCK1` section after the
+arps; a file without one loads with Duck off, and New resets it.
+
+## MIDI grid: drums the right way up, and the row plays
+
+The drum grid had pad 1 (C2) on the top row. It now has the piano roll's
+orientation — higher notes towards the top — so C2 is the bottom row, as
+on 4×4 drum pads and on Duck:Source. Opening a drum track's grid starts
+on C2 at the bottom. Turning K2 to a new row plays it again (dropped with
+the arp's ghost notes); the row's sticky third-of-a-row edge keeps pot
+jitter from repeating it.
+
+## Sampler voices: cheaper, the same sound
+
+On the sidechain demo (an 808 Boom four-on-the-floor with off-beat open
+hats, about 8 voices sounding) SMPDR read 25/28 % CPU. Two changes, none
+to the sound:
+
+- **Whole samples and mono.** A pad at its own pitch with no bend reads
+  on whole samples, where the 4-tap Catmull-Rom curve is exactly the
+  sample (t = 0 gives p1), so it takes the sample. A mono file loads into
+  both channels; `LoadSlot16()` marks a slot whose two are identical
+  (`memcmp` at load) and a voice works that out once. 25/28 → 17/19.
+- **One voice at a time.** `Process()` works out the block's pitch
+  (bend and vibrato) first, then renders each voice through the whole
+  block into a block mix, adding in voice order — every sample gets the
+  same sum in the same order as before. A voice's slot, gate and fade
+  window are looked up once. 17/19 → 15/17. (No gain on the Mac.)
+
+Checked on the Mac against the old code with the 808 Boom kit (pads
+under a pitch bend too) and pitched stereo and mono SMPVO sounds:
+identical output without fast-math, within 1.5e-8 (-148 dB) with it.
+
+## LFO rate, worked out when it's set
+
+`SynthLfo::Render()` runs every block even with nothing playing, so a
+synced LFO keeps its phase, and a free-running one's rate came from
+`GetRateHz()` = `0.05 × 600^rate` — a `powf()` from QSPI flash each
+block. With Super Pad (its LFO free-running) the Supersaw read 1/1 % at
+rest where the other engines read 0/0. `SetRate01()` now works the Hz out
+once; every rate is the same.

@@ -28,6 +28,7 @@ extern const uint8_t kGlobalIconOrgan[kGlobalIconBytes];    // nine drawbars on 
 extern const uint8_t kGlobalIconSupersaw[kGlobalIconBytes]; // three detuned saws
 extern const uint8_t kGlobalIconSmpvo[kGlobalIconBytes];    // one-octave keyboard
 extern const uint8_t kGlobalIconSmpdr[kGlobalIconBytes];    // 4x2 drum pads
+extern const uint8_t kGlobalIconDuck[kGlobalIconBytes];     // three pumps, kicks underneath
 extern const uint8_t kGlobalIconExport[kGlobalIconBytes];   // waveform into an SD card
 
 // Full-screen power-on splash: PZD logo with GROOVEBOX underneath.

@@ -1261,7 +1261,7 @@ bool WriteArps(FIL& file, const Arpeggiator& arp)
     return ok;
 }
 
-void ReadArps(FIL& file, Arpeggiator& arp)
+bool ReadArps(FIL& file, Arpeggiator& arp)
 {
     static SceneTrailer tr;
     UINT br;
@@ -1270,15 +1270,57 @@ void ReadArps(FIL& file, Arpeggiator& arp)
        || tr.count > (uint32_t)Arpeggiator::kSaveEntries)
     {
         arp.Reset(); // an older performance: no arps
-        return;
+        return false;
     }
     const UINT bytes = (UINT)(tr.count * tr.size);
     if(f_read(&file, g_arp_save, bytes, &br) != FR_OK || br != bytes)
     {
         arp.Reset();
-        return;
+        return false;
     }
     arp.Load(g_arp_save, (int)tr.count);
+    return true;
+}
+
+// Global:Duck's settings, after the arps: the same kind of header, then
+// one Duck::Settings as it is in memory.
+bool WriteDuck(FIL& file, const Duck::Settings& duck)
+{
+    static SceneTrailer tr;
+    tr = SceneTrailer{};
+    memcpy(tr.magic, "DCK1", 4);
+    tr.version = 1;
+    tr.count   = 1;
+    tr.size    = sizeof(Duck::Settings);
+    memcpy(g_scene_read, &duck, sizeof(Duck::Settings));
+    UINT    bw;
+    FRESULT fr = f_write(&file, &tr, sizeof(tr), &bw);
+    bool    ok = fr == FR_OK && bw == sizeof(tr);
+    if(ok)
+    {
+        fr = f_write(&file, g_scene_read, sizeof(Duck::Settings), &bw);
+        ok = fr == FR_OK && bw == sizeof(Duck::Settings);
+    }
+    if(!ok)
+        SetError("dck", fr);
+    return ok;
+}
+
+void ReadDuck(FIL& file, Duck::Settings* duck)
+{
+    static SceneTrailer tr;
+    *duck = Duck::Settings{}; // an older performance: off
+    UINT br;
+    if(f_read(&file, &tr, sizeof(tr), &br) != FR_OK || br != sizeof(tr)
+       || memcmp(tr.magic, "DCK1", 4) != 0 || tr.size < 4 || tr.size > kMaxSceneSize)
+        return;
+    if(f_read(&file, g_scene_read, tr.size, &br) != FR_OK || br != tr.size)
+        return;
+    memcpy(duck, g_scene_read, tr.size < sizeof(Duck::Settings) ? tr.size : sizeof(Duck::Settings));
+    if(duck->source < 0 || duck->source >= Duck::kSources)
+        duck->source = Duck::Settings{}.source;
+    if(duck->sync_index < 0 || duck->sync_index >= Duck::kSyncValues)
+        duck->sync_index = Duck::Settings{}.sync_index;
 }
 } // namespace
 
@@ -1453,6 +1495,8 @@ bool Save(int                slot,
         ok = WriteChains(file, *extras->seq);
     if(ok && extras && extras->scenes && extras->song && extras->seq && extras->arp)
         ok = WriteArps(file, *extras->arp);
+    if(ok && extras && extras->scenes && extras->song && extras->seq && extras->arp && extras->duck)
+        ok = WriteDuck(file, *extras->duck);
 
     FRESULT close_res = f_close(&file);
     if(close_res != FR_OK)
@@ -1753,12 +1797,20 @@ bool Load(int          slot,
             *extras->song = Song{};
             const bool chains = has && ReadSong(file, extras->song) && extras->seq
                                 && ReadChains(file, *extras->seq);
+            bool arps = false;
             if(extras->arp)
             {
                 if(chains)
-                    ReadArps(file, *extras->arp);
+                    arps = ReadArps(file, *extras->arp);
                 else
                     extras->arp->Reset();
+            }
+            if(extras->duck)
+            {
+                if(arps)
+                    ReadDuck(file, extras->duck);
+                else
+                    *extras->duck = Duck::Settings{};
             }
         }
     }

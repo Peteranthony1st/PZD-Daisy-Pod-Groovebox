@@ -39,7 +39,9 @@ the looper. MIDI tracks record from a keyboard or a step grid, each with
 audio tracks together on the downbeat, and a **64-step song** arranges
 the scenes and exports as a WAV of any length. An **arpeggiator** on
 every engine and every MIDI track pattern turns one key or a held chord
-into a pattern, in key and in time. An added I2C OLED
+into a pattern, in key and in time. A **sidechain** pumps any mix of
+channels from a kick: a MIDI track's chosen drum pads, or a recorded
+loop's low end. An added I2C OLED
 display gives it a full on-device menu: live waveform/level display,
 per-layer filter/effects/reverb, tempo-locked recording, and SD card
 save/load, all controlled from the Pod's two knobs, two buttons, and one
@@ -156,8 +158,10 @@ selected the keyboard plays its engine. Each track has:
   one-bar drum beat can repeat under a four-bar loop.
 - **Quantise and swing** — Off, 1/32T … 1/4, applied on playback (the
   recorded notes never move), with swing up to 100%.
-- **A grid** — SMPDR tracks get a drum grid (one row per pad from C2),
-  every other engine a piano roll (C1–C6), one page per bar. Add or
+- **A grid** — SMPDR tracks get a drum grid (one row per pad, C2 at the
+  bottom as on 4×4 drum pads), every other engine a piano roll (C1–C6),
+  one page per bar; both have the higher notes towards the top. Turning
+  K2 to a row plays it. Add or
   delete notes, and hold B2 to set velocity (drums) or length, plus
   **rolls** (×2 … ×8 repeats inside a step). With K1 fully left an edit
   applies to the whole row.
@@ -482,6 +486,40 @@ delay send on one page: the layers, each engine (DXD-A and DXD-B share the
 Dexed bus's) and Bypass, each with two bars. K1 picks the channel, B1/B2
 point K2 at its Reverb or Delay send.
 
+**Sidechain** (`Global:Duck`, after Sends) — one source makes any of the
+mixer's channels dip and swell back with it: the classic pump, or room
+cleared for the kick. B1 switches it on and off; push the encoder for its
+three pages (B1 is Duck:On/Off on each):
+
+- **Source** — K1 picks it: a MIDI track (M1–M8), an engine, an audio
+  track (A1–A4) or the input (IN).
+  - **A track or an engine** triggers on every note it plays, including
+    its arp's and what you play live through it, or only on the notes
+    you choose. With SMPDR the kit's pads show as a grid, the lowest
+    (C2) at the bottom left: K2 moves the cursor and B2 turns a pad on
+    (Pad:On/Off), so only the kick ducks and the snare and hats don't.
+    Other engines pick single notes the same way. With none chosen,
+    every note triggers it.
+  - **An audio track or the input** triggers on its kick: a level meter
+    with the threshold (K2) marked on it, and a 120 Hz low-pass on what
+    it listens to (B2, Filter:On/Off), so a recorded break's snares and
+    hats pass by. A held bass note triggers it once, not over and over.
+- **Shape** — K1 **Hold** (0–250 ms) and K2 **Release** (10–1000 ms, or
+  a note value from 1/32 to 1/2 with B2's **Sync** on, following the
+  tempo), drawn
+  as the dip over a bar. It drops in 2 ms, holds, then comes back fast
+  and settles gently.
+- **Amount** — the same channels as Global:Sends (DXD-A and DXD-B share
+  one), each with its own amount: K1 picks the channel, K2 sets it. The
+  source's own channel reads SRC.
+
+A ducked channel's reverb and delay sends dip with it, as a compressor
+on that channel would. A MIDI track ducks with its engine, like its
+level and sends do. Recording a loop, printing a track and Live export
+all capture the dip. The settings save with the Performance.
+
+<img alt="Duck:Source page" src="images/duck-source.png" /><img alt="Duck:Shape page" src="images/duck-shape.png" /><img alt="Duck:Amount page" src="images/duck-amount.png" />
+
 **SD card management** (`Global:SdMgmt`) — a grid of all 8 save
 categories (Global, Grains/Dexed user presets, the SYNTH box for
 Ensemble, Organ and Supersaw user presets, Captures,
@@ -568,7 +606,13 @@ habits keep headroom on your side:
   full Detune and Mix, OSC2, 24 dB filter, pitch and filter LFOs moving);
   everyday patches cost less.
 - SMPVO and SMPDR are separate engines; each costs CPU only while it's
-  on and playing.
+  on and playing. A drum pad plays its whole sample whatever the note
+  length, so long samples hit often — an open hat on every off-beat, a
+  booming kick — keep several voices sounding at once, and each voice
+  costs. Pads played at their own pitch, and mono samples, are the
+  cheapest.
+- The sidechain (`Global:Duck`) costs almost nothing: a ducked channel
+  only does extra work while it's actually dipping.
 - Record your synth parts into loop layers first, then switch those
   engines off once you've got the take you want.
 - Dial in reverb/delay last, once you know what's actually being kept —
@@ -595,7 +639,9 @@ habits keep headroom on your side:
 
 **Making a song** — the card template's `PERF001` is a ready-made demo
 (six MIDI tracks, six scenes, a three-minute song): load it from
-`Global:Perf` and tap B1 on the Song page to hear one. To make your own:
+`Global:Perf` and tap B1 on the Song page to hear one. `PERF002` is a
+second, built around the sidechain: an 808 kick ducking a Supersaw pad and
+a DXD-A part at 124 BPM. To make your own:
 1. Record a few audio tracks, then MIDI tracks (rotate past A4 to M1,
    hold B1, play). Click into a track to set its length, quantise or
    grid, and on its Patt page copy patterns into variations.
@@ -711,6 +757,7 @@ capture in progress.
 | Global: Tracks | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer for L1–L4, M1–M8, Bypass, Master; bottom row shows CPU avg/peak) |
 | Global: Synths | Master Vol | Bypass Vol | Toggle the CPU profile view | — (push encoder to enter the Mixer for the eight engines, Bypass, Master) |
 | Global: Sends | Pick a channel | Its Reverb or Delay send | Knob 2 → Reverb | Knob 2 → Delay |
+| Global: Duck | — | — | Toggle the sidechain on/off | — (push encoder to enter its pages) |
 | Global: Tempo | BPM (50–240) | Bars (1–16, lower-capped at slower BPM) | Toggle metronome | Hold 800ms = Save as startup default |
 | Global: Speed | Vari-speed | — | Cycle Normal/Scrub/Freeze | Reset to 1.0x |
 | Global: Filter | Cutoff | Resonance | Cycle filter mode | — |
@@ -737,6 +784,14 @@ capture in progress.
 | Global: SMPVO | — | — | Toggle SMPVO on/off | — (push encoder to enter Screen::SampleSynth) |
 | Global: SMPDR | — | — | Toggle SMPDR on/off | — (push encoder to enter Screen::SampleSynth) |
 | Global: Looper | — | — | Toggle the whole 4-layer looper on/off | Toggle Default On/Off (whether the looper starts enabled at power-on; saved immediately, shown top right) — push encoder to open Home |
+
+**Duck (push the encoder on `Global:Duck`; rotate to cycle pages; titles read `Duck:`)**
+
+| Page | Knob 1 | Knob 2 | Button 1 | Button 2 |
+|---|---|---|---|---|
+| Source | The source: M1–M8, an engine, A1–A4, IN | A pad/note to pick (note sources) or the Threshold (audio) | Duck on/off | Pad:/Note:On/Off at the cursor (note sources); Filter:On/Off (audio) |
+| Shape | Hold (0–250 ms) | Release (10–1000 ms, or 1/32–1/2 with Sync) | Duck on/off | Sync on/off |
+| Amount | Pick a channel | Its amount | Duck on/off | — |
 
 **MIDI track (click M1–M8 on Home, rotate to cycle pages; titles read `M1:` …)**
 

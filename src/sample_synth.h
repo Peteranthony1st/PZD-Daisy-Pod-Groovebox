@@ -31,6 +31,7 @@ class SampleSynth
     void Init(float sample_rate);
 
     static constexpr int kMaxVoices = 10;
+    static constexpr size_t kMaxProcessBlock = 256; // Process()'s largest block
     // 24, not some rounder number -- matches the real OP-1/OP-XY drum
     // engine's own 24-slot layout exactly, so an authentic multi-sample
     // kit (24 marker-sliced hits) never has to drop any of its slices.
@@ -57,6 +58,8 @@ class SampleSynth
                      bool chromatic, uint8_t root_note, uint8_t low_note, uint8_t high_note,
                      float volume01, int8_t pitch_offset_semis = 0);
     bool  SlotHasSample(int index) const { return index >= 0 && index < kMaxSampleSlots && slots_[index].len > 0; }
+    // The lowest note a slot answers to (a kit pad's own note).
+    int   SlotLowNote(int index) const { return SlotHasSample(index) ? slots_[index].low_note : -1; }
 
     // Capture/Trim's own "Play" button (Ui::SampleSynthParamPage::Trim)
     // -- a plain, un-pitched, un-gated one-shot readout of slot 0 ONLY,
@@ -277,6 +280,9 @@ class SampleSynth
         // See SetSlotPitchOffsetSemis()'s own comment -- only read for
         // one-shot (chromatic==false) slots, at NoteOn() time.
         int8_t       pitch_offset_semis = 0;
+        // Both channels hold the same audio (a mono file loads into both),
+        // so a voice reads and smooths it once -- see RenderVoice().
+        bool         mono = false;
 
         float L(int i) const { return pcm_l ? (float)pcm_l[i] * (1.f / 32768.f) : buf_l[i]; }
         float R(int i) const { return pcm_r ? (float)pcm_r[i] * (1.f / 32768.f) : buf_r[i]; }
@@ -302,7 +308,7 @@ class SampleSynth
     // interpolation, same shape/reasoning as GranularEngine::
     // RenderGrain() -- a one-shot sample is not a seamless loop, so
     // wrapping at the ends would fabricate a real discontinuity).
-    void RenderVoice(Voice& v, float& out_l, float& out_r);
+    void RenderVoice(Voice& v, float& out_l, float& out_r, float pitch_mult);
 
     // The actual fade duration for a one-shot of this length -- never
     // more than half the slice itself. kOneShotTailFadeSamples applied

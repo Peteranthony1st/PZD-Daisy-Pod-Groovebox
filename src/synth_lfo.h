@@ -41,9 +41,15 @@ class SynthLfo
 
     void  SetWave(Wave w) { wave_ = w; }
     Wave  GetWave() const { return wave_; }
-    void  SetRate01(float v01) { rate01_ = Clamp01(v01); }
+    // The Hz is worked out here, not per block: powf() runs from QSPI flash,
+    // and Render() runs every block even with nothing playing.
+    void  SetRate01(float v01)
+    {
+        rate01_ = Clamp01(v01);
+        rate_hz_ = 0.05f * powf(30.f / 0.05f, rate01_); // 0.05 .. 30 Hz
+    }
     float GetRate01() const { return rate01_; }
-    float GetRateHz() const { return 0.05f * powf(30.f / 0.05f, rate01_); } // 0.05 .. 30 Hz
+    float GetRateHz() const { return rate_hz_; }
     void  SetSync(bool on) { sync_ = on; }
     bool  GetSync() const { return sync_; }
     void  SetSyncIndex(int i) { sync_index_ = i < 0 ? 0 : (i >= kNumSyncs ? kNumSyncs - 1 : i); }
@@ -142,6 +148,7 @@ class SynthLfo
     int      step_        = 16;
     Wave     wave_        = Wave::Triangle;
     float    rate01_      = 0.4f;
+    float    rate_hz_     = 0.646f; // SetRate01(0.4)'s: 0.05 * 600^0.4
     bool     sync_        = false;
     int      sync_index_  = 2; // 1/16
     float    fade01_      = 0.f;

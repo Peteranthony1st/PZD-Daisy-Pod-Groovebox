@@ -9,6 +9,7 @@
 #include "looper_layer.h"
 #include "performance_store.h"
 #include "font_tomthumb.h"
+#include "duck.h"
 
 class GranularEngine;
 class DexedSynth;
@@ -264,6 +265,10 @@ class Ui
     int GetSampleDrumMidiChannel() const { return sample_drum_midi_channel_; }
     void SetSequencer(MidiSequencer* seq) { seq_ = seq; }
     void SetArpeggiator(Arpeggiator* arp) { arp_ = arp; }
+    // Global:Duck's settings, read by the audio callback and the control
+    // interrupt (see duck.h); the detector is only read, for its meter.
+    const Duck::Settings& GetDuck() const { return duck_; }
+    void SetDuckDetector(const Duck::Detector* d) { duck_detector_ = d; }
     // A note to sound for a moment (the MIDI grid's cursor), played by the
     // control interrupt: it bumps PreviewSeq() when there's a new one.
     uint32_t PreviewSeq() const { return preview_seq_; }
@@ -430,7 +435,9 @@ class Ui
         Arp,
         // Same treatment as Granular/Dexed/Ensemble, entered from
         // Global:Supersaw. See SupersawParamPage for its own pages.
-        Supersaw
+        Supersaw,
+        // Sidechain ducking, entered from Global:Duck. See DuckPage.
+        Duck
     };
     // Shared save/load interaction state for Global:File, Pad Preset, and
     // Grains Preset -- only one of those three pages is ever visible at
@@ -488,6 +495,9 @@ class Ui
         // Every channel's reverb and delay send on one page: K1 picks the
         // channel, B1/B2 point K2 at its Reverb or Delay send.
         Sends,
+        // Sidechain ducking (see duck.h): the on/off toggle and the entry
+        // point into Screen::Duck, same as an engine's.
+        Duck,
         Tempo,
         // Saving and the card, right after Tempo: Perf (Global:Perf), then
         // every synth engine at once -- B1 saves a new snapshot, B2 opens
@@ -1023,6 +1033,9 @@ class Ui
         ArpKey,     // K1 key, K2 scale
         GlobalMixer, // entry point only -- see Screen::Mixer instead
         GlobalSends, // K1 channel, K2 its reverb or delay send
+        DuckSource, // Duck:Source -- K1 source, K2 pad/note cursor or threshold
+        DuckShape,  // Duck:Shape -- K1 Hold, K2 Release
+        DuckAmount, // Duck:Amount -- K1 channel, K2 its amount
         GlobalSdMgmt, // browses a list directly, no pickup used -- see GlobalPage::SdMgmt
         GlobalDexed, // entry point only -- see Screen::Dexed instead
         GlobalEnsemble, // entry point only -- see Screen::Ensemble instead
@@ -1990,6 +2003,39 @@ class Ui
     int  sends_ch_           = 0;
     bool sends_target_delay_ = false;
     void DrawSendsPage();
+    // --- Global:Duck and Screen::Duck --------------------------------------
+    // Source: K1 the source, K2 a pad/note to pick (B2 picks it) or the
+    // threshold (B2 the filter). Shape: K1 Hold, K2 Release, B2 Sync.
+    // Amount: K1 a channel, K2 its amount -- the same cells as Sends. B1 is
+    // Duck on/off on every page.
+    enum class DuckPage
+    {
+        Source,
+        Shape,
+        Amount,
+        kCount
+    };
+    DuckPage              duck_page_ = DuckPage::Source;
+    Duck::Settings        duck_;
+    const Duck::Detector* duck_detector_ = nullptr;
+    int                   duck_amt_ch_   = 0; // DuckAmt's cell
+    // Global:Duck's cursor: a pad (SMPDR) or a note (any other engine).
+    int  duck_cursor_ = 0;
+    // Source codes in the order K1 shows them (M1-M8, the engines as on
+    // every engine page, A1-A4, IN), and the source's short name.
+    static int  DuckSourceAt(int pos);
+    static int  DuckSourcePos(int source);
+    static void DuckSourceName(int source, char* out, size_t out_size);
+    int         DuckSourceEngine() const; // the source's engine, -1 for audio
+    // SMPDR's pads as Global:Duck shows them: each loaded slot's note.
+    int  DuckPads(int* notes, int max) const;
+    // The note under Global:Duck's cursor, and how many places K2 has.
+    int  DuckCursorNote() const;
+    int  DuckCursorCount() const;
+    void DuckApplyKnobs(float k1, float k2);
+    void DrawDuckSourcePage();
+    void DrawDuckShapePage();
+    void DrawDuckAmountPage();
     // --- Screen saver (Global:Display) -------------------------------------
     // With no knob, button or encoder touched for the timeout, the panel
     // dims; a minute later it switches off (OLEDs burn in). The first

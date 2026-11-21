@@ -632,6 +632,11 @@ void Ui::HandleEncoder(const UiControlEvents& events)
         }
         else if(screen_ == Screen::Supersaw)
             SupersawRotatePage(inc);
+        else if(screen_ == Screen::Duck)
+        {
+            const int n = (int)DuckPage::kCount;
+            duck_page_  = (DuckPage)((((int)duck_page_ + inc) % n + n) % n);
+        }
         else if(screen_ == Screen::SampleSynth)
         {
             int n = (int)SampleSynthParamPage::kCount;
@@ -767,10 +772,11 @@ void Ui::HandleEncoder(const UiControlEvents& events)
                 seq_page_ = kSeqPageTrack;
                 if(seq_)
                     seq_patt_cursor_ = seq_->GetPattern(HomeSeqTrack());
-                // The grid starts on the track's first row.
+                // The grid starts on C2: a kit's first pad, on its bottom
+                // row (the grid shows 6); the piano roll's top row.
                 grid_col_  = 0;
                 grid_note_ = 36;
-                grid_top_  = 36;
+                grid_top_  = seq_ && seq_->GetEngine(HomeSeqTrack()) == MidiSequencer::kSmpdr ? 36 + 5 : 36;
             }
             else
             {
@@ -854,6 +860,9 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             screen_ = Screen::Ensemble;
         }
         else if(!encoder_long_fired_ && screen_ == Screen::Global
+                && global_page_ == GlobalPage::Duck)
+            screen_ = Screen::Duck; // Global:Duck's entry point
+        else if(!encoder_long_fired_ && screen_ == Screen::Global
                 && global_page_ == GlobalPage::Supersaw)
         {
             // Global:Supersaw is the entry point into Screen::Supersaw,
@@ -908,7 +917,7 @@ void Ui::HandleEncoder(const UiControlEvents& events)
                 && (screen_ == Screen::Granular || screen_ == Screen::Dexed
                     || screen_ == Screen::Ensemble || screen_ == Screen::SampleSynth
                     || screen_ == Screen::Mixer || screen_ == Screen::Arp
-                    || screen_ == Screen::Supersaw))
+                    || screen_ == Screen::Supersaw || screen_ == Screen::Duck))
         {
             // Back out to the Global page this screen was entered from --
             // global_page_ is left untouched while inside, so this lands on
@@ -2080,6 +2089,8 @@ void Ui::OnButton1Short()
                 k2_pickup_engaged_[(size_t)KnobContext::GlobalSends] = false;
                 SyncPickupTargets(KnobContext::GlobalSends);
             }
+            else if(global_page_ == GlobalPage::Duck)
+                duck_.on = !duck_.on;
             else if(global_page_ == GlobalPage::Filter)
             {
                 int n = (int)FilterMode::kNumModes;
@@ -2435,6 +2446,7 @@ void Ui::OnButton1Short()
             }
             break;
         case Screen::Supersaw: SupersawButton1(); break;
+        case Screen::Duck: duck_.on = !duck_.on; break;
         case Screen::Ensemble:
             if(ensemble_param_page_ == EnsembleParamPage::Perc && ensemble_)
                 ensemble_->SetPercOn(!ensemble_->GetPercOn());
@@ -2703,6 +2715,19 @@ void Ui::OnButton2Short()
         k2_pickup_engaged_[(size_t)KnobContext::GlobalSends] = false;
         SyncPickupTargets(KnobContext::GlobalSends);
     }
+    else if(screen_ == Screen::Duck && duck_page_ == DuckPage::Source)
+    {
+        if(Duck::IsAudioSource(duck_.source))
+            duck_.filter = !duck_.filter;
+        else
+            Duck::ToggleNote(duck_, DuckCursorNote()); // the pad/note under the cursor
+    }
+    else if(screen_ == Screen::Duck && duck_page_ == DuckPage::Shape)
+    {
+        duck_.sync = !duck_.sync; // Release: note values <-> ms
+        k2_pickup_engaged_[(size_t)KnobContext::DuckShape] = false;
+        SyncPickupTargets(KnobContext::DuckShape);
+    }
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::Delay)
         delay_sync_ = true; // Time: note values (B1 = free ms)
     else if(screen_ == Screen::Global && global_page_ == GlobalPage::ReverbTone)
@@ -2868,6 +2893,7 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 case GlobalPage::MixTracks:
                 case GlobalPage::MixSynths: return KnobContext::GlobalMixer;
                 case GlobalPage::Sends: return KnobContext::GlobalSends;
+                case GlobalPage::Duck: return KnobContext::GlobalLooper; // entry point only
                 case GlobalPage::SdMgmt: return KnobContext::GlobalSdMgmt;
                 case GlobalPage::Dexed:
                 case GlobalPage::DexedB: return KnobContext::GlobalDexed;
@@ -2940,6 +2966,10 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 default: return KnobContext::DexedOpAlgo;
             }
         case Screen::Supersaw: return SupersawKnobContext();
+        case Screen::Duck:
+            return duck_page_ == DuckPage::Source  ? KnobContext::DuckSource
+                   : duck_page_ == DuckPage::Shape ? KnobContext::DuckShape
+                                                   : KnobContext::DuckAmount;
         case Screen::Ensemble:
             switch(ensemble_param_page_)
             {
@@ -3047,6 +3077,24 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             k1_pickup_raw_[i] = ((float)sends_ch_ + 0.5f) / (float)kSendChannels;
             k2_pickup_raw_[i] = sends_target_delay_ ? MixerGetDelaySend01(SendsChannel(sends_ch_))
                                                     : MixerGetSend01(SendsChannel(sends_ch_));
+            break;
+        case KnobContext::DuckSource:
+            k1_pickup_raw_[i] = ((float)DuckSourcePos(duck_.source) + 0.5f) / (float)Duck::kSources;
+            if(Duck::IsAudioSource(duck_.source))
+                k2_pickup_raw_[i] = 1.f - duck_.thresh_db / Duck::kThreshMinDb;
+            else
+                k2_pickup_raw_[i] = ((float)duck_cursor_ + 0.5f) / (float)DuckCursorCount();
+            break;
+        case KnobContext::DuckShape:
+            k1_pickup_raw_[i] = duck_.hold_ms / Duck::kHoldMaxMs;
+            k2_pickup_raw_[i]
+                = duck_.sync ? ((float)duck_.sync_index + 0.5f) / (float)Duck::kSyncValues
+                             : logf(duck_.release_ms / Duck::kReleaseMinMs)
+                                   / logf(Duck::kReleaseMaxMs / Duck::kReleaseMinMs);
+            break;
+        case KnobContext::DuckAmount:
+            k1_pickup_raw_[i] = ((float)duck_amt_ch_ + 0.5f) / (float)Duck::kChannels;
+            k2_pickup_raw_[i] = duck_.amount[duck_amt_ch_];
             break;
         case KnobContext::GlobalArp:
             k1_pickup_raw_[i] = ((float)EngineColumn(arp_engine_) + 0.5f) / (float)Arpeggiator::kEngines;
@@ -3257,7 +3305,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 // K1: the row position (-1), then each step. K2: left is
                 // the top of the screen on both grids.
                 k1_pickup_raw_[i] = ((float)grid_col_ + 1.5f) / (float)(v.cells + 1);
-                int row_idx       = v.drum ? grid_note_ - v.note_lo : v.note_hi - grid_note_;
+                int row_idx       = v.note_hi - grid_note_;
                 k2_pickup_raw_[i] = ((float)row_idx + 0.5f) / (float)(v.note_hi - v.note_lo + 1);
             }
             break;
@@ -4716,6 +4764,7 @@ void Ui::ApplyKnobs()
             break;
 
         case Screen::Supersaw: SupersawApplyKnobs(k1, k2, ci); break;
+        case Screen::Duck: DuckApplyKnobs(k1, k2); break;
 
         case Screen::Ensemble:
             if(!ensemble_)
@@ -5422,6 +5471,14 @@ void Ui::Draw()
         case Screen::Dexed: DrawDexedScreen(); break;
         case Screen::Ensemble: DrawEnsembleScreen(); break;
         case Screen::Supersaw: DrawSupersawScreen(); break;
+        case Screen::Duck:
+            if(duck_page_ == DuckPage::Source)
+                DrawDuckSourcePage();
+            else if(duck_page_ == DuckPage::Shape)
+                DrawDuckShapePage();
+            else
+                DrawDuckAmountPage();
+            break;
         case Screen::DexedOperator: DrawDexedOperatorScreen(); break;
         case Screen::SampleSynth: DrawSampleSynthScreen(); break;
         case Screen::SeqTrack: DrawSeqTrackScreen(); break;
@@ -5819,9 +5876,9 @@ Ui::SeqGridView Ui::SeqGridGeometry(int t) const
     uint32_t span    = v.len_ticks - v.page_start < pg ? v.len_ticks - v.page_start : pg;
     v.cells          = (int)(span / v.step);
     v.cells_per_page = (int)(pg / v.step);
-    // SMPDR kits: pad 1 is C2 and they go up from there, top row first;
-    // every other engine is a piano roll, five octaves C1..C6, highest at
-    // the top (about 4.4 degrees of K2 per note).
+    // Highest at the top on both: SMPDR kits' pads from C2 (pad 1, the
+    // bottom row, as on 4x4 drum pads) up, every other engine a piano roll
+    // of five octaves C1..C6 (about 4.4 degrees of K2 per note).
     v.drum    = seq_->GetEngine(t) == MidiSequencer::kSmpdr;
     v.note_lo = v.drum ? 36 : 24;
     v.note_hi = v.drum ? 36 + 23 : 84;
@@ -5984,11 +6041,12 @@ void Ui::SeqGridKnobs(int t, float k1, float k2)
         // between neighbours.
         const int   rows = v.note_hi - v.note_lo + 1;
         const float f    = Clampf(k2, 0.f, 0.999f) * (float)rows;
-        const int   cur  = v.drum ? grid_note_ - v.note_lo : v.note_hi - grid_note_;
+        const int   cur  = v.note_hi - grid_note_;
         if(f < (float)cur - 0.33f || f > (float)(cur + 1) + 0.33f || cur < 0 || cur >= rows)
         {
             int row_idx = (int)f;
-            grid_note_  = v.drum ? v.note_lo + row_idx : v.note_hi - row_idx;
+            grid_note_  = v.note_hi - row_idx;
+            Preview(seq_->GetEngine(t), grid_note_, 90); // hear the row arrived on
         }
     }
     if(grid_col_ >= v.cells)
@@ -6024,20 +6082,10 @@ void Ui::DrawSeqGridPage(int t)
     disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
 
     // Keep the cursor's row on screen.
-    if(v.drum)
-    {
-        if(grid_note_ < grid_top_)
-            grid_top_ = grid_note_;
-        if(grid_note_ > grid_top_ + kRows - 1)
-            grid_top_ = grid_note_ - kRows + 1;
-    }
-    else
-    {
-        if(grid_note_ > grid_top_)
-            grid_top_ = grid_note_;
-        if(grid_note_ < grid_top_ - kRows + 1)
-            grid_top_ = grid_note_ + kRows - 1;
-    }
+    if(grid_note_ > grid_top_)
+        grid_top_ = grid_note_;
+    if(grid_note_ < grid_top_ - kRows + 1)
+        grid_top_ = grid_note_ + kRows - 1;
     const int cw = 96 / v.cells_per_page; // cell width, 4..24 px
 
     // Each row's notes, from one pass over the track.
@@ -6054,7 +6102,7 @@ void Ui::DrawSeqGridPage(int t)
     {
         if(ev[i].velocity == 0)
             continue;
-        int row = v.drum ? ev[i].note - grid_top_ : grid_top_ - ev[i].note;
+        int row = grid_top_ - ev[i].note;
         if(row < 0 || row >= kRows)
             continue;
         int gc  = (int)(((ev[i].tick + v.step / 2) / v.step) % total_cells);
@@ -6091,7 +6139,7 @@ void Ui::DrawSeqGridPage(int t)
 
     for(int r = 0; r < kRows; r++)
     {
-        const int note = v.drum ? grid_top_ + r : grid_top_ - r;
+        const int note = grid_top_ - r;
         if(note < v.note_lo || note > v.note_hi)
             continue;
         const int y = kTop + r * kRowH;
@@ -6139,7 +6187,7 @@ void Ui::DrawSeqGridPage(int t)
         const int32_t page_end = (int32_t)(v.page_start + (uint32_t)v.cells * v.step);
         for(int i = 0; i < gn; i++)
         {
-            const int r = v.drum ? ghost[i].note - grid_top_ : grid_top_ - ghost[i].note;
+            const int r = grid_top_ - ghost[i].note;
             if(r < 0 || r >= kRows)
                 continue;
             // Its span, and a copy a loop on for one wrapping round the top.
@@ -6181,7 +6229,7 @@ void Ui::DrawSeqGridPage(int t)
     // (on the row position its name is highlighted instead, above).
     if(grid_col_ >= 0)
     {
-        int r = v.drum ? grid_note_ - grid_top_ : grid_top_ - grid_note_;
+        int r = grid_top_ - grid_note_;
         int x = kX0 + grid_col_ * cw, y = kTop + r * kRowH;
         if(vel[r][grid_col_] > 0)
             disp_->DrawRect(x + 1, y + 1, x + cw - 3, y + 3, false, true);
@@ -7735,6 +7783,11 @@ void Ui::DrawGlobalScreen()
         DrawSendsPage();
         return;
     }
+    if(global_page_ == GlobalPage::Duck)
+    {
+        DrawGlobalEntryPage("Global:Duck", duck_.on, kGlobalIconDuck);
+        return;
+    }
     if(global_page_ == GlobalPage::Arp)
     {
         DrawArpGlobalPage();
@@ -8856,6 +8909,347 @@ void Ui::DrawSendsPage()
     DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
                    sends_target_delay_ ? "Reverb" : "Reverb*", "", "",
                    sends_target_delay_ ? "Delay*" : "Delay");
+}
+
+void Ui::DuckApplyKnobs(float k1, float k2)
+{
+    if(duck_page_ == DuckPage::Source)
+    {
+        constexpr size_t ci = (size_t)KnobContext::DuckSource;
+        if(PickUpK1(k1))
+        {
+            const int src = DuckSourceAt((int)(Clampf(k1, 0.f, 0.999f) * (float)Duck::kSources));
+            if(src != duck_.source)
+            {
+                // A new source starts with every note (and its own
+                // cursor); K2 picks up what it now edits.
+                const bool was_audio = Duck::IsAudioSource(duck_.source);
+                duck_.source         = src;
+                if(!Duck::IsAudioSource(src))
+                    for(uint8_t& b : duck_.notes)
+                        b = 0;
+                duck_cursor_ = 0;
+                if(was_audio != Duck::IsAudioSource(src) || !Duck::IsAudioSource(src))
+                {
+                    k2_pickup_engaged_[ci] = false;
+                    SyncPickupTargets(KnobContext::DuckSource);
+                }
+            }
+        }
+        if(PickUpK2(k2))
+        {
+            if(Duck::IsAudioSource(duck_.source))
+                duck_.thresh_db = Duck::kThreshMinDb * (1.f - Clampf(k2, 0.f, 1.f));
+            else
+                duck_cursor_ = (int)(Clampf(k2, 0.f, 0.999f) * (float)DuckCursorCount());
+        }
+    }
+    if(duck_page_ == DuckPage::Shape)
+    {
+        if(PickUpK1(k1))
+            duck_.hold_ms = Clampf(k1, 0.f, 1.f) * Duck::kHoldMaxMs;
+        if(PickUpK2(k2))
+        {
+            if(duck_.sync)
+                duck_.sync_index = (int)(Clampf(k2, 0.f, 0.999f) * (float)Duck::kSyncValues);
+            else
+                duck_.release_ms
+                    = Duck::kReleaseMinMs
+                      * powf(Duck::kReleaseMaxMs / Duck::kReleaseMinMs, Clampf(k2, 0.f, 1.f));
+        }
+    }
+    if(duck_page_ == DuckPage::Amount)
+    {
+        if(PickUpK1(k1))
+        {
+            const int c = (int)(Clampf(k1, 0.f, 0.999f) * (float)Duck::kChannels);
+            if(c != duck_amt_ch_)
+            {
+                duck_amt_ch_ = c; // K2 picks up the new channel's amount
+                k2_pickup_engaged_[(size_t)KnobContext::DuckAmount] = false;
+                SyncPickupTargets(KnobContext::DuckAmount);
+            }
+        }
+        if(PickUpK2(k2))
+            duck_.amount[duck_amt_ch_] = Clampf(k2, 0.f, 1.f);
+    }
+}
+
+int Ui::DuckSourceAt(int pos)
+{
+    if(pos < 8)
+        return Duck::kSrcTracks + (pos < 0 ? 0 : pos);
+    if(pos < 16)
+        return Duck::kSrcEngines + kEngineShowOrder[pos - 8];
+    return pos < Duck::kSources ? pos : Duck::kSources - 1; // A1-A4 and IN, as stored
+}
+
+int Ui::DuckSourcePos(int source)
+{
+    if(source >= Duck::kSrcEngines && source < Duck::kSrcLayers)
+        return 8 + EngineColumn(source - Duck::kSrcEngines);
+    return source;
+}
+
+void Ui::DuckSourceName(int source, char* out, size_t out_size)
+{
+    if(source < Duck::kSrcEngines)
+        snprintf(out, out_size, "M%d", source - Duck::kSrcTracks + 1);
+    else if(source < Duck::kSrcLayers)
+        snprintf(out, out_size, "%s", MidiSequencer::EngineName(source - Duck::kSrcEngines));
+    else if(source < Duck::kSrcInput)
+        snprintf(out, out_size, "A%d", source - Duck::kSrcLayers + 1);
+    else
+        snprintf(out, out_size, "IN");
+}
+
+int Ui::DuckSourceEngine() const
+{
+    if(duck_.source < Duck::kSrcEngines)
+        return seq_ ? seq_->GetEngine(duck_.source - Duck::kSrcTracks) : -1;
+    if(duck_.source < Duck::kSrcLayers)
+        return duck_.source - Duck::kSrcEngines;
+    return -1;
+}
+
+int Ui::DuckPads(int* notes, int max) const
+{
+    const SampleSynth* drum = sample_synth_engines_[1];
+    int                n    = 0;
+    for(int s = 0; drum && s < SampleSynth::kMaxSampleSlots && n < max; s++)
+        if(drum->SlotHasSample(s))
+            notes[n++] = drum->SlotLowNote(s);
+    return n;
+}
+
+int Ui::DuckCursorCount() const
+{
+    if(DuckSourceEngine() == MidiSequencer::kSmpdr)
+    {
+        int pads[SampleSynth::kMaxSampleSlots];
+        const int n = DuckPads(pads, SampleSynth::kMaxSampleSlots);
+        return n > 0 ? n : 1;
+    }
+    return 128;
+}
+
+int Ui::DuckCursorNote() const
+{
+    if(DuckSourceEngine() == MidiSequencer::kSmpdr)
+    {
+        int       pads[SampleSynth::kMaxSampleSlots];
+        const int n = DuckPads(pads, SampleSynth::kMaxSampleSlots);
+        return n > 0 ? pads[duck_cursor_ < n ? duck_cursor_ : n - 1] : -1;
+    }
+    return duck_cursor_;
+}
+
+void Ui::DrawDuckSourcePage()
+{
+    disp_->SetCursor(0, 0);
+    WriteUpper("Duck:Source");
+    DrawBeatIndicator(disp_->Width() - 41, 0, 3);
+    disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
+
+    char src[8];
+    DuckSourceName(duck_.source, src, sizeof(src));
+    const int engine = DuckSourceEngine();
+    char      line[32];
+    if(Duck::IsAudioSource(duck_.source))
+    {
+        // The detector's level against the threshold, both in dB from
+        // kThreshMinDb (empty) to 0 (full).
+        snprintf(line, sizeof(line), "%s: ducks on its %s", src, duck_.filter ? "kick" : "peaks");
+        TomThumbDrawText(disp_, 1, 16, line, true);
+        TomThumbDrawText(disp_, 1, 26, "Level", true);
+        constexpr int x0 = 24, x1 = 126, y = 21;
+        disp_->DrawRect(x0, y, x1, y + 5, true, false);
+        auto db_x = [&](float db) {
+            const float f = Clampf(1.f - db / Duck::kThreshMinDb, 0.f, 1.f);
+            return x0 + 1 + (int)(f * (float)(x1 - x0 - 2));
+        };
+        const float level = duck_detector_ ? duck_detector_->Level() : 0.f;
+        if(level > 0.f)
+        {
+            const int fx = db_x(20.f * log10f(level));
+            if(fx > x0 + 1)
+                disp_->DrawRect(x0 + 1, y + 1, fx, y + 4, true, true);
+        }
+        const int tx = db_x(duck_.thresh_db);
+        disp_->DrawLine(tx, y - 2, tx, y + 7, true);
+        snprintf(line, sizeof(line), "Filter: %dHz low end", (int)Duck::kFilterHz);
+        if(duck_.filter)
+            TomThumbDrawText(disp_, 1, 40, line, true);
+        else
+            TomThumbDrawText(disp_, 1, 40, "Filter off: the whole signal", true);
+        char db[8];
+        snprintf(db, sizeof(db), "%ddB", (int)lrintf(duck_.thresh_db));
+        DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Source", src, db, "Thresh");
+        DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, duck_.on ? "Duck:On" : "Duck:Off",
+                       "", "", duck_.filter ? "Filter:On" : "Filter:Off");
+        return;
+    }
+
+    // A note source: which notes trigger it.
+    if(duck_.source < Duck::kSrcEngines)
+        snprintf(line, sizeof(line), "%s > %s", src, MidiSequencer::EngineName(engine));
+    else
+        snprintf(line, sizeof(line), "%s", src);
+    TomThumbDrawText(disp_, 1, 16, line, true);
+    const int cursor_note = DuckCursorNote();
+    char      cur[8]      = "-";
+    if(cursor_note >= 0)
+        SeqNoteName(cursor_note, cur, sizeof(cur));
+    if(engine == MidiSequencer::kSmpdr)
+    {
+        // SMPDR: its pads, 4 or 6 to a row from the bottom left (the
+        // lowest note), filled when that pad ducks, the cursor outlined.
+        int       pads[SampleSynth::kMaxSampleSlots];
+        const int n    = DuckPads(pads, SampleSynth::kMaxSampleSlots);
+        const int cols = n > 16 ? 6 : 4, rows = (n + cols - 1) / cols > 0 ? (n + cols - 1) / cols : 1;
+        const int cw = cols == 6 ? 9 : 12, ch = 8;
+        const int gx = disp_->Width() - 1 - cols * cw, gy = 11 + (4 - rows) * ch;
+        for(int p = 0; p < n; p++)
+        {
+            const int x = gx + (p % cols) * cw, y = gy + (rows - 1 - p / cols) * ch;
+            disp_->DrawRect(x + 1, y + 1, x + cw - 2, y + ch - 2, true, Duck::NoteChosen(duck_, pads[p]));
+            if(p == duck_cursor_)
+                disp_->DrawRect(x, y, x + cw - 1, y + ch - 1, true, false);
+        }
+        if(n == 0)
+            TomThumbDrawText(disp_, gx, 30, "No kit", true);
+    }
+    // Which notes duck: all of them, or the chosen ones (as many as fit).
+    if(!Duck::AnyNoteChosen(duck_))
+        TomThumbDrawText(disp_, 1, 33, "Every note ducks", true);
+    else
+    {
+        TomThumbDrawText(disp_, 1, 33, "Ducks on:", true);
+        char list[32] = "";
+        int  shown = 0, more = 0;
+        for(int nt = 0; nt < 128; nt++)
+        {
+            if(!Duck::NoteChosen(duck_, nt))
+                continue;
+            if(shown < 3)
+            {
+                char nm[8];
+                SeqNoteName(nt, nm, sizeof(nm));
+                if(shown)
+                    strncat(list, " ", sizeof(list) - strlen(list) - 1);
+                strncat(list, nm, sizeof(list) - strlen(list) - 1);
+                shown++;
+            }
+            else
+                more++;
+        }
+        if(more)
+        {
+            char tail[8];
+            snprintf(tail, sizeof(tail), " +%d", more);
+            strncat(list, tail, sizeof(list) - strlen(list) - 1);
+        }
+        TomThumbDrawText(disp_, 1, 40, list, true);
+    }
+    const bool on = cursor_note >= 0 && Duck::NoteChosen(duck_, cursor_note);
+    const char* pick = engine == MidiSequencer::kSmpdr ? (on ? "Pad:On" : "Pad:Off")
+                                                         : (on ? "Note:On" : "Note:Off");
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Source", src, cur,
+                   engine == MidiSequencer::kSmpdr ? "Pad" : "Note");
+    DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, duck_.on ? "Duck:On" : "Duck:Off",
+                   "", "", pick);
+}
+
+void Ui::DrawDuckShapePage()
+{
+    disp_->SetCursor(0, 0);
+    WriteUpper("Duck:Shape");
+    DrawBeatIndicator(disp_->Width() - 41, 0, 3);
+    disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
+
+    // The dip at full amount over one bar (16 steps), struck on the
+    // beats: down along the top's divider, back up as Release lets go.
+    // Drawn from the same Duck::Envelope the audio runs, at a low rate.
+    constexpr int x0 = 2, x1 = 125, top = 13, bot = 40;
+    const float   bpm      = tempo_ ? tempo_->GetBpm() : 120.f;
+    const float   bar_ms   = 4.f * 60000.f / (bpm > 1.f ? bpm : 1.f);
+    const int     w        = x1 - x0;
+    const float   px_ms    = bar_ms / (float)w;
+    const float   sr       = 1000.f / px_ms * 8.f; // 8 envelope steps per pixel
+    Duck::Envelope env;
+    float          d[8];
+    int            prev = -1;
+    for(int x = 0; x <= w; x++)
+    {
+        const int   beat_px = w / 4;
+        const bool  strike  = beat_px > 0 && x % beat_px == 0 && x / beat_px < 4;
+        env.Render(d, 8, sr, duck_.hold_ms, Duck::ReleaseMs(duck_, bpm), strike ? 0 : -1);
+        const int y = top + (int)(d[7] * (float)(bot - top) + 0.5f);
+        if(prev < 0)
+            disp_->DrawPixel(x0 + x, y, true);
+        else
+            disp_->DrawLine(x0 + x, prev < y ? prev : y, x0 + x, prev < y ? y : prev, true);
+        prev = y;
+        if(strike)
+            disp_->DrawRect(x0 + x, bot + 3, x0 + x + 1, bot + 5, true, true);
+    }
+
+    char hold[8], rel[8];
+    snprintf(hold, sizeof(hold), "%dms", (int)lrintf(duck_.hold_ms));
+    if(duck_.sync)
+        snprintf(rel, sizeof(rel), "%s",
+                 Duck::kSyncNames[duck_.sync_index < 0 ? 0
+                                  : duck_.sync_index >= Duck::kSyncValues ? Duck::kSyncValues - 1
+                                                                          : duck_.sync_index]);
+    else
+        snprintf(rel, sizeof(rel), "%dms", (int)lrintf(duck_.release_ms));
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Hold", hold, rel, "Release");
+    DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, duck_.on ? "Duck:On" : "Duck:Off", "",
+                   "", duck_.sync ? "Sync:On" : "Sync:Off");
+}
+
+void Ui::DrawDuckAmountPage()
+{
+    disp_->SetCursor(0, 0);
+    WriteUpper("Duck:Amount");
+    DrawBeatIndicator(disp_->Width() - 41, 0, 3);
+    disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
+
+    // Global:Sends' cells, one bar each for the amount; the source's own
+    // channel reads SRC.
+    static const char* const kNames[Duck::kChannels]
+        = {"A1", "A2", "A3", "A4", "GR", "DXD", "ENS", "ORG", "SSW", "SMV", "SMD", "BYP"};
+    int src_ch = -1;
+    if(Duck::IsAudioSource(duck_.source))
+        src_ch = duck_.source == Duck::kSrcInput ? Duck::kByp : Duck::kA1 + duck_.source - Duck::kSrcLayers;
+    else
+        src_ch = Duck::EngineChannel(DuckSourceEngine());
+    for(int ch = 0; ch < Duck::kChannels; ch++)
+    {
+        const int cx = (ch % 6) * 21 + 1, cy = 12 + (ch / 6) * 17;
+        if(ch == duck_amt_ch_)
+            disp_->DrawRect(cx, cy, cx + 19, cy + 15, true, false);
+        TomThumbDrawText(disp_, cx + (20 - TomThumbAdvanceWidth(kNames[ch])) / 2, cy + 7, kNames[ch], true);
+        if(ch == src_ch)
+        {
+            TomThumbDrawText(disp_, cx + (20 - TomThumbAdvanceWidth("SRC")) / 2, cy + 14, "SRC", true);
+            continue;
+        }
+        const int y = cy + 10;
+        for(int x = cx + 2; x < cx + 18; x += 2)
+            disp_->DrawPixel(x, y + 2, true);
+        const int fill = (int)(duck_.amount[ch] * 15.f + 0.5f);
+        if(fill > 0)
+            disp_->DrawRect(cx + 2, y, cx + 2 + fill, y + 2, true, true);
+    }
+    char val[8];
+    if(duck_amt_ch_ == src_ch)
+        snprintf(val, sizeof(val), "SRC");
+    else
+        snprintf(val, sizeof(val), "%d%%", (int)(duck_.amount[duck_amt_ch_] * 100.f + 0.5f));
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Channel", kNames[duck_amt_ch_], val, "Duck");
+    DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, duck_.on ? "Duck:On" : "Duck:Off", "",
+                   "", "");
 }
 
 void Ui::FormatDelayTime(float time01, char* out, size_t out_size) const
@@ -14159,6 +14553,7 @@ void Ui::TriggerSave(bool force_new)
     extras.seq          = seq_;
     extras.scenes       = scenes_;
     extras.arp          = arp_;
+    extras.duck         = &duck_;
     extras.song         = &song_;
     extras.synths       = &synths;
     extras.granular_l   = granular_ ? granular_->GetSourceL() : nullptr;
@@ -14211,6 +14606,7 @@ void Ui::TriggerNew()
     scene_playing_ = scene_next_ = scene_edit_ = -1;
     song_        = Song{};
     song_cursor_ = 0;
+    duck_        = Duck::Settings{};
     loaded_slot_ = -1; // next Save lands in a new slot, not over the old one
     snprintf(file_status_, sizeof(file_status_), "New perf");
 }
@@ -14241,6 +14637,7 @@ void Ui::TriggerLoad(int slot)
     extras.seq               = seq_;
     extras.scenes            = scenes_;
     extras.arp               = arp_;
+    extras.duck              = &duck_;
     extras.song              = &song_;
     extras.synths            = &synths;
     extras.granular_l        = granular_capture_buf_l_;

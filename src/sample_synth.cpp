@@ -6,6 +6,11 @@
 #include <cmath>
 #include <cstring>
 
+// Process()'s per-block scratch (both SampleSynth engines take turns).
+static float g_smp_pitch[SampleSynth::kMaxProcessBlock];
+static float g_smp_mix_l[SampleSynth::kMaxProcessBlock];
+static float g_smp_mix_r[SampleSynth::kMaxProcessBlock];
+
 void SampleSynth::Init(float sample_rate)
 {
     sample_rate_ = sample_rate;
@@ -46,6 +51,7 @@ void SampleSynth::LoadSlot(int index, const float* buf_l, const float* buf_r, in
     s.high_note   = high_note;
     s.volume01    = volume01;
     s.pitch_offset_semis = pitch_offset_semis;
+    s.mono = buf_l && buf_r && (buf_l == buf_r || memcmp(buf_l, buf_r, (size_t)len * sizeof(float)) == 0);
 }
 
 void SampleSynth::LoadSlot16(int index, const int16_t* pcm_l, const int16_t* pcm_r, int32_t len,
@@ -58,6 +64,8 @@ void SampleSynth::LoadSlot16(int index, const int16_t* pcm_l, const int16_t* pcm
              pitch_offset_semis);
     slots_[index].pcm_l = pcm_l;
     slots_[index].pcm_r = pcm_r;
+    slots_[index].mono  = pcm_l && pcm_r
+                         && (pcm_l == pcm_r || memcmp(pcm_l, pcm_r, (size_t)len * sizeof(int16_t)) == 0);
 }
 
 void SampleSynth::SetSlotPitchOffsetSemis(int index, int8_t semis)
@@ -281,7 +289,7 @@ void SampleSynth::SetModWheel01(float v01)
 // QSPIFLASH for the actual per-voice sample read/interpolation/pitch
 // advance, once per active voice, every single sample.
 DSY_ITCM_TEXT
-void SampleSynth::RenderVoice(Voice& v, float& out_l, float& out_r)
+void SampleSynth::RenderVoice(Voice& v, float& out_l, float& out_r, float pitch_mult)
 {
     if(v.slot < 0)
     {
@@ -328,13 +336,27 @@ void SampleSynth::RenderVoice(Voice& v, float& out_l, float& out_r)
                   + (3.f * p1 - p0 - 3.f * p2 + p3) * t3);
     };
     const float level = s.volume01 * v.vel_gain;
-    out_l = catmull_rom(s.L(idx0), s.L(idx1), s.L(idx2), s.L(idx3), frac) * level;
-    out_r = catmull_rom(s.R(idx0), s.R(idx1), s.R(idx2), s.R(idx3), frac) * level;
+    // A read on a whole sample (a pad at its own pitch, no bend) is the
+    // sample itself -- the curve at t = 0 is exactly p1 -- so skip it. And
+    // a mono slot's right channel is its left. Both give the same output
+    // as the full sum, just without the work.
+    if(frac == 0.f)
+    {
+        const float l = s.L(idx1);
+        out_l         = l * level;
+        out_r         = (s.mono ? l : s.R(idx1)) * level;
+    }
+    else
+    {
+        const float l = catmull_rom(s.L(idx0), s.L(idx1), s.L(idx2), s.L(idx3), frac);
+        out_l         = l * level;
+        out_r = (s.mono ? l : catmull_rom(s.R(idx0), s.R(idx1), s.R(idx2), s.R(idx3), frac)) * level;
+    }
 
     // Global pitch bend/vibrato multiplier, recomputed once per sample
     // in Process() -- see SetPitchBend14bit()/SetModWheel01()'s own
     // comments.
-    v.read_pos += v.read_inc * current_pitch_mult_;
+    v.read_pos += v.read_inc * pitch_mult;
     if(v.read_pos >= (float)s.len)
         v.read_pos = (float)s.len - 1.f;
     else if(v.read_pos < 0.f)
@@ -470,23 +492,26 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
     const float send       = reverb_send01_;
     const float delay_send = delay_send01_;
 
+    if(size > kMaxProcessBlock)
+        size = kMaxProcessBlock;
+
+    // Pitch bend (continuous, from the wheel's own last position)
+    // combined with a simple sine vibrato whose depth scales with the mod
+    // wheel -- see SetPitchBend14bit()/SetModWheel01()'s own comments.
+    // One value per sample (not once per block) since both can change
+    // continuously while notes are held, worked out for the whole block
+    // before the voices below read it.
+    //
+    // mod_wheel01_==0 (the common case -- most playing never touches the
+    // mod wheel) is skipped entirely: sinf()/powf() are real
+    // transcendental calls, not table lookups the way msfa's own sin/exp2
+    // are, so paying for them every single sample regardless of whether
+    // vibrato is actually doing anything was a real, measured-as-worth-
+    // fixing cost, not a style nitpick. vibrato_phase_ still advances
+    // either way (cheap, one add + compare) so re-engaging the mod wheel
+    // mid-note doesn't jump from a stale phase.
     for(size_t i = 0; i < size; i++)
     {
-        // Pitch bend (continuous, from the wheel's own last position)
-        // combined with a simple sine vibrato whose depth scales with
-        // the mod wheel -- see SetPitchBend14bit()/SetModWheel01()'s
-        // own comments. Recomputed every sample (not once per block)
-        // since both can change continuously while notes are held.
-        //
-        // mod_wheel01_==0 (the common case -- most playing never
-        // touches the mod wheel) is skipped entirely: sinf()/powf() are
-        // real transcendental calls, not table lookups the way msfa's
-        // own sin/exp2 are, so paying for them every single sample
-        // regardless of whether vibrato is actually doing anything was
-        // a real, measured-as-worth-fixing cost, not a style nitpick.
-        // vibrato_phase_ still advances either way (cheap, one add +
-        // compare) so re-engaging the mod wheel mid-note doesn't jump
-        // from a stale phase.
         vibrato_phase_ += kVibratoHz * inv_sr;
         if(vibrato_phase_ >= 1.f)
             vibrato_phase_ -= 1.f;
@@ -500,70 +525,86 @@ void SampleSynth::Process(size_t size, float* out_l, float* out_r, float* reverb
         {
             current_pitch_mult_ = pitch_bend_rate_;
         }
+        g_smp_pitch[i] = current_pitch_mult_;
+        g_smp_mix_l[i] = 0.f;
+        g_smp_mix_r[i] = 0.f;
+    }
 
-        float mix_l = 0.f, mix_r = 0.f;
-        for(int vi = 0; vi < kMaxVoices; vi++)
+    // The voices, one at a time through the whole block: each voice's
+    // slot and settings are looked up once, and its sample is read
+    // straight through. Each adds into the block's mix in voice order, so
+    // every sample gets the same sums in the same order as voice-by-voice
+    // within one sample did -- the same output.
+    for(int vi = 0; vi < kMaxVoices; vi++)
+    {
+        Voice& v = voices_[vi];
+        if(v.slot < 0)
+            continue;
+        const SampleSlot& vs = slots_[v.slot];
+        // Non-chromatic (drum/one-shot) slots ignore note-off's hold
+        // duration entirely, same "drum pad plays its sample at native
+        // pitch regardless of which key triggered it" design NoteOn()
+        // already applies to pitch -- extended here to duration. Without
+        // this, a brief MIDI tap (completely normal for programming a drum
+        // hit) still releases this voice via the default ~18ms release
+        // time almost the instant it starts, truncating anything longer
+        // than a very short one-shot to a near-silent snippet -- confirmed
+        // as the real cause of imported drum-break slices sounding "cut
+        // short"/full of gaps, not a slicing bug. gate forces true here so
+        // NoteOff() (which skips ForceRelease() for these slots, see its
+        // own comment) can't end them early; they instead free themselves
+        // below once read_pos reaches the sample's own natural end. (Notes
+        // only change between blocks -- NoteOn()/NoteOff() run from the
+        // control interrupt, which can't break into this one.)
+        const bool one_shot = !vs.chromatic;
+        const bool gate     = one_shot ? true : v.held_note >= 0;
+        // One-shots now play all the way to the buffer's own last sample
+        // instead of being cut off by note-off's release (see above) --
+        // but a real op-1 drum-break slice is cut wherever the NEXT hit
+        // begins, not at a zero-crossing, so its last sample is often far
+        // from silent. Stopping dead there (confirmed on real hardware as
+        // an audible click at the end of every closely-packed hit, e.g. a
+        // 22-slice break) needs the same short forced fade a sampler would
+        // apply at a one-shot's tail regardless of source content. Shared
+        // with NoteOn()'s own mono_choke_ handling -- see
+        // OneShotFadeWindow()'s own doc comment for why this can't just be
+        // the fixed kOneShotTailFadeSamples duration.
+        const float window = OneShotFadeWindow(vs.len);
+        const float end    = (float)vs.len - 1.f;
+        for(size_t i = 0; i < size; i++)
         {
-            Voice& v = voices_[vi];
-            if(v.slot < 0)
-                continue;
-            const SampleSlot& vs = slots_[v.slot];
-            // Non-chromatic (drum/one-shot) slots ignore note-off's hold
-            // duration entirely, same "drum pad plays its sample at
-            // native pitch regardless of which key triggered it" design
-            // NoteOn() already applies to pitch -- extended here to
-            // duration. Without this, a brief MIDI tap (completely
-            // normal for programming a drum hit) still releases this
-            // voice via the default ~18ms release time almost the
-            // instant it starts, truncating anything longer than a
-            // very short one-shot to a near-silent snippet -- confirmed
-            // as the real cause of imported drum-break slices sounding
-            // "cut short"/full of gaps, not a slicing bug. gate forces
-            // true here so NoteOff() (which skips ForceRelease() for
-            // these slots, see its own comment) can't end them early;
-            // they instead free themselves below once read_pos reaches
-            // the sample's own natural end.
-            bool  one_shot = !vs.chromatic;
-            bool  gate     = one_shot ? true : v.held_note >= 0;
-            float env      = v.adsr.Process(gate);
+            float env = v.adsr.Process(gate);
             if(!one_shot && !gate && !v.adsr.IsRunning())
             {
                 v.slot = -1; // fully idle -- stop paying for this voice at all
-                continue;
+                break;
             }
-            // One-shots now play all the way to the buffer's own last
-            // sample instead of being cut off by note-off's release
-            // (see above) -- but a real op-1 drum-break slice is cut
-            // wherever the NEXT hit begins, not at a zero-crossing, so
-            // its last sample is often far from silent. Stopping dead
-            // there (confirmed on real hardware as an audible click at
-            // the end of every closely-packed hit, e.g. a 22-slice
-            // break) needs the same short forced fade a sampler would
-            // apply at a one-shot's tail regardless of source content.
-            // Shared with NoteOn()'s own mono_choke_ handling -- see
-            // OneShotFadeWindow()'s own doc comment for why this can't
-            // just be the fixed kOneShotTailFadeSamples duration.
             float tail_fade = 1.f;
             if(one_shot)
             {
-                float window    = OneShotFadeWindow(vs.len);
                 float remaining = (float)vs.len - v.read_pos;
                 if(remaining < window)
                     tail_fade = remaining > 0.f ? remaining / window : 0.f;
             }
             float vl, vr;
-            RenderVoice(v, vl, vr);
-            mix_l += vl * env * tail_fade;
-            mix_r += vr * env * tail_fade;
-            if(one_shot && v.read_pos >= (float)vs.len - 1.f)
+            RenderVoice(v, vl, vr, g_smp_pitch[i]);
+            g_smp_mix_l[i] += vl * env * tail_fade;
+            g_smp_mix_r[i] += vr * env * tail_fade;
+            if(one_shot && v.read_pos >= end)
             {
                 // Sample has fully played out (this was its last real
                 // sample) -- free the voice now, independent of
                 // whatever the key is still doing.
-                v.slot       = -1;
+                v.slot      = -1;
                 v.held_note = -1;
+                break;
             }
         }
+    }
+
+    for(size_t i = 0; i < size; i++)
+    {
+        float mix_l = g_smp_mix_l[i], mix_r = g_smp_mix_r[i];
 
         // Capture/Trim's "Play" preview -- see PlayPreview()'s own
         // comment. Deliberately NOT a Voice/ADSR: a plain, ungated,
