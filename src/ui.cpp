@@ -3216,7 +3216,9 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             if(seq_ && HomeSeqTrack() >= 0)
             {
                 // Bucket midpoints, so picking up lands on the same setting.
-                k1_pickup_raw_[i] = ((float)seq_->GetEngine(HomeSeqTrack()) + 0.5f)
+                // K1 runs through the engines in kEngineShowOrder (the
+                // sequencer's numbering is the same as the engine index).
+                k1_pickup_raw_[i] = ((float)EngineColumn(seq_->GetEngine(HomeSeqTrack())) + 0.5f)
                                     / (float)MidiSequencer::kNumEngines;
                 k2_pickup_raw_[i] = ((float)seq_->GetLengthIndex(HomeSeqTrack()) + 0.5f)
                                     / (float)MidiSequencer::kNumLengths;
@@ -3997,8 +3999,8 @@ void Ui::ApplyKnobs()
             {
                 const int t = HomeSeqTrack();
                 if(PickUpK1(k1))
-                    seq_->SetEngine(t, (int)(Clampf(k1, 0.f, 0.999f)
-                                             * (float)MidiSequencer::kNumEngines));
+                    seq_->SetEngine(t, kEngineShowOrder[(int)(Clampf(k1, 0.f, 0.999f)
+                                                              * (float)MidiSequencer::kNumEngines)]);
                 if(PickUpK2(k2))
                 {
                     // Lengths that would run past 16 bars at this loop
