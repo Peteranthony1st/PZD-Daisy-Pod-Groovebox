@@ -10,6 +10,7 @@
 #include "performance_store.h"
 #include "font_tomthumb.h"
 #include "duck.h"
+#include "live_fx.h"
 
 class GranularEngine;
 class DexedSynth;
@@ -269,6 +270,9 @@ class Ui
     // interrupt (see duck.h); the detector is only read, for its meter.
     const Duck::Settings& GetDuck() const { return duck_; }
     void SetDuckDetector(const Duck::Detector* d) { duck_detector_ = d; }
+    // Home's Live FX (see live_fx.h): the UI sets its effect, settings and
+    // whether it's held or latched; the audio callback runs it.
+    void SetLiveFx(LiveFx* fx) { live_fx_ = fx; }
     // A note to sound for a moment (the MIDI grid's cursor), played by the
     // control interrupt: it bumps PreviewSeq() when there's a new one.
     uint32_t PreviewSeq() const { return preview_seq_; }
@@ -437,7 +441,10 @@ class Ui
         // Global:Supersaw. See SupersawParamPage for its own pages.
         Supersaw,
         // Sidechain ducking, entered from Global:Duck. See DuckPage.
-        Duck
+        Duck,
+        // Home's Live FX, entered from its page on Home (after Song): the
+        // 16 effects, the encoder picking one.
+        LiveFx
     };
     // Shared save/load interaction state for Global:File, Pad Preset, and
     // Grains Preset -- only one of those three pages is ever visible at
@@ -1036,6 +1043,8 @@ class Ui
         DuckSource, // Duck:Source -- K1 source, K2 pad/note cursor or threshold
         DuckShape,  // Duck:Shape -- K1 Hold, K2 Release
         DuckAmount, // Duck:Amount -- K1 channel, K2 its amount
+        HomeLiveFx, // Home's Live FX page -- K1 Master Vol
+        LiveFx,     // inside Live FX -- K1 Master Vol, K2 the effect's setting
         GlobalSdMgmt, // browses a list directly, no pickup used -- see GlobalPage::SdMgmt
         GlobalDexed, // entry point only -- see Screen::Dexed instead
         GlobalEnsemble, // entry point only -- see Screen::Ensemble instead
@@ -1862,8 +1871,9 @@ class Ui
     // (cursor_layer_ follows it), 4..11 the sequencer tracks M1..M8, four
     // to a page, then the Scenes page.
     static constexpr int kHomeSceneSlot = 4 + MidiSequencer::kTracks;
-    static constexpr int kHomeSongSlot  = kHomeSceneSlot + 1;
-    static constexpr int kHomeSlots     = kHomeSongSlot + 1;
+    static constexpr int kHomeSongSlot   = kHomeSceneSlot + 1;
+    static constexpr int kHomeLiveFxSlot = kHomeSongSlot + 1;
+    static constexpr int kHomeSlots      = kHomeLiveFxSlot + 1;
     int  home_slot_ = 0;
     // --- Scenes (Home's last page, see scenes.h) ---------------------------
     // K1 picks one, B1 tap launches it (on the loop's next start; again
@@ -1916,6 +1926,16 @@ class Ui
     void     StopSongRecord();
     void     UpdateSong(); // each Update()
     void     DrawHomeSongPage();
+    // --- Live FX (Home's page after Song, and Screen::LiveFx) -------------
+    // The page on Home is its entry: the effect ready (or latched), PUSH
+    // ENC TO OPEN. Inside, the encoder picks one of the 16, K1 is Master
+    // Vol, K2 the effect's setting, B2 held plays it and B1 latches it.
+    LiveFx* live_fx_         = nullptr;
+    bool    live_fx_latched_ = false;
+    bool    HomeLiveFx() const { return home_slot_ == kHomeLiveFxSlot; }
+    void    DrawHomeLiveFxPage();
+    void    DrawLiveFxScreen();
+    void    DrawLiveFxPicture(int effect, int x0, int y0, int x1, int y1);
     // --- Global:Export's Live mode (see live_export.h) ---------------------
     LiveExport* live_         = nullptr;
     // K1: Fast (the layers, offline) / Live (the master, as it plays) /

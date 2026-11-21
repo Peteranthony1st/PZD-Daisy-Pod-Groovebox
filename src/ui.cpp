@@ -374,6 +374,11 @@ void Ui::Update(const UiControlEvents& events)
 
     UpdateLeds();
 
+    // Live FX plays while latched, or while B2 is held inside it.
+    if(live_fx_)
+        live_fx_->SetEngaged(live_fx_latched_
+                             || (screen_ == Screen::LiveFx && pod_->button2.Pressed()));
+
     // The OLED redraw is a blocking I2C transfer of ~1KB -- a few
     // milliseconds. Throttled to ~30Hz here; Update() is expected to be
     // called at roughly 500Hz-1kHz from main()'s loop (see main.cpp), so
@@ -524,6 +529,19 @@ void Ui::HandleEncoder(const UiControlEvents& events)
         }
         else if(screen_ == Screen::Home && HomeScenes() && scene_edit_ >= 0)
             ; // editing a scene: K1 moves around it, the page stays
+        else if(screen_ == Screen::LiveFx && live_fx_)
+        {
+            // One effect per detent, stopping at the first and last; K2
+            // picks up the new one's setting.
+            int e = live_fx_->Get().effect + inc;
+            e     = e < 0 ? 0 : (e >= LiveFx::kEffects ? LiveFx::kEffects - 1 : e);
+            if(e != live_fx_->Get().effect)
+            {
+                live_fx_->Edit().effect = e;
+                k2_pickup_engaged_[(size_t)KnobContext::LiveFx] = false;
+                SyncPickupTargets(KnobContext::LiveFx);
+            }
+        }
         else if(screen_ == Screen::Home)
         {
             // Past layer 4 into the sequencer tracks, four to a page.
@@ -766,6 +784,8 @@ void Ui::HandleEncoder(const UiControlEvents& events)
             }
             else if(HomeSong())
                 song_edit_ = !song_edit_;
+            else if(HomeLiveFx())
+                screen_ = Screen::LiveFx;
             else if(HomeSeqTrack() >= 0)
             {
                 screen_   = Screen::SeqTrack;
@@ -862,6 +882,8 @@ void Ui::HandleEncoder(const UiControlEvents& events)
         else if(!encoder_long_fired_ && screen_ == Screen::Global
                 && global_page_ == GlobalPage::Duck)
             screen_ = Screen::Duck; // Global:Duck's entry point
+        else if(!encoder_long_fired_ && screen_ == Screen::LiveFx)
+            screen_ = Screen::Home; // back to Home's Live FX page
         else if(!encoder_long_fired_ && screen_ == Screen::Global
                 && global_page_ == GlobalPage::Supersaw)
         {
@@ -984,6 +1006,15 @@ void Ui::HandleArpVariationButton(Switch& b, bool released, int dir, bool& repea
 void Ui::HandleButton1(const UiControlEvents& events)
 {
     Switch& b = pod_->button1;
+    // Live FX: B1 latches the effect inside; on Home's Live FX page it does
+    // nothing (none of Home's transport).
+    if(screen_ == Screen::LiveFx || (screen_ == Screen::Home && HomeLiveFx()))
+    {
+        if(events.btn1_released && screen_ == Screen::LiveFx)
+            live_fx_latched_ = !live_fx_latched_;
+        button1_long_fired_ = false;
+        return;
+    }
     if(screen_ == Screen::Arp && arp_page_ == 2 && arp_)
     {
         HandleArpVariationButton(b, events.btn1_released, -1, button1_long_fired_);
@@ -1017,6 +1048,13 @@ void Ui::HandleButton1(const UiControlEvents& events)
 void Ui::HandleButton2(const UiControlEvents& events)
 {
     Switch& b = pod_->button2;
+    // Live FX: B2 is held to play (read in Update()), so its release does
+    // nothing here -- nor Home's Bypass on the Live FX page.
+    if(screen_ == Screen::LiveFx || (screen_ == Screen::Home && HomeLiveFx()))
+    {
+        button2_long_fired_ = false;
+        return;
+    }
     if(screen_ == Screen::Arp && arp_page_ == 2 && arp_)
     {
         HandleArpVariationButton(b, events.btn2_released, +1, button2_long_fired_);
@@ -2447,6 +2485,7 @@ void Ui::OnButton1Short()
             break;
         case Screen::Supersaw: SupersawButton1(); break;
         case Screen::Duck: duck_.on = !duck_.on; break;
+        case Screen::LiveFx: break; // B1 latches (HandleButton1())
         case Screen::Ensemble:
             if(ensemble_param_page_ == EnsembleParamPage::Perc && ensemble_)
                 ensemble_->SetPercOn(!ensemble_->GetPercOn());
@@ -2844,6 +2883,7 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                    : HomeScenes()            ? KnobContext::HomeScenes
                    : HomeSong() && song_edit_ ? KnobContext::HomeSongEdit
                    : HomeSong()            ? KnobContext::HomeSong
+                   : HomeLiveFx()          ? KnobContext::HomeLiveFx
                                            : KnobContext::Home;
         case Screen::SeqTrack:
             return seq_page_ >= kSeqPageGrid    ? KnobContext::SeqGrid
@@ -2966,6 +3006,7 @@ Ui::KnobContext Ui::CurrentKnobContext() const
                 default: return KnobContext::DexedOpAlgo;
             }
         case Screen::Supersaw: return SupersawKnobContext();
+        case Screen::LiveFx: return KnobContext::LiveFx;
         case Screen::Duck:
             return duck_page_ == DuckPage::Source  ? KnobContext::DuckSource
                    : duck_page_ == DuckPage::Shape ? KnobContext::DuckShape
@@ -3068,6 +3109,14 @@ void Ui::SyncPickupTargets(KnobContext ctx)
         case KnobContext::Home:
             k1_pickup_raw_[i] = master_volume01_;
             k2_pickup_raw_[i] = tempo_->GetMetronomeVolume01();
+            break;
+        case KnobContext::HomeLiveFx:
+            k1_pickup_raw_[i] = master_volume01_;
+            break;
+        case KnobContext::LiveFx:
+            k1_pickup_raw_[i] = master_volume01_;
+            if(live_fx_)
+                k2_pickup_raw_[i] = live_fx_->Get().param[live_fx_->Get().effect];
             break;
         case KnobContext::HomeScenes:
             k1_pickup_raw_[i] = ((float)scene_cursor_ + 0.5f) / (float)kScenes;
@@ -3915,7 +3964,19 @@ void Ui::ApplyKnobs()
 
     switch(screen_)
     {
+        case Screen::LiveFx:
+            if(PickUpK1(k1))
+                SetMasterVolume01(k1);
+            if(live_fx_ && PickUpK2(k2))
+                live_fx_->Edit().param[live_fx_->Get().effect] = Clampf(k2, 0.f, 1.f);
+            break;
         case Screen::Home:
+            if(HomeLiveFx())
+            {
+                if(PickUpK1(k1))
+                    SetMasterVolume01(k1);
+                break;
+            }
             if(HomeScenes() && scene_edit_ >= 0)
             {
                 if(PickUpK1(k1))
@@ -5471,6 +5532,7 @@ void Ui::Draw()
         case Screen::Dexed: DrawDexedScreen(); break;
         case Screen::Ensemble: DrawEnsembleScreen(); break;
         case Screen::Supersaw: DrawSupersawScreen(); break;
+        case Screen::LiveFx: DrawLiveFxScreen(); break;
         case Screen::Duck:
             if(duck_page_ == DuckPage::Source)
                 DrawDuckSourcePage();
@@ -5566,6 +5628,198 @@ void Ui::DrawControlRow(int         row_y,
                          icon_cy + kIconR, true, false);
     else
         disp_->DrawCircle(icon_cx, icon_cy, kIconR, true);
+}
+
+void Ui::DrawHomeLiveFxPage()
+{
+    // Home's Live FX page, laid out like an engine's Global entry page:
+    // the effect ready (or latched), the key graphic, and the way in.
+    disp_->SetCursor(0, 0);
+    WriteUpper("Live FX");
+    DrawBeatIndicator(disp_->Width() - 41, 0, 3);
+    disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
+
+    char status[24];
+    snprintf(status, sizeof(status), "%s: %s", live_fx_latched_ ? "LATCHED" : "READY",
+             live_fx_ ? LiveFx::ShortName(live_fx_->Get().effect) : "");
+    TomThumbDrawText(disp_, 1, 16, status, true);
+    DrawBitmap(disp_, (disp_->Width() - kGlobalIconW) / 2, 18, kGlobalIconW, kGlobalIconH,
+               kGlobalIconLiveFx);
+    const char* hint = "PUSH ENC TO OPEN";
+    TomThumbDrawText(disp_, (disp_->Width() - TomThumbAdvanceWidth(hint)) / 2, 44, hint, true);
+
+    char vol_val[8];
+    snprintf(vol_val, sizeof(vol_val), "%d%%", (int)(master_volume01_ * 100.f + 0.5f));
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Master Vol", vol_val, "", "");
+    DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY, "", "", "", "");
+}
+
+void Ui::DrawLiveFxScreen()
+{
+    if(!live_fx_)
+        return;
+    const int  sel     = live_fx_->Get().effect;
+    const bool playing = live_fx_->IsPlaying();
+
+    disp_->SetCursor(0, 0);
+    WriteUpper(playing ? "Live FX:On" : "Live FX");
+    DrawBeatIndicator(disp_->Width() - 41, 0, 3);
+    disp_->DrawLine(0, 9, disp_->Width() - 1, 9, true);
+
+    if(playing)
+    {
+        // Playing: a dot per effect (the one playing filled), its short
+        // name big, the full name under it, and a picture of what it does.
+        for(int i = 0; i < LiveFx::kEffects; i++)
+            disp_->DrawRect(2 + i * 7, 11, 6 + i * 7, 13, true, i == sel);
+        disp_->SetCursor(0, 18);
+        disp_->WriteString(LiveFx::ShortName(sel), Font_6x8, true);
+        TomThumbDrawText(disp_, 0, 34, LiveFx::FullName(sel), true);
+        DrawLiveFxPicture(sel, 60, 17, 127, 43);
+    }
+    else
+    {
+        // Browsing: every effect in a 4x4 grid, the chosen one filled.
+        constexpr int kCellW = 32, kCellH = 7, kY0 = 10;
+        for(int i = 0; i < LiveFx::kEffects; i++)
+        {
+            const int   x = (i % 4) * kCellW, y = kY0 + (i / 4) * kCellH;
+            const char* n = LiveFx::ShortName(i);
+            if(i == sel)
+                disp_->DrawRect(x, y, x + kCellW - 2, y + kCellH - 1, true, true);
+            TomThumbDrawText(disp_, x + (kCellW - 1 - TomThumbAdvanceWidth(n)) / 2, y + 6, n,
+                             i != sel);
+        }
+        const char* hint = "ROTATE ENC TO SELECT FX";
+        TomThumbDrawText(disp_, (disp_->Width() - TomThumbAdvanceWidth(hint)) / 2, 44, hint,
+                         true);
+    }
+
+    char vol_val[8], k2_val[8];
+    snprintf(vol_val, sizeof(vol_val), "%d%%", (int)(master_volume01_ * 100.f + 0.5f));
+    LiveFx::ParamText(sel, live_fx_->Get().param[sel], k2_val, sizeof(k2_val));
+    const char* k2_name = LiveFx::ParamName(sel);
+    DrawControlRow(kFooterRow1Y, false, kFooterDividerY, "Master Vol", vol_val, k2_val,
+                   k2_name ? k2_name : "");
+    DrawControlRow(kFooterRow2Y, true, kFooterInterRowDividerY,
+                   live_fx_latched_ ? "Latch:On" : "Latch:Off", "", "", "Hold=Play");
+}
+
+void Ui::DrawLiveFxPicture(int effect, int x0, int y0, int x1, int y1)
+{
+    // A small drawing of what the effect does to the sound, in the box
+    // x0..x1, y0..y1. Curves are drawn as joined columns.
+    const int w = x1 - x0, h = y1 - y0, mid = (y0 + y1) / 2;
+    auto clampy = [&](int y) { return y < y0 ? y0 : (y > y1 ? y1 : y); };
+    auto curve  = [&](auto f) {
+        int prev = -1;
+        for(int i = 0; i < w; i++)
+        {
+            const int y = clampy((int)f((float)i / (float)w));
+            if(prev < 0)
+                disp_->DrawPixel(x0 + i, y, true);
+            else
+                disp_->DrawLine(x0 + i, prev < y ? prev : y, x0 + i, prev < y ? y : prev, true);
+            prev = y;
+        }
+    };
+    // A falling ramp (one slice of sound) of width sw and height scale g.
+    auto slice = [&](int x, int sw, float g, bool rising) {
+        for(int j = 0; j < sw - 1 && x + j <= x1; j++)
+        {
+            float t  = sw > 2 ? (float)j / (float)(sw - 2) : 0.f;
+            int   hh = (int)((rising ? t : 1.f - t) * (float)h * g);
+            disp_->DrawLine(x + j, y1 - hh, x + j, y1, true);
+        }
+    };
+    switch(effect)
+    {
+        case LiveFx::kStutter:
+        {
+            int x = x0;
+            for(int k = 0; x < x1; k++)
+            {
+                int sw = (int)(16.f / (1.f + (float)k * 0.8f));
+                sw     = sw < 2 ? 2 : sw;
+                slice(x, sw, 1.f, false);
+                x += sw;
+            }
+            break;
+        }
+        case LiveFx::kStutFade:
+        {
+            float g = 1.f;
+            for(int x = x0; x < x1; x += 8, g *= 0.8f)
+                slice(x, 8, g, false);
+            break;
+        }
+        case LiveFx::kRptDrop:
+            curve([&](float f) {
+                return y0 + h * (0.5f - 0.5f * sinf(f * 40.f * (1.f - 0.6f * f))) * 0.7f + f * 8.f;
+            });
+            break;
+        case LiveFx::kReverse:
+            for(int x = x0; x < x1; x += 8)
+                slice(x, 8, 1.f, true);
+            break;
+        case LiveFx::kTapeStop:
+        {
+            float ph = 0.f;
+            curve([&](float f) {
+                const float s = 1.f - f;
+                ph += 0.5f * s;
+                return mid - sinf(ph) * h * 0.5f * (0.3f + 0.7f * s);
+            });
+            break;
+        }
+        case LiveFx::kScratch:
+            curve([&](float f) {
+                return mid + asinf(sinf(f * 6.f * 3.14159265f)) / 1.5707963f * h * 0.5f;
+            });
+            break;
+        case LiveFx::kLpSweep:
+        case LiveFx::kHpSweep:
+        {
+            const bool lp = effect == LiveFx::kLpSweep;
+            curve([&](float f) {
+                constexpr float cut = 0.45f;
+                float           d   = lp ? f - cut : cut - f;
+                float           g   = d < 0.f ? 1.f : (1.f - d * 3.f < 0.f ? 0.f : 1.f - d * 3.f);
+                return y1 - g * (h - 4) - (fabsf(f - cut) < 0.04f ? 3.f : 0.f);
+            });
+            break;
+        }
+        case LiveFx::kCrush:
+            curve([&](float f) {
+                return mid - roundf(sinf(f * 4.f * 3.14159265f) * 3.f) / 3.f * h * 0.5f;
+            });
+            break;
+        case LiveFx::kGate:
+            for(int k = 0; k < 8; k++)
+            {
+                const int x = x0 + k * 8;
+                if(k % 2 == 0)
+                    disp_->DrawRect(x, y0 + 2, x + 5, y1, true, true);
+                else
+                    disp_->DrawLine(x, y1, x + 7, y1, true);
+            }
+            break;
+        case LiveFx::kThrow:
+        {
+            // The held sound, then its echoes dying away.
+            float g = 0.75f;
+            for(int k = 0; k < 7; k++, g *= 0.75f)
+            {
+                const int x = x0 + 2 + k * 9, hh = (int)(h * g);
+                disp_->DrawRect(x, y1 - hh, x + 3, y1, true, true);
+            }
+            break;
+        }
+        default: // the plain repeats: the same slice over and over
+            for(int x = x0; x < x1; x += 8)
+                slice(x, 8, 1.f, false);
+            break;
+    }
 }
 
 void Ui::DrawGlobalEntryPage(const char*    title,
@@ -5690,6 +5944,11 @@ void Ui::DrawHome()
     if(HomeSong())
     {
         DrawHomeSongPage();
+        return;
+    }
+    if(HomeLiveFx())
+    {
+        DrawHomeLiveFxPage();
         return;
     }
     if(HomeSeqTrack() >= 0)
@@ -14554,6 +14813,7 @@ void Ui::TriggerSave(bool force_new)
     extras.scenes       = scenes_;
     extras.arp          = arp_;
     extras.duck         = &duck_;
+    extras.live_fx      = live_fx_ ? &live_fx_->Get() : nullptr;
     extras.song         = &song_;
     extras.synths       = &synths;
     extras.granular_l   = granular_ ? granular_->GetSourceL() : nullptr;
@@ -14607,6 +14867,9 @@ void Ui::TriggerNew()
     song_        = Song{};
     song_cursor_ = 0;
     duck_        = Duck::Settings{};
+    if(live_fx_)
+        live_fx_->Edit() = LiveFx::Settings{};
+    live_fx_latched_ = false;
     loaded_slot_ = -1; // next Save lands in a new slot, not over the old one
     snprintf(file_status_, sizeof(file_status_), "New perf");
 }
@@ -14638,6 +14901,9 @@ void Ui::TriggerLoad(int slot)
     extras.scenes            = scenes_;
     extras.arp               = arp_;
     extras.duck              = &duck_;
+    // Into a copy: the audio reads the live settings while the file loads.
+    static LiveFx::Settings live_fx_loaded;
+    extras.live_fx           = &live_fx_loaded;
     extras.song              = &song_;
     extras.synths            = &synths;
     extras.granular_l        = granular_capture_buf_l_;
@@ -14680,6 +14946,10 @@ void Ui::TriggerLoad(int slot)
     for(int i = 0; i < num_layers_; i++)
         layers_[i].SetFreezeActive(false);
 
+    // Live FX: the Performance's effect and settings, Latch always off.
+    live_fx_latched_ = false;
+    if(ok && live_fx_)
+        live_fx_->Edit() = live_fx_loaded;
     if(ok)
     {
         loaded_slot_ = slot;

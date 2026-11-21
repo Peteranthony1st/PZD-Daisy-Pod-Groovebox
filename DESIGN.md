@@ -6200,3 +6200,97 @@ synced LFO keeps its phase, and a free-running one's rate came from
 block. With Super Pad (its LFO free-running) the Supersaw read 1/1 % at
 rest where the other engines read 0/0. `SetRate01()` now works the Hz out
 once; every rate is the same.
+
+## Live FX
+
+Sixteen Pocket Operator-style effects over the whole mix, one at a time.
+The engine is `live_fx.h` (`LiveFx`, plain C++ so it's tested on the
+Mac); `main.cpp` runs it, `Ui` picks and plays it.
+
+### Where it sits
+
+In the audio callback's last per-sample loop: after the master filter,
+before the master volume, the metronome's click and the limiter. So Live
+export and Song export capture it, and the click never repeats or
+reverses with the music.
+
+### The recording
+
+The repeats, Reverse, Tape Stop, Scratch and Throw read the mix's recent
+past from a ring: 2^17 frames (2.7 s at 48 kHz) of int16 stereo in
+SDRAM, 512 KB, cleared at `Init()` (SDRAM isn't zeroed at boot). That
+leaves about 740 KB of SDRAM free.
+
+`Process()` keeps two counters: `frame_` is time, and `rec_` is the
+next frame the ring writes. They move together, except that the ring
+stops writing while an effect that loops a slice of the past (the five
+repeats, Stutter, Fade, Drop, Reverse) plays or fades out. Without that,
+a repeat held longer than the ring was written over by new audio and the
+loop moved on after about 2.7 s. Every ring read is relative to `rec_`;
+elapsed time (Drop's slide, Gate's period, Scratch's swing) to `frame_`.
+Tape Stop, Scratch and Throw read just behind now, so they don't stop
+it; neither does a repeat started while Throw's echoes still ring.
+
+### Timing and states
+
+`BeginBlock()` runs once a block: the tempo, the samples to the next
+1/16 (from the sequencer's tick when it runs, else a free-running beat),
+and the state machine — Idle, Waiting (engaged, counting down to the
+1/16), Active, Releasing. B2 held or Latch on engages it. Changing the
+effect while one plays releases the old one; the new one then starts on
+the next 1/16. The effect fades in over 3 ms and out over 5 ms against
+the dry mix.
+
+### The effects
+
+- **Repeats** (1/4 … 1/32, 1/12) loop the slice that ended where it
+  started, with 1 ms edges. **Stutter** shrinks each pass by
+  0.92 − 0.37·K2 (to a 1/32 at least); **Fade** multiplies its gain by
+  0.92 − 0.5·K2 each pass.
+- **Drop** loops a 1/8 while its rate falls to 2^(−2·K2) over a bar. Let
+  go, it climbs back along the same curve over as long as it fell,
+  before it fades to the mix. Its loops stretch as it slows and don't
+  stay on the grid; that's its character, and was kept on purpose.
+- **Reverse** plays the last 1/8–1/1 backwards, looped.
+- **Tape Stop** slows from 1 to 0 over 2 − 1.9·K2 seconds, its level
+  following √rate so the end doesn't buzz.
+- **Scratch** swings the read point over a 1/16 behind now, 1–8 times
+  a second.
+- **LP/HP Sweep** are a TPT state-variable filter (k = 1.2) whose cutoff
+  glides over about a 1/16 towards up to 7 octaves from the edge; the
+  coefficients are worked out once a block (`tanf` per sample was too
+  dear).
+- **Crush** rounds to 16 down to 3 bits and holds each sample for 1–16.
+- **Gate** is on for the first half of each 1/8, 1/16 or 1/32 from its
+  start, with 2 ms ramps.
+- **Throw** adds up to 8 taps a dotted 1/8 apart (Feedback 0.3–0.9) of
+  what played while it was held, fading 2 ms at the hold's edges so no
+  echo clicks; they ring on after it's let go.
+
+### Pages and saving
+
+Home's Live FX page (after Song, `kHomeLiveFxSlot`) is an entry page:
+the effect ready or latched, the "FX" key icon, K1 Master Vol, B1/B2
+idle. A click opens `Screen::LiveFx`: browsing, a 4×4 grid of the short
+names with the chosen one filled; playing, a dot per effect, the names
+and a picture of the effect (`DrawLiveFxPicture`). The encoder picks the
+effect, one per detent, stopping at the ends; K2 picks up the new
+effect's setting. `Update()` sets engaged from Latch, or B2 held on that
+screen, so a latched effect keeps playing on Home.
+
+`LiveFx::Settings` (the effect and each effect's K2) is one raw block in
+an `LFX1` section after `DCK1`. A file without one loads the defaults
+(1/8, every K2 at 50%); Latch is always off after a load, and New resets
+both. A load reads into a copy and then sets the live one, since the
+audio reads it meanwhile.
+
+### Testing
+
+On the Mac (`live_fx.h` alone): idle passes the mix through untouched; a
+repeat waits for the 1/16 and plays exactly the slice before it; every
+effect engages and releases without a step larger than the input's own
+(Scratch and Crush allowed theirs); Tape Stop ends silent; Throw's
+echoes fall a dotted 1/8 apart; a repeat and a reverse held 12 s still
+play the same slice (and fail without the ring pausing); Drop winds back
+up for as long as it fell. The host renderer draws every screen, and a
+save/load through `PerformanceStore` brings the settings back.

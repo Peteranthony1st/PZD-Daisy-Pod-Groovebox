@@ -1,6 +1,6 @@
-<h1>Scenes and Song</h1>
+<h1>Scenes, Song and Live FX</h1>
 
-<p>Scenes remember what plays together, and the song plays scenes in order. Together they turn a set of loops and patterns into a finished piece, which exports as one WAV file.</p>
+<p>Scenes remember what plays together, and the song plays scenes in order. Together they turn a set of loops and patterns into a finished piece, which exports as one WAV file. Live FX adds effects to play over it all.</p>
 
 <h2>Scenes</h2>
 <div class="side">
@@ -47,3 +47,48 @@ click</pre><figcaption>Editing a step</figcaption></figure>
 
 <h2>Exporting the song</h2>
 <p>On <code>Global:Export</code>, turn K1 to <strong>Song</strong> and tap B1. The song plays from the step picked on the Song page to its end, then until the effects have faded, and is written to the card as one WAV of any length. The outputs are muted while it runs. About every 37 seconds it pauses for a moment to write to the card, so the file has no gaps. See Chapter 14 for the other export modes.</p>
+
+<h2>Live FX</h2>
+<div class="side">
+  <figure><pre class="shot" id="live-fx">@demo
+turn 14</pre></figure>
+  <div>
+  <p>Sixteen effects to play over the whole mix, the way a Pocket Operator's are: hold one for a moment and let go, or latch it. Live FX is the last page on Home, after Song. It shows the effect ready to play (or latched), and K1 is the master volume. Push the encoder to open it.</p>
+  </div>
+</div>
+<div class="side">
+  <figure><pre class="shot" id="live-fx-pick">@demo
+turn 14
+click
+turn 4</pre><figcaption>Picking an effect</figcaption></figure>
+  <div>
+  <p>All sixteen are on one grid. <strong>Turn the encoder</strong> to pick one, one effect per click, and <strong>hold B2</strong> to play it. <strong>Tap B1</strong> to latch it (Latch:On), so it keeps playing with your hands free; turn the encoder while it's latched to switch effect. K2 is the effect's own setting and K1 the master volume. Push the encoder again to go back to Home: a latched effect keeps playing there.</p>
+  </div>
+</div>
+<div class="side">
+  <figure><pre class="shot" id="live-fx-on">@demo
+turn 14
+click
+turn 8
+tap b1
+wait 200</pre><figcaption>Tape Stop, latched</figcaption></figure>
+  <div>
+  <p>While an effect plays, the screen shows which, its full name and a picture of what it does. Every effect starts on the next 1/16, in time with the music, and fades in and out without clicks.</p>
+  </div>
+</div>
+<table>
+  <tr><th>Effect</th><th>What it does</th><th>K2</th></tr>
+  <tr><td>1/4, 1/8, 1/16, 1/32, 1/12</td><td>Repeats the last 1/4 … 1/32 over and over (1/12: in triplets). It keeps the same slice however long it's held.</td><td>—</td></tr>
+  <tr><td>Stut (Stutter)</td><td>1/8 repeats, each shorter than the last, into a roll.</td><td>Speed</td></tr>
+  <tr><td>Fade (Stutter Fade)</td><td>1/8 repeats, each quieter, dying away.</td><td>Fade</td></tr>
+  <tr><td>Drop (Repeat Drop)</td><td>1/8 repeats slowing and sinking in pitch over a bar; let go, and it winds back up the same way.</td><td>Depth</td></tr>
+  <tr><td>Rev (Reverse)</td><td>The last stretch played backwards, over and over.</td><td>Length, 1/8–1/1</td></tr>
+  <tr><td>Stop (Tape Stop)</td><td>Slows to a halt, like a tape machine switched off.</td><td>Speed</td></tr>
+  <tr><td>Scrch (Scratch)</td><td>Back and forth around the music, like a hand on a record.</td><td>Rate</td></tr>
+  <tr><td>LPF (LP Sweep)</td><td>A low-pass filter sweeping down.</td><td>Depth</td></tr>
+  <tr><td>HPF (HP Sweep)</td><td>A high-pass filter sweeping up.</td><td>Depth</td></tr>
+  <tr><td>Crush</td><td>Fewer bits and a lower sample rate.</td><td>Amount</td></tr>
+  <tr><td>Gate</td><td>The mix chopped on and off in time.</td><td>Rate: 1/8, 1/16, 1/32</td></tr>
+  <tr><td>Throw</td><td>Echoes of what played while it was held, a dotted 1/8 apart, ringing on after you let go.</td><td>Feedback</td></tr>
+</table>
+<p>Live FX works on the whole mix after the master filter, so Live export and Song export capture it. The chosen effect and each effect's K2 setting save with the Performance; Latch is always off after a load.</p>

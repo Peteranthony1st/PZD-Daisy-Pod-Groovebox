@@ -1306,21 +1306,64 @@ bool WriteDuck(FIL& file, const Duck::Settings& duck)
     return ok;
 }
 
-void ReadDuck(FIL& file, Duck::Settings* duck)
+bool ReadDuck(FIL& file, Duck::Settings* duck)
 {
     static SceneTrailer tr;
     *duck = Duck::Settings{}; // an older performance: off
     UINT br;
     if(f_read(&file, &tr, sizeof(tr), &br) != FR_OK || br != sizeof(tr)
        || memcmp(tr.magic, "DCK1", 4) != 0 || tr.size < 4 || tr.size > kMaxSceneSize)
-        return;
+        return false;
     if(f_read(&file, g_scene_read, tr.size, &br) != FR_OK || br != tr.size)
-        return;
+        return false;
     memcpy(duck, g_scene_read, tr.size < sizeof(Duck::Settings) ? tr.size : sizeof(Duck::Settings));
     if(duck->source < 0 || duck->source >= Duck::kSources)
         duck->source = Duck::Settings{}.source;
     if(duck->sync_index < 0 || duck->sync_index >= Duck::kSyncValues)
         duck->sync_index = Duck::Settings{}.sync_index;
+    return true;
+}
+
+// Live FX's settings, after the duck: the same kind of header, then one
+// LiveFx::Settings as it is in memory (the chosen effect, each one's K2).
+bool WriteLiveFx(FIL& file, const LiveFx::Settings& fx)
+{
+    static SceneTrailer tr;
+    tr = SceneTrailer{};
+    memcpy(tr.magic, "LFX1", 4);
+    tr.version = 1;
+    tr.count   = 1;
+    tr.size    = sizeof(LiveFx::Settings);
+    memcpy(g_scene_read, &fx, sizeof(LiveFx::Settings));
+    UINT    bw;
+    FRESULT fr = f_write(&file, &tr, sizeof(tr), &bw);
+    bool    ok = fr == FR_OK && bw == sizeof(tr);
+    if(ok)
+    {
+        fr = f_write(&file, g_scene_read, sizeof(LiveFx::Settings), &bw);
+        ok = fr == FR_OK && bw == sizeof(LiveFx::Settings);
+    }
+    if(!ok)
+        SetError("lfx", fr);
+    return ok;
+}
+
+void ReadLiveFx(FIL& file, LiveFx::Settings* fx)
+{
+    static SceneTrailer tr;
+    *fx = LiveFx::Settings{}; // an older performance: the defaults
+    UINT br;
+    if(f_read(&file, &tr, sizeof(tr), &br) != FR_OK || br != sizeof(tr)
+       || memcmp(tr.magic, "LFX1", 4) != 0 || tr.size < 4 || tr.size > kMaxSceneSize)
+        return;
+    if(f_read(&file, g_scene_read, tr.size, &br) != FR_OK || br != tr.size)
+        return;
+    memcpy(fx, g_scene_read, tr.size < sizeof(LiveFx::Settings) ? tr.size : sizeof(LiveFx::Settings));
+    if(fx->effect < 0 || fx->effect >= LiveFx::kEffects)
+        fx->effect = LiveFx::Settings{}.effect;
+    for(float& p : fx->param)
+        if(!(p >= 0.f && p <= 1.f))
+            p = 0.5f;
 }
 } // namespace
 
@@ -1497,6 +1540,9 @@ bool Save(int                slot,
         ok = WriteArps(file, *extras->arp);
     if(ok && extras && extras->scenes && extras->song && extras->seq && extras->arp && extras->duck)
         ok = WriteDuck(file, *extras->duck);
+    if(ok && extras && extras->scenes && extras->song && extras->seq && extras->arp && extras->duck
+       && extras->live_fx)
+        ok = WriteLiveFx(file, *extras->live_fx);
 
     FRESULT close_res = f_close(&file);
     if(close_res != FR_OK)
@@ -1805,12 +1851,20 @@ bool Load(int          slot,
                 else
                     extras->arp->Reset();
             }
+            bool duck = false;
             if(extras->duck)
             {
                 if(arps)
-                    ReadDuck(file, extras->duck);
+                    duck = ReadDuck(file, extras->duck);
                 else
                     *extras->duck = Duck::Settings{};
+            }
+            if(extras->live_fx)
+            {
+                if(duck)
+                    ReadLiveFx(file, extras->live_fx);
+                else
+                    *extras->live_fx = LiveFx::Settings{};
             }
         }
     }

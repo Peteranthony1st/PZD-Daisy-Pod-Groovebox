@@ -13,6 +13,7 @@
 #include "scenes.h"
 #include "shared_delay.h"
 #include "duck.h"
+#include "live_fx.h"
 
 // SD card save/load for a whole "performance" (all layers' audio plus
 // tempo/global/per-layer settings) as one flat binary file per slot.
@@ -748,6 +749,7 @@ struct PerformanceExtrasOut
     const Song*          song       = nullptr; // after the scenes
     const Arpeggiator*   arp        = nullptr; // after the chains
     const Duck::Settings* duck      = nullptr; // after the arps
+    const LiveFx::Settings* live_fx = nullptr; // after the duck
     const SynthSnapshot* synths     = nullptr;
     const float*         granular_l = nullptr;
     const float*         granular_r = nullptr;
@@ -762,6 +764,7 @@ struct PerformanceExtrasIn
     Song*          song              = nullptr; // emptied if the file has none
     Arpeggiator*   arp               = nullptr; // Reset() if the file has none
     Duck::Settings* duck             = nullptr; // defaults (off) if the file has none
+    LiveFx::Settings* live_fx        = nullptr; // defaults if the file has none
     SynthSnapshot* synths            = nullptr;
     bool           synths_loaded     = false;
     float*         granular_l        = nullptr;

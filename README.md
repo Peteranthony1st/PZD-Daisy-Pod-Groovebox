@@ -41,7 +41,9 @@ the scenes and exports as a WAV of any length. An **arpeggiator** on
 every engine and every MIDI track pattern turns one key or a held chord
 into a pattern, in key and in time. A **sidechain** pumps any mix of
 channels from a kick: a MIDI track's chosen drum pads, or a recorded
-loop's low end. An added I2C OLED
+loop's low end. **Live FX** plays 16 Pocket Operator-style effects on
+the whole mix: beat repeats, stutters, reverse, tape stop, scratch,
+filter sweeps and more, held or latched, in time. An added I2C OLED
 display gives it a full on-device menu: live waveform/level display,
 per-layer filter/effects/reverb, tempo-locked recording, and SD card
 save/load, all controlled from the Pod's two knobs, two buttons, and one
@@ -147,7 +149,8 @@ Home has four audio tracks (**A1–A4**, the looper's layers) and eight
 MIDI tracks (**M1–M8**), four boxes to a page. Each box shows the
 track's state — ▶ playing, ‖ paused, ● recording, ○ counting in, – empty
 — and a playhead along the bottom; a MIDI box also shows its engine and
-the pattern playing. After M8 come the **Scenes** and **Song** pages.
+the pattern playing. After M8 come the **Scenes** and **Song** pages,
+then **Live FX** (see below).
 
 **MIDI tracks** play any of the eight engines. They behave like audio
 tracks: hold B1 to count in and record one pass, tap to pause/play, hold
@@ -275,6 +278,44 @@ looper runs, and the tempo when it doesn't. The Setup page also sets the
 recording).
 
 Every arp saves in the Performance.
+
+## Live FX
+
+<img alt="Home: Live FX page" src="images/live-fx.png" /><img alt="Live FX: picking an effect" src="images/live-fx-pick.png" /><img alt="Live FX: Tape Stop playing" src="images/live-fx-on.png" />
+
+Sixteen effects to play over the whole mix, the way a Pocket Operator's
+are: hold one for a moment and let go, or latch it. **Live FX** is the
+last page on Home, after Song; push the encoder to open it.
+
+Inside, all sixteen are on one grid. **Turn the encoder** to pick one,
+one effect per click, and **hold B2** to play it. **B1** latches it
+(Latch:On/Off), so it keeps playing with your hands free; turning the
+encoder while it's latched switches to the next effect. **K2** is the
+effect's own setting and **K1** the master volume. While one plays, the
+screen shows its name and a picture of what it does. Push the encoder
+again to go back to Home; a latched effect keeps playing there.
+
+| Effect | What it does | K2 |
+|---|---|---|
+| **1/4, 1/8, 1/16, 1/32, 1/12** | Repeats the last 1/4 … 1/32 (1/12: triplets) over and over, for as long as it's held | — |
+| **Stut** (Stutter) | 1/8 repeats, each shorter than the last, into a roll | Speed |
+| **Fade** (Stutter Fade) | 1/8 repeats, each quieter, dying away | Fade |
+| **Drop** (Repeat Drop) | 1/8 repeats slowing down and sinking in pitch over a bar, then winding back up the same way when let go | Depth |
+| **Rev** (Reverse) | The last stretch played backwards, over and over | Length (1/8–1/1) |
+| **Stop** (Tape Stop) | Slows to a halt, like a tape machine switched off | Speed |
+| **Scrch** (Scratch) | Back and forth around the music, like a hand on a record | Rate |
+| **LPF** (LP Sweep) | A low-pass filter sweeping down | Depth |
+| **HPF** (HP Sweep) | A high-pass filter sweeping up | Depth |
+| **Crush** | Fewer bits and a lower sample rate | Amount |
+| **Gate** | The mix chopped on and off in time | Rate (1/8, 1/16, 1/32) |
+| **Throw** | Echoes of what played while held, a dotted 1/8 apart, ringing on after you let go | Feedback |
+
+Every effect starts on the next 1/16, in time with the tempo, and fades
+in and out without clicks. A repeat keeps the same slice however long
+it's held. Live FX works on the whole mix after the master filter, so
+Live export and Song export capture it. The
+chosen effect and each effect's K2 setting save with the Performance;
+Latch is always off after a load.
 
 ## Hardware
 
@@ -659,7 +700,7 @@ already work while it's up.
 
 **Navigating the menu**
 - **Rotate** the encoder: on Home, moves through the audio tracks
-  (A1–A4), the MIDI tracks (M1–M8), then the Scenes and Song pages; on
+  (A1–A4), the MIDI tracks (M1–M8), then the Scenes, Song and Live FX pages; on
   any other page, cycles through that page's sub-pages.
 - **Click** the encoder: goes one level in or one level back. From Home
   it opens the selected track's pages (on Scenes it edits the chosen
@@ -748,6 +789,8 @@ capture in progress.
 | Scene edit | Pick a track (A1–A4, M1–M8) | Its volume (audio) or pattern Off/A–H (MIDI) | Tap = launch, Hold = save what's playing | Track on/off |
 | Home: Song | Pick a step | Master volume | Tap = play from the step / stop, Hold = record scene launches | Tap = insert a copy, Hold 800ms = delete the step |
 | Song edit (click) | The step's scene | Its repeats (1–32) | as above | as above |
+| Home: Live FX | Master volume | — | — | — (push encoder to open Live FX) |
+| Live FX (click; the encoder picks the effect) | Master volume | The effect's setting | Latch on/off | Hold = play the effect |
 | Layer: Status | Volume | Pan | Same transport as Home | Tap = Undo last overdub, hold 800ms = Clear layer |
 | Layer: Gain | Input gain (the input is monitored while this page is open) | — | — | — |
 | Layer: Filter | Cutoff | Resonance | Cycle filter mode | — |

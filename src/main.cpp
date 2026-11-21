@@ -24,6 +24,7 @@
 #include "pod_oled.h"
 #include "dattorro_reverb.h"
 #include "duck.h"
+#include "live_fx.h"
 
 using namespace daisy;
 
@@ -528,6 +529,12 @@ static bool           g_duck_dipping = false; // any of this block's g_duck_dept
 static float          g_duck_amount[Duck::kChannels];
 static Duck::Envelope g_duck_envelope;
 static Duck::Detector g_duck_detector;
+
+// Home's Live FX (see live_fx.h): the whole mix, after the master filter.
+// Its recording of the mix, 2.7 s of 16-bit stereo, is in SDRAM.
+static constexpr uint32_t kLiveFxRingFrames = 1u << 17;
+static int16_t DSY_SDRAM_BSS g_live_fx_ring[2][kLiveFxRingFrames];
+static LiveFx                g_live_fx;
 static bool           g_duck_layer_hit = false; // the source track crossed it last block
 static void DuckNote(int track, int engine, uint8_t note)
 {
@@ -1843,6 +1850,13 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
     const bool delay_bypassed  = SharedDelay::IsOff(ui.GetDelaySettings().time01);
     // Bypass's duck, on its dry signal and its sends alike.
     const bool byp_ducked = DuckGain(Duck::kByp, size);
+    // Live FX's tempo for this block: g_seq_tick is where the block ends.
+    {
+        const float bpm = tempo.GetBpm();
+        g_live_fx.BeginBlock(size, sample_rate, bpm, g_seq_running,
+                             (float)g_seq_tick / (float)MidiSequencer::kPpq
+                                 - (float)size * bpm / (60.f * sample_rate));
+    }
 
     for(size_t i = 0; i < size; i++)
     {
@@ -1976,6 +1990,10 @@ void AudioCallback(AudioHandle::InputBuffer  in_hw,
             }
         }
 
+        // Live FX on the whole mix, before the master volume -- so Live
+        // export captures it, and the click below stays clear of it.
+        g_live_fx.Process(out[0][i], out[1][i]);
+
         // A live export takes the mix before the metronome's click.
         const float live_l = out[0][i] * mv, live_r = out[1][i] * mv;
         out[0][i] = (out[0][i] + click[i]) * mv;
@@ -2093,6 +2111,7 @@ int main(void)
     memset(g_sample_synth_scope_l, 0, sizeof(g_sample_synth_scope_l));
     memset(g_bypass_scope_l, 0, sizeof(g_bypass_scope_l));
     memset(g_master_scope_l, 0, sizeof(g_master_scope_l));
+    g_live_fx.Init(g_live_fx_ring[0], g_live_fx_ring[1], kLiveFxRingFrames);
 
     // hw.Init() -> InitMidi() claims D13 as MIDI UART TX via
     // MidiUartHandler::Config's default-constructed transport_config --
@@ -2275,6 +2294,7 @@ int main(void)
     ui.SetSequencer(&sequencer);
     ui.SetArpeggiator(&g_arp);
     ui.SetDuckDetector(&g_duck_detector);
+    ui.SetLiveFx(&g_live_fx);
     // Each float of an undo buffer holds one 16-bit stereo frame.
     g_live_export.seg[0]     = reinterpret_cast<int16_t*>(g_undo_backup_l);
     g_live_export.seg[1]     = reinterpret_cast<int16_t*>(g_undo_backup_r);

@@ -89,6 +89,8 @@ static MidiSequencer  sequencer;
 static Arpeggiator    g_arp;
 static LiveExport     g_live_export;
 static Ui             ui;
+static int16_t        g_lfx_ring[2][1u << 12];
+static LiveFx         g_live_fx;
 
 static void SeqNote(int, int, uint8_t, uint8_t) {}
 static void ArpNote(int, uint8_t, uint8_t) {}
@@ -135,6 +137,8 @@ static void Init()
     g_live_export.seg[1]     = reinterpret_cast<int16_t*>(g_undo_backup_r);
     g_live_export.seg_frames = kBuffSize;
     ui.SetLiveExport(&g_live_export);
+    g_live_fx.Init(g_lfx_ring[0], g_lfx_ring[1], 1u << 12);
+    ui.SetLiveFx(&g_live_fx);
     ui.ApplyStartupDefaults();
 }
 
@@ -143,6 +147,7 @@ static void Step(UiControlEvents ev = UiControlEvents())
 {
     System::now_ms += 10;
     ui.Update(ev);
+    g_live_fx.BeginBlock(480, kSr, 120.f, false, 0.f);
 }
 
 static Switch& Control(const std::string& c)
