@@ -1032,17 +1032,17 @@ class Ui
         GlobalExport,
         GlobalGranular, // entry point only -- see Screen::Granular instead
         GlobalLooper, // no continuous knobs -- Button1 toggle only
-        GlobalMidi, // K1 picks an engine row (no pickup), K2 its channel
-        GlobalArp,  // K1 picks an engine
+        GlobalMidi, // K1 picks an engine row, K2 its channel (no pickup)
+        GlobalArp,  // K1 picks an engine (no pickup)
         ArpSetup,   // K1 picks Rate/Tempo/Range, K2 sets it
         ArpPattern, // K1 steps, K2 jump (Generator); K1 phrase, K2 octave (Phrase)
         ArpFeel,    // K1 gate, K2 swing
         ArpKey,     // K1 key, K2 scale
         GlobalMixer, // entry point only -- see Screen::Mixer instead
-        GlobalSends, // K1 channel, K2 its reverb or delay send
-        DuckSource, // Duck:Source -- K1 source, K2 pad/note cursor or threshold
+        GlobalSends, // K1 channel (no pickup), K2 its reverb or delay send
+        DuckSource, // Duck:Source -- K1 source, K2 pad/note cursor (no pickup) or threshold
         DuckShape,  // Duck:Shape -- K1 Hold, K2 Release
-        DuckAmount, // Duck:Amount -- K1 channel, K2 its amount
+        DuckAmount, // Duck:Amount -- K1 channel (no pickup), K2 its amount
         HomeLiveFx, // Home's Live FX page -- K1 Master Vol
         LiveFx,     // inside Live FX -- K1 Master Vol, K2 the effect's setting
         GlobalSdMgmt, // browses a list directly, no pickup used -- see GlobalPage::SdMgmt
@@ -1203,22 +1203,24 @@ class Ui
         SampleSynthUser,   // ditto -- browses whichever face's own User-preset list
         SeqTrack,          // K1 engine, K2 length
         SeqQuant,          // K1 quantise, K2 swing
-        SeqGrid,           // K1 step, K2 note (B2 held: edit the note)
+        SeqGrid,           // K1 step, K2 note, no pickup (B2 held: edit the note)
         SeqPrint,          // K1 destination layer, K2 this track / all tracks
-        SeqPatt,           // K1 pattern A..H, K2 that pattern's transpose
-        HomeScenes,        // K1 scene, K2 master volume
-        HomeSceneEdit,     // K1 layer/track, K2 its volume/pattern
+        SeqPatt,           // K1 pattern A..H (no pickup), K2 that pattern's transpose
+        HomeScenes,        // K1 scene (no pickup), K2 master volume
+        HomeSceneEdit,     // K1 layer/track (no pickup), K2 its volume/pattern
         GlobalDisplay,     // K1 the screen saver's timeout
-        SeqChain,          // K1 pattern A..H to add
-        SeqArp,            // K1 the pattern whose arp B1/a click works on
-        HomeSong,          // K1 step, K2 master volume
+        SeqChain,          // K1 pattern A..H to add (no pickup)
+        SeqArp,            // K1 the pattern whose arp B1/a click works on (no pickup)
+        HomeSong,          // K1 step (no pickup), K2 master volume
         HomeSongEdit,      // K1 the step's scene, K2 its repeats
         kCount
     };
     KnobContext CurrentKnobContext() const;
     // Soft pickup/takeover: a knob only starts driving its parameter once
     // its physical position is within kKnobPickupEpsilon of `stored_raw`
-    // (the raw reading last applied for this (context, knob)), so
+    // (the raw reading last applied for this (context, knob)), or has
+    // crossed it since the last tick (`prev` to `raw`) -- so a fast turn
+    // can't skip over the value without catching it -- so
     // switching screens/pages doesn't yank a value to wherever the knob
     // physically happens to be sitting. ApplyKnobs() re-arms this
     // (engaged=false) every time the (screen, page) context changes --
@@ -1233,12 +1235,19 @@ class Ui
     // value specifically so it's visible what you're sweeping the knob
     // *to* -- same idea as a Pocket Operator's knob catch behavior.
     // Returns true if the caller should apply `raw` this tick.
-    static bool KnobPickUp(float raw, float& stored_raw, bool& engaged);
+    static bool KnobPickUp(float prev, float raw, float& stored_raw, bool& engaged);
     // What ApplyKnobs() actually calls: KnobPickUp() for the current
     // context, but only once that knob has been turned since arriving
     // here (see their own comment in ui.cpp).
     bool PickUpK1(float raw);
     bool PickUpK2(float raw);
+    // For a knob that only scrolls a cursor (a list, a channel, a step):
+    // no pickup, it reads directly -- but only once turned since arriving,
+    // so arriving doesn't move the cursor. RearmMoved() starts that over.
+    bool MovedK1(float raw);
+    bool MovedK2(float raw);
+    void RearmMoved();
+    void RearmMovedK2();
     static constexpr float kPickupMove = 0.02f; // 2% of travel -- well above pot noise
     float k1_entry_raw_ = 0.f, k2_entry_raw_ = 0.f;
     bool  k1_moved_ = false, k2_moved_ = false;
@@ -2195,6 +2204,10 @@ class Ui
     // wobbles even when the knob isn't touched.
     float k1_committed_ = 0.f;
     float k2_committed_ = 0.f;
+    // The committed readings one tick earlier, for KnobPickUp()'s
+    // crossing check.
+    float k1_prev_ = 0.f;
+    float k2_prev_ = 0.f;
 
     // Starting master_volume_ is computed properly through the same
     // curve ApplyKnobs() uses (see Ui::Init()), not hardcoded here, so
@@ -2410,7 +2423,6 @@ class Ui
     // (PerformanceStore::SaveMidiDefaults()) and the power-on load.
     int*         MidiDefaultChannel(int engine);
     void         TriggerSaveMidiDefaults();
-    static float MidiChannelKnobRaw(int ch); // bucket midpoint, Omni..16
     void         SetPedalReversed(bool reversed);
     void         DrawMidiScreen();
     char looper_status_[24] = {}; // last Default save result, if it failed

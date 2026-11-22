@@ -160,12 +160,7 @@ void Ui::SupersawSyncPickup(KnobContext ctx, size_t i)
             k1_pickup_raw_[i] = s->GetDelaySend01();
             k2_pickup_raw_[i] = delay_time01_;
             break;
-        case KnobContext::SupersawMidi:
-            k1_pickup_raw_[i] = Clamp(((float)(supersaw_midi_channel_ + 1) + 0.5f) / 16.99f, 0.f, 1.f);
-            k2_pickup_raw_[i] = Clamp(((float)(s->GetMaxVoices() - 1) + 0.5f)
-                                          / ((float)E::kMaxVoices - 0.01f),
-                                      0.f, 1.f);
-            break;
+        case KnobContext::SupersawMidi: break; // channel and voices, both direct
         case KnobContext::SupersawMidiVel: k1_pickup_raw_[i] = s->GetVelSens01(); break;
         default: break;
     }
@@ -273,9 +268,9 @@ void Ui::SupersawApplyKnobs(float k1, float k2, size_t ci)
                     s->SetVelSens01(k1);
                 break;
             }
-            if(PickUpK1(k1))
+            if(MovedK1(k1))
                 supersaw_midi_channel_ = -1 + (int)(Clamp(k1, 0.f, 1.f) * 16.99f);
-            if(PickUpK2(k2))
+            if(MovedK2(k2))
                 s->SetMaxVoices(1 + (int)(Clamp(k2, 0.f, 1.f) * ((float)E::kMaxVoices - 0.01f)));
             break;
         case SupersawParamPage::Preset:

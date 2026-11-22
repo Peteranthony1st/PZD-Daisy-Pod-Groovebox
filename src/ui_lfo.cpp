@@ -37,10 +37,10 @@ void Ui::LfoApplyKnobs(SynthLfo& lfo, bool depth_page, int* dest, float k1, floa
 {
     if(depth_page)
     {
-        // K1 browses Pitch/Filter/Amp directly, like the Ensemble's drawbar
-        // select; K2 then edits that one's depth.
+        // K1 browses Pitch/Filter/Amp directly once turned, like the
+        // Ensemble's drawbar select; K2 then edits that one's depth.
         const int d = (int)(Clamp(k1, 0.f, 0.999f) * (float)SynthLfo::kNumDests);
-        if(d != *dest)
+        if(MovedK1(k1) && d != *dest)
         {
             *dest                  = d;
             k2_pickup_engaged_[ci] = false;

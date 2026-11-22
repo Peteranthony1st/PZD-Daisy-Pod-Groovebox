@@ -1867,6 +1867,7 @@ void Ui::HandleButton2(const UiControlEvents& events)
             for(int k = song_cursor_; k < song_.len - 1; k++)
                 song_.steps[k] = song_.steps[k + 1];
             song_.len--;
+            RearmMoved(); // K1 leaves the cursor here until it's turned
         };
         if(b.Pressed() && b.TimeHeldMs() > 800.f && !button2_long_fired_)
         {
@@ -1887,6 +1888,7 @@ void Ui::HandleButton2(const UiControlEvents& events)
                     song_.steps[at] = at > 0 ? song_.steps[at - 1] : SongStep{};
                     song_.len++;
                     song_cursor_ = at;
+                    RearmMoved();
                 }
             }
             button2_long_fired_ = false;
@@ -3119,20 +3121,18 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k2_pickup_raw_[i] = live_fx_->Get().param[live_fx_->Get().effect];
             break;
         case KnobContext::HomeScenes:
-            k1_pickup_raw_[i] = ((float)scene_cursor_ + 0.5f) / (float)kScenes;
+            // K1 scrolls the scenes directly.
             k2_pickup_raw_[i] = master_volume01_;
             break;
         case KnobContext::GlobalSends:
-            k1_pickup_raw_[i] = ((float)sends_ch_ + 0.5f) / (float)kSendChannels;
+            // K1 scrolls the channels directly.
             k2_pickup_raw_[i] = sends_target_delay_ ? MixerGetDelaySend01(SendsChannel(sends_ch_))
                                                     : MixerGetSend01(SendsChannel(sends_ch_));
             break;
         case KnobContext::DuckSource:
             k1_pickup_raw_[i] = ((float)DuckSourcePos(duck_.source) + 0.5f) / (float)Duck::kSources;
-            if(Duck::IsAudioSource(duck_.source))
+            if(Duck::IsAudioSource(duck_.source)) // a note source's K2 cursor is direct
                 k2_pickup_raw_[i] = 1.f - duck_.thresh_db / Duck::kThreshMinDb;
-            else
-                k2_pickup_raw_[i] = ((float)duck_cursor_ + 0.5f) / (float)DuckCursorCount();
             break;
         case KnobContext::DuckShape:
             k1_pickup_raw_[i] = duck_.hold_ms / Duck::kHoldMaxMs;
@@ -3142,12 +3142,10 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                                    / logf(Duck::kReleaseMaxMs / Duck::kReleaseMinMs);
             break;
         case KnobContext::DuckAmount:
-            k1_pickup_raw_[i] = ((float)duck_amt_ch_ + 0.5f) / (float)Duck::kChannels;
+            // K1 scrolls the channels directly.
             k2_pickup_raw_[i] = duck_.amount[duck_amt_ch_];
             break;
-        case KnobContext::GlobalArp:
-            k1_pickup_raw_[i] = ((float)EngineColumn(arp_engine_) + 0.5f) / (float)Arpeggiator::kEngines;
-            break;
+        case KnobContext::GlobalArp: break; // K1 scrolls the engines directly
         case KnobContext::ArpSetup:
             if(arp_)
             {
@@ -3191,11 +3189,9 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k2_pickup_raw_[i] = ((float)s.scale + 0.5f) / (float)Arpeggiator::kNumScales;
             }
             break;
-        case KnobContext::GlobalDisplay:
-            k1_pickup_raw_[i] = ((float)saver_option_ + 0.5f) / (float)kSaverOptions;
-            break;
+        case KnobContext::GlobalDisplay: break; // K1 is direct
         case KnobContext::HomeSceneEdit:
-            k1_pickup_raw_[i] = ((float)scene_edit_cell_ + 0.5f) / (float)kSceneCells;
+            // K1 scrolls the cells directly.
             if(scene_edit_ >= 0)
             {
                 const Scene& s = scenes_[scene_edit_];
@@ -3206,7 +3202,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             }
             break;
         case KnobContext::HomeSong:
-            k1_pickup_raw_[i] = ((float)song_cursor_ + 0.5f) / (float)(song_.len + 1);
+            // K1 scrolls the steps directly.
             k2_pickup_raw_[i] = master_volume01_;
             break;
         case KnobContext::HomeSongEdit:
@@ -3303,10 +3299,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             k1_pickup_raw_[i] = project_speed01_;
             break;
         case KnobContext::GlobalFile: break; // browses a list directly, no pickup used
-        case KnobContext::GlobalExport:
-            k1_pickup_raw_[i] = ((float)export_mode_ + 0.5f) / 3.f;
-            k2_pickup_raw_[i] = ((float)(export_loops_ - 1) + 0.5f) / 8.f;
-            break;
+        case KnobContext::GlobalExport: break; // both knobs are direct
         case KnobContext::GlobalGranular: break; // entry point only -- see Screen::Granular instead
         case KnobContext::GlobalLooper: break; // no continuous knobs, Button1 toggle only
         case KnobContext::SeqTrack:
@@ -3330,39 +3323,18 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             }
             break;
         case KnobContext::SeqChain:
-        case KnobContext::SeqArp:
-            k1_pickup_raw_[i] = ((float)seq_patt_cursor_ + 0.5f) / (float)MidiSequencer::kPatterns;
-            break;
+        case KnobContext::SeqArp: break; // K1 scrolls the patterns directly
         case KnobContext::SeqPatt:
+            // K1 scrolls the patterns directly.
             if(seq_ && HomeSeqTrack() >= 0)
-            {
-                k1_pickup_raw_[i] = ((float)seq_patt_cursor_ + 0.5f) / (float)MidiSequencer::kPatterns;
                 k2_pickup_raw_[i] = ((float)(seq_->GetTranspose(HomeSeqTrack(), seq_patt_cursor_)
                                              + MidiSequencer::kMaxTranspose)
                                      + 0.5f)
                                     / (float)(2 * MidiSequencer::kMaxTranspose + 1);
-            }
             break;
-        case KnobContext::SeqPrint:
-            k1_pickup_raw_[i] = ((float)seq_print_dest_ + 0.5f) / (float)(num_layers_ + 1);
-            k2_pickup_raw_[i] = seq_print_all_ ? 0.75f : 0.25f;
-            break;
-        case KnobContext::SeqGrid:
-            if(seq_ && HomeSeqTrack() >= 0)
-            {
-                SeqGridView v     = SeqGridGeometry(HomeSeqTrack());
-                // K1: the row position (-1), then each step. K2: left is
-                // the top of the screen on both grids.
-                k1_pickup_raw_[i] = ((float)grid_col_ + 1.5f) / (float)(v.cells + 1);
-                int row_idx       = v.note_hi - grid_note_;
-                k2_pickup_raw_[i] = ((float)row_idx + 0.5f) / (float)(v.note_hi - v.note_lo + 1);
-            }
-            break;
-        case KnobContext::GlobalMidi:
-            // K1 scrolls the rows directly; K2 picks up the selected
-            // engine's channel (same bucket-midpoint idiom as DexedMidi).
-            k2_pickup_raw_[i] = MidiChannelKnobRaw(*MidiRowChannel(midi_row_));
-            break;
+        case KnobContext::SeqPrint: break; // both knobs are direct
+        case KnobContext::SeqGrid: break; // the cursor knobs are direct; B2's edit has its own pickup
+        case KnobContext::GlobalMidi: break; // K1 the row, K2 its channel, both direct
         case KnobContext::GlobalMixer:
             k1_pickup_raw_[i] = master_volume01_;
             k2_pickup_raw_[i] = bypass_mix_volume01_;
@@ -3455,19 +3427,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                          0.f, 1.f);
             break;
         }
-        case KnobContext::DexedMidi:
-            // -1 (Omni) .. 15 (channel 16) -- same bucket-midpoint inverse
-            // idiom as GlobalTempo's own Bars knob, just an 18-wide span
-            // (17 buckets - 0.01, matching that same epsilon convention)
-            // starting at -1 instead of 1.
-            k1_pickup_raw_[i] = Clampf(((float)(DexedActiveChannel() + 1) + 0.5f) / 16.99f, 0.f, 1.f);
-            // MAX VOICES 1..kMaxVoices, same bucket-midpoint idiom.
-            if(dexed_)
-                k2_pickup_raw_[i]
-                    = Clampf(((float)(dexed_->GetMaxVoices() - 1) + 0.5f)
-                                 / ((float)DexedSynth::kMaxVoices - 0.01f),
-                             0.f, 1.f);
-            break;
+        case KnobContext::DexedMidi: break; // channel and MAX VOICES, both direct
         case KnobContext::DexedAdvanced: break; // entry point only -- see Screen::DexedOperator instead
         case KnobContext::DexedPreset: break; // browses a list directly, no pickup used
         case KnobContext::DexedUser: break;   // ditto
@@ -3571,17 +3531,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k2_pickup_raw_[i] = delay_time01_;
             }
             break;
-        case KnobContext::EnsembleMidi:
-            // Same bucket-midpoint idiom as KnobContext::DexedMidi above.
-            k1_pickup_raw_[i]
-                = Clampf(((float)(*EnsembleActiveChannelPtr() + 1) + 0.5f) / 16.99f, 0.f, 1.f);
-            // Voices 1..kMaxVoices, same bucket-midpoint idiom.
-            if(ensemble_)
-                k2_pickup_raw_[i]
-                    = Clampf(((float)(ensemble_->GetMaxVoices() - 1) + 0.5f)
-                                 / ((float)EnsembleSynth::kMaxVoices - 0.01f),
-                             0.f, 1.f);
-            break;
+        case KnobContext::EnsembleMidi: break; // channel and voices, both direct
         case KnobContext::SupersawSuperSaw:
         case KnobContext::SupersawOsc2:
         case KnobContext::SupersawBalance:
@@ -3668,9 +3618,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
             }
             break;
         case KnobContext::SampleSynthMidi:
-            // Same bucket-midpoint inverse idiom as KnobContext::DexedMidi.
-            k1_pickup_raw_[i]
-                = Clampf(((float)(*SampleMidiChannel() + 1) + 0.5f) / 16.99f, 0.f, 1.f);
+            // K1 (the channel) is direct; K2 is Velocity.
             if(sample_synth_)
                 k2_pickup_raw_[i] = sample_synth_->GetVelSens01();
             break;
@@ -3773,11 +3721,7 @@ void Ui::SyncPickupTargets(KnobContext ctx)
                 k2_pickup_raw_[i] = delay_time01_;
             }
             break;
-        case KnobContext::GranularMidi:
-            // Same bucket-midpoint idiom as KnobContext::DexedMidi above.
-            k1_pickup_raw_[i]
-                = Clampf(((float)(granular_midi_channel_ + 1) + 0.5f) / 16.99f, 0.f, 1.f);
-            break;
+        case KnobContext::GranularMidi: break; // K1 is direct
         case KnobContext::GranularCapture: break; // no continuous knobs, Button1/Button2 only
         case KnobContext::GranularTrim:
             k1_pickup_raw_[i] = granular_trim_start01_;
@@ -3813,29 +3757,52 @@ void Ui::SyncPickupTargets(KnobContext ctx)
 // where it was on arrival.
 bool Ui::PickUpK1(float raw)
 {
-    if(!k1_moved_)
-    {
-        if(fabsf(raw - k1_entry_raw_) < kPickupMove)
-            return false;
-        k1_moved_ = true;
-    }
+    if(!MovedK1(raw))
+        return false;
     size_t ci = (size_t)last_knob_context_;
-    return KnobPickUp(raw, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]);
+    return KnobPickUp(k1_prev_, raw, k1_pickup_raw_[ci], k1_pickup_engaged_[ci]);
 }
 
 bool Ui::PickUpK2(float raw)
 {
-    if(!k2_moved_)
-    {
-        if(fabsf(raw - k2_entry_raw_) < kPickupMove)
-            return false;
-        k2_moved_ = true;
-    }
+    if(!MovedK2(raw))
+        return false;
     size_t ci = (size_t)last_knob_context_;
-    return KnobPickUp(raw, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]);
+    return KnobPickUp(k2_prev_, raw, k2_pickup_raw_[ci], k2_pickup_engaged_[ci]);
 }
 
-bool Ui::KnobPickUp(float raw, float& stored_raw, bool& engaged)
+bool Ui::MovedK1(float raw)
+{
+    if(!k1_moved_ && fabsf(raw - k1_entry_raw_) >= kPickupMove)
+        k1_moved_ = true;
+    return k1_moved_;
+}
+
+bool Ui::MovedK2(float raw)
+{
+    if(!k2_moved_ && fabsf(raw - k2_entry_raw_) >= kPickupMove)
+        k2_moved_ = true;
+    return k2_moved_;
+}
+
+void Ui::RearmMoved()
+{
+    // A fresh reading: the knobs aren't read while the screen saver is
+    // on, and a jump across that gap mustn't count as a turn or a crossing.
+    k1_committed_ = k1_prev_ = pod_->GetKnobValue(DaisyPod::KNOB_1);
+    k1_entry_raw_            = k1_committed_;
+    k1_moved_                = false;
+    RearmMovedK2();
+}
+
+void Ui::RearmMovedK2()
+{
+    k2_committed_ = k2_prev_ = pod_->GetKnobValue(DaisyPod::KNOB_2);
+    k2_entry_raw_            = k2_committed_;
+    k2_moved_                = false;
+}
+
+bool Ui::KnobPickUp(float prev, float raw, float& stored_raw, bool& engaged)
 {
     constexpr float kKnobPickupEpsilon = 0.04f;
     if(!engaged)
@@ -3844,7 +3811,7 @@ bool Ui::KnobPickUp(float raw, float& stored_raw, bool& engaged)
         // of 127 against a 0..99 knob) would otherwise be unreachable --
         // the knob could never catch it, so it could never be turned down.
         float target = stored_raw < 0.f ? 0.f : (stored_raw > 1.f ? 1.f : stored_raw);
-        if(fabsf(raw - target) > kKnobPickupEpsilon)
+        if(fabsf(raw - target) > kKnobPickupEpsilon && (prev < target) == (raw < target))
             return false;
         engaged = true;
     }
@@ -3932,6 +3899,8 @@ void Ui::ApplyKnobs()
     constexpr float kPotDriftDeadband = 0.004f;
     float            raw_k1           = pod_->GetKnobValue(DaisyPod::KNOB_1);
     float            raw_k2           = pod_->GetKnobValue(DaisyPod::KNOB_2);
+    k1_prev_                          = k1_committed_;
+    k2_prev_                          = k2_committed_;
     if(fabsf(raw_k1 - k1_committed_) > kPotDriftDeadband)
         k1_committed_ = raw_k1;
     if(fabsf(raw_k2 - k2_committed_) > kPotDriftDeadband)
@@ -3955,10 +3924,7 @@ void Ui::ApplyKnobs()
         SyncPickupTargets(ctx);
         last_knob_context_    = ctx;
         // Where the knobs are on arrival -- see PickUpK1()/PickUpK2().
-        k1_entry_raw_ = k1;
-        k2_entry_raw_ = k2;
-        k1_moved_     = false;
-        k2_moved_     = false;
+        RearmMoved();
     }
     size_t ci = (size_t)ctx;
 
@@ -3979,7 +3945,8 @@ void Ui::ApplyKnobs()
             }
             if(HomeScenes() && scene_edit_ >= 0)
             {
-                if(PickUpK1(k1))
+                // K1 scrolls the cells directly; K2 picks up.
+                if(MovedK1(k1))
                 {
                     const int c = (int)(Clampf(k1, 0.f, 0.999f) * (float)kSceneCells);
                     if(c != scene_edit_cell_)
@@ -3997,7 +3964,7 @@ void Ui::ApplyKnobs()
             }
             if(HomeScenes())
             {
-                if(PickUpK1(k1))
+                if(MovedK1(k1))
                     scene_cursor_ = (int)(Clampf(k1, 0.f, 0.999f) * (float)kScenes);
                 if(PickUpK2(k2))
                     SetMasterVolume01(k2);
@@ -4005,7 +3972,7 @@ void Ui::ApplyKnobs()
             }
             if(HomeSong() && !song_edit_)
             {
-                if(PickUpK1(k1))
+                if(MovedK1(k1))
                 {
                     const int c = (int)(Clampf(k1, 0.f, 0.999f) * (float)(song_.len + 1));
                     if(c != song_cursor_)
@@ -4049,14 +4016,14 @@ void Ui::ApplyKnobs()
             else if(seq_page_ == kSeqPageArp)
             {
                 // K1 picks the pattern whose arp B1 and a click work on.
-                if(PickUpK1(k1))
+                if(MovedK1(k1))
                     seq_patt_cursor_
                         = (int)(Clampf(k1, 0.f, 0.999f) * (float)MidiSequencer::kPatterns);
             }
             else if(seq_page_ == kSeqPageChain)
             {
                 // K1 picks the pattern B2 adds.
-                if(PickUpK1(k1))
+                if(MovedK1(k1))
                     seq_patt_cursor_
                         = (int)(Clampf(k1, 0.f, 0.999f) * (float)MidiSequencer::kPatterns);
             }
@@ -4064,7 +4031,7 @@ void Ui::ApplyKnobs()
             {
                 // K1 just chooses a pattern -- B2 plays it (tap) or copies
                 // the playing one into it (hold).
-                if(PickUpK1(k1))
+                if(MovedK1(k1))
                 {
                     const int c
                         = (int)(Clampf(k1, 0.f, 0.999f) * (float)MidiSequencer::kPatterns);
@@ -4090,9 +4057,9 @@ void Ui::ApplyKnobs()
             }
             else if(seq_page_ == kSeqPagePrint)
             {
-                if(PickUpK1(k1) && seq_print_layer_ < 0)
+                if(MovedK1(k1) && seq_print_layer_ < 0)
                     seq_print_dest_ = (int)(Clampf(k1, 0.f, 0.999f) * (float)(num_layers_ + 1)); // + Notes
-                if(PickUpK2(k2) && seq_print_layer_ < 0)
+                if(MovedK2(k2) && seq_print_layer_ < 0)
                     seq_print_all_ = k2 >= 0.5f;
             }
             else if(seq_ && HomeSeqTrack() >= 0 && seq_page_ == kSeqPageQuant)
@@ -4171,7 +4138,7 @@ void Ui::ApplyKnobs()
         case Screen::Global:
             if(global_page_ == GlobalPage::Sends)
             {
-                if(PickUpK1(k1))
+                if(MovedK1(k1))
                 {
                     const int c = (int)(Clampf(k1, 0.f, 0.999f) * (float)kSendChannels);
                     if(c != sends_ch_)
@@ -4190,17 +4157,17 @@ void Ui::ApplyKnobs()
                         MixerSetSend01(SendsChannel(sends_ch_), k2);
                 }
             }
-            if(global_page_ == GlobalPage::Arp && PickUpK1(k1))
+            if(global_page_ == GlobalPage::Arp && MovedK1(k1))
                 arp_engine_ = kEngineShowOrder[(int)(Clampf(k1, 0.f, 0.999f) * (float)Arpeggiator::kEngines)];
-            if(global_page_ == GlobalPage::Display && PickUpK1(k1))
+            if(global_page_ == GlobalPage::Display && MovedK1(k1))
                 saver_option_ = (int)(Clampf(k1, 0.f, 0.999f) * (float)kSaverOptions);
             if(global_page_ == GlobalPage::Export && !live_open_)
             {
                 // K1: Fast (offline, the layers) or Live (the master as it
                 // plays, MIDI tracks included); K2: how many loops Live takes.
-                if(PickUpK1(k1))
+                if(MovedK1(k1))
                     export_mode_ = (int)(Clampf(k1, 0.f, 0.999f) * 3.f);
-                if(PickUpK2(k2))
+                if(MovedK2(k2))
                     export_loops_ = 1 + (int)(Clampf(k2, 0.f, 0.999f) * 8.f);
             }
             if(global_page_ == GlobalPage::Tempo && !tempo_->IsLocked())
@@ -4323,21 +4290,18 @@ void Ui::ApplyKnobs()
                 // K1: the engine row, read directly like Snap's list --
                 // but only once it has actually moved, so arriving on
                 // the page doesn't jump the selection.
-                if(k1_moved_ || fabsf(k1 - k1_entry_raw_) >= kPickupMove)
+                if(MovedK1(k1))
                 {
-                    k1_moved_ = true;
                     int row   = kEngineShowOrder[(int)(Clampf(k1, 0.f, 1.f) * ((float)kMidiRows - 0.01f))];
                     if(row != midi_row_)
                     {
+                        // K2 now sets a different engine: it leaves that
+                        // one's channel alone until it's turned.
                         midi_row_ = row;
-                        // K2 now sets a different engine: pick up from
-                        // that one's channel, not where K2 happens to be.
-                        size_t ci             = (size_t)KnobContext::GlobalMidi;
-                        k2_pickup_engaged_[ci] = false;
-                        k2_pickup_raw_[ci]     = MidiChannelKnobRaw(*MidiRowChannel(midi_row_));
+                        RearmMovedK2();
                     }
                 }
-                if(PickUpK2(k2))
+                if(MovedK2(k2))
                 {
                     int ch = -1 + (int)(Clampf(k2, 0.f, 1.f) * 16.99f);
                     // DXD-B while locked: setting its own channel unlocks it.
@@ -4485,7 +4449,7 @@ void Ui::ApplyKnobs()
                     }
                     break;
                 case GranularParamPage::MIDI:
-                    if(PickUpK1(k1))
+                    if(MovedK1(k1))
                         granular_midi_channel_ = -1 + (int)(k1 * 16.99f);
                     break;
                 case GranularParamPage::Capture:
@@ -4701,9 +4665,9 @@ void Ui::ApplyKnobs()
                         dexed_->SetFoldTrim01(k2);
                     break;
                 case DexedParamPage::MIDI:
-                    if(PickUpK1(k1))
+                    if(MovedK1(k1))
                         *DexedActiveChannelPtr() = -1 + (int)(k1 * 16.99f);
-                    if(PickUpK2(k2))
+                    if(MovedK2(k2))
                     {
                         // Stops at whatever the other engine leaves free
                         // while both are on (see DexedVoiceRoom()).
@@ -4835,14 +4799,13 @@ void Ui::ApplyKnobs()
                 case EnsembleParamPage::Registration:
                 {
                     // K1 browses which of the 7 drawbars is selected --
-                    // same "no pickup, direct scrub" idiom as Preset
-                    // browsing/DexedFilesGroup elsewhere (this is a
+                    // no pickup, read directly once turned (this is a
                     // selector, not a persisted value of its own).
                     const int nbars = ensemble_->NumDrawbars(); // 7, or 9 on the Organ
                     int       idx   = (int)(Clampf(k1, 0.f, 1.f) * nbars);
                     if(idx >= nbars)
                         idx = nbars - 1;
-                    if(idx != ensemble_drawbar_index_)
+                    if(MovedK1(k1) && idx != ensemble_drawbar_index_)
                     {
                         ensemble_drawbar_index_ = idx;
                         // K2 now edits a DIFFERENT drawbar's level --
@@ -4930,9 +4893,9 @@ void Ui::ApplyKnobs()
                             ensemble_->SetVelSens01(k1);
                         break;
                     }
-                    if(PickUpK1(k1))
+                    if(MovedK1(k1))
                         *EnsembleActiveChannelPtr() = -1 + (int)(k1 * 16.99f);
-                    if(PickUpK2(k2))
+                    if(MovedK2(k2))
                         ensemble_->SetMaxVoices(
                             1 + (int)(k2 * ((float)EnsembleSynth::kMaxVoices - 0.01f)));
                     break;
@@ -5058,7 +5021,7 @@ void Ui::ApplyKnobs()
                     }
                     break;
                 case SampleSynthParamPage::MIDI:
-                    if(PickUpK1(k1))
+                    if(MovedK1(k1))
                         *SampleMidiChannel() = -1 + (int)(k1 * 16.99f);
                     if(PickUpK2(k2))
                         sample_synth_->SetVelSens01(k2);
@@ -6245,12 +6208,10 @@ void Ui::SeqGridKnobs(int t, float k1, float k2)
     {
         if(!held)
         {
-            // Let go: the knobs go back to the cursor, picked up from it.
-            grid_edit_            = false;
-            size_t ci             = (size_t)KnobContext::SeqGrid;
-            k1_pickup_engaged_[ci] = false;
-            k2_pickup_engaged_[ci] = false;
-            SyncPickupTargets(KnobContext::SeqGrid);
+            // Let go: the knobs go back to the cursor, which stays put
+            // until one of them is turned again.
+            grid_edit_ = false;
+            RearmMoved();
             return;
         }
         if(!grid_edit_note_)
@@ -6289,11 +6250,11 @@ void Ui::SeqGridKnobs(int t, float k1, float k2)
         return;
     }
 
-    // The cursor: K1 the step, K2 the row (picked up, so arriving here
-    // or letting go of B2 doesn't move it).
-    if(PickUpK1(k1) && v.cells > 0)
+    // The cursor: K1 the step, K2 the row, read directly once turned (so
+    // arriving here or letting go of B2 doesn't move it).
+    if(MovedK1(k1) && v.cells > 0)
         grid_col_ = (int)(Clampf(k1, 0.f, 0.999f) * (float)(v.cells + 1)) - 1;
-    if(PickUpK2(k2))
+    if(MovedK2(k2))
     {
         // Sticky: the row only changes once the knob is a third of a row
         // past the edge of the current one, so pot jitter can't flicker it
@@ -9192,16 +9153,19 @@ void Ui::DuckApplyKnobs(float k1, float k2)
                 {
                     k2_pickup_engaged_[ci] = false;
                     SyncPickupTargets(KnobContext::DuckSource);
+                    // The cursor starts on the first note, not where K2 is.
+                    RearmMovedK2();
                 }
             }
         }
-        if(PickUpK2(k2))
+        // K2: the threshold, picked up -- or the note cursor, directly.
+        if(Duck::IsAudioSource(duck_.source))
         {
-            if(Duck::IsAudioSource(duck_.source))
+            if(PickUpK2(k2))
                 duck_.thresh_db = Duck::kThreshMinDb * (1.f - Clampf(k2, 0.f, 1.f));
-            else
-                duck_cursor_ = (int)(Clampf(k2, 0.f, 0.999f) * (float)DuckCursorCount());
         }
+        else if(MovedK2(k2))
+            duck_cursor_ = (int)(Clampf(k2, 0.f, 0.999f) * (float)DuckCursorCount());
     }
     if(duck_page_ == DuckPage::Shape)
     {
@@ -9219,7 +9183,7 @@ void Ui::DuckApplyKnobs(float k1, float k2)
     }
     if(duck_page_ == DuckPage::Amount)
     {
-        if(PickUpK1(k1))
+        if(MovedK1(k1))
         {
             const int c = (int)(Clampf(k1, 0.f, 0.999f) * (float)Duck::kChannels);
             if(c != duck_amt_ch_)
@@ -10884,11 +10848,6 @@ void Ui::SetPedalReversed(bool reversed)
     else
         snprintf(midi_status_, sizeof(midi_status_), "%s",
                   PerformanceStore::IsCardPresent() ? "Not saved" : "No SD card");
-}
-
-float Ui::MidiChannelKnobRaw(int ch)
-{
-    return Clampf(((float)(ch + 1) + 0.5f) / 16.99f, 0.f, 1.f);
 }
 
 int* Ui::MidiDefaultChannel(int engine)
@@ -17499,6 +17458,7 @@ void Ui::ResyncKnobs()
     k2_pickup_engaged_[ctx_index] = false;
     SyncPickupTargets(ctx);
     last_knob_context_ = ctx;
+    RearmMoved(); // and a direct knob waits to be turned
 }
 
 void Ui::FormatPan(float pan01, char* out, size_t out_size)

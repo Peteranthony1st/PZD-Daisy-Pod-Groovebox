@@ -145,9 +145,11 @@ depending on the layer's current state, not one static label covering
 several different behaviours).
 
 **Knob pickup**: a knob only starts driving its parameter once its
-physical position reaches the value already shown on screen (see
-`Ui::KnobPickUp()`) — switching pages/layers never yanks a value to
-wherever the knob physically happens to be sitting.
+physical position reaches the value already shown on screen, or crosses
+it between two readings (see `Ui::KnobPickUp()`) — switching
+pages/layers never yanks a value to wherever the knob physically happens
+to be sitting. Knobs that only move a cursor or pick from a list are
+read directly instead (`Ui::MovedK1()`/`MovedK2()`), once turned.
 
 Full control map:
 
@@ -1084,8 +1086,9 @@ too, for the same reason.
   to anything else turns the lock off, as on the Dexed MIDI page. SMPVO
   and SMPDR share `sample_synth_midi_channel_`, so they are one row. K1
   is read directly (no pickup) but only after it has moved past
-  `kPickupMove`, so arriving on the page doesn't jump the row; changing
-  row re-arms K2's pickup at the new engine's channel.
+  `kPickupMove`, so arriving on the page doesn't jump the row. K2 is
+  direct too; changing row re-arms it (`RearmMovedK2()`), so the new
+  engine's channel stays put until K2 is turned.
 - **Sustain pedal (CC 64)** is handled once in `main.cpp`, not inside
   each engine: every keyboard engine (Grains, DXD-A, DXD-B, Ensemble,
   SMPVO) goes through `SustainNoteOn()`/`SustainNoteOff()`, which track
@@ -6294,3 +6297,57 @@ echoes fall a dotted 1/8 apart; a repeat and a reverse held 12 s still
 play the same slice (and fail without the ring pausing); Drop winds back
 up for as long as it fell. The host renderer draws every screen, and a
 save/load through `PerformanceStore` brings the settings back.
+
+## Knob pickup: cursors direct, catching on a crossing
+
+### Two kinds of knob
+
+A knob either sets a value (a level, a cutoff, a rate) or moves a
+cursor through a list (a channel, a step, a scene, a pattern, an
+engine row). Values keep soft pickup; cursors have nothing to pick up,
+so they're read directly, as the Preset/User lists always were.
+
+`MovedK1()`/`MovedK2()` are the direct form of `PickUpK1()`/`PickUpK2()`:
+nothing until the knob has moved `kPickupMove` (2%) since arriving, then
+true every tick. `RearmMoved()`/`RearmMovedK2()` start that over when the
+cursor moves by other means or a knob changes what it points at: arriving
+on a context, `ResyncKnobs()`, letting go of B2 on the grid, a Song step
+inserted or deleted, a new Global:MIDI row (K2), a new Duck source (K2).
+
+### Which knobs are direct
+
+- **Cursors:** Global:Arp K1, Global:Sends K1, Duck:Amount K1,
+  Duck:Source K2 (a note source's pad/note cursor), Home Scenes K1, Scene
+  edit K1, Home Song K1, the grid's K1 (step) and K2 (row), Seq Patt,
+  Chain and Arp K1, Global:MIDI K1.
+- **Setup choices** where a jump on the first touch costs nothing:
+  Seq Print K1/K2, Global:Export K1/K2, Global:Display K1, Global:MIDI
+  K2, and every engine's MIDI page (the channel, and Max Voices where the
+  page has it; the samplers' K2 is Velocity and keeps pickup).
+- **Already direct, now gated on a turn:** Ensemble/Organ Registration
+  K1 (the drawbar) and the LFO Depth page's K1 (the destination).
+
+Everything else, including Seq Track, Quant, the Arp pages, Duck:Source
+K1, Scene edit K2, Song edit and Dexed Split, keeps pickup: there a jump
+changes what's heard or loses work.
+
+### Catching on a crossing
+
+`KnobPickUp()` used to catch only inside ±`kKnobPickupEpsilon` (4%). The
+knobs are read every 10 ms, so a fast turn could step over that 8% window
+and never catch. It now also catches when the reading crosses the target
+between the previous tick (`k1_prev_`/`k2_prev_`, the committed reading
+one tick earlier) and this one, as the grid's B2 note edit already did.
+The knobs aren't read while the screen saver is on, so `RearmMoved()`
+takes a fresh reading (setting committed and previous alike) and the
+jump across that gap can't count as a crossing.
+
+### Testing
+
+On the host renderer, a scratch build with a one-tick knob jump: Master
+Vol at 70% with K2 at 0.9, a jump to 0.8 leaves it, a jump to 0.3 catches
+and sets 30%. Each direct page arrived on with the knob elsewhere leaves
+its cursor; turning moves it straight there; Global:MIDI's new row keeps
+its own channel; the grid's cursor stays put after a B2 edit; Song keeps
+an inserted step picked.
+

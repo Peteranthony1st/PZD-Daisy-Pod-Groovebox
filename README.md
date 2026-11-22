@@ -726,7 +726,10 @@ page is open, and it's always shown on screen in the footer.
 
 **Knob pickup** — knobs don't jump the moment you touch them. Each one
 shows its live current value; turning the physical knob only takes
-control once it reaches that value.
+control once it reaches that value, or turns past it, however fast. A
+knob that only moves a cursor or picks from a list (a channel, a step, a
+scene, a pattern, a preset, a MIDI channel) does nothing when you
+arrive, then goes straight to where it points as soon as you turn it.
 
 **Basic workflow**, using pocket operators (applied effects before
 making the video). Also includes a WAV file of acoustic guitar input,
